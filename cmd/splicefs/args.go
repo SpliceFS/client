@@ -7,7 +7,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/BlueRival/splicefs/client/config"
+	"github.com/SpliceFS/client/config"
 )
 
 // The commands.

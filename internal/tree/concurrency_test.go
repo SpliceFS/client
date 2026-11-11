@@ -8,7 +8,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 // gated makes every List wait for the gate, and records whether its context was

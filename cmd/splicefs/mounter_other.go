@@ -5,9 +5,9 @@ package main
 import (
 	"errors"
 
-	"github.com/BlueRival/splicefs/client/app"
-	"github.com/BlueRival/splicefs/client/core"
-	"github.com/BlueRival/splicefs/client/mount"
+	"github.com/SpliceFS/client/app"
+	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 // platformMounter refuses every mount: there is no mount layer for this system.

@@ -1,6 +1,6 @@
 [Unit]
 Description=SpliceFS mounts
-Documentation=https://github.com/BlueRival/splicefs
+Documentation=https://github.com/SpliceFS/client
 After=network-online.target
 Wants=network-online.target
 

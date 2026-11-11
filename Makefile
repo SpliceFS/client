@@ -1,5 +1,5 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X github.com/BlueRival/splicefs/internal/version.version=$(VERSION)
+LDFLAGS := -s -w -X github.com/SpliceFS/client/internal/version.version=$(VERSION)
 
 # Image and flags for running the Linux checks from another system. The FUSE device
 # and the SYS_ADMIN capability are what a container needs to mount inside itself.
@@ -12,8 +12,7 @@ LINUX_RUN := docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-o
 all: check build
 
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefsd ./server/cmd/splicefsd
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefs ./client/cmd/splicefs
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefs ./cmd/splicefs
 
 # Everything CI runs except the linter.
 check: fmt-check vet cover

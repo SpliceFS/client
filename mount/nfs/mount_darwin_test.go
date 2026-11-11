@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/mount"
+	"github.com/SpliceFS/client/mount"
 )
 
 func TestMountOptions(t *testing.T) {

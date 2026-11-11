@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/mount"
+	"github.com/SpliceFS/client/mount"
 )
 
 // abortTimeout bounds the cleanup of a mount that never became ready.

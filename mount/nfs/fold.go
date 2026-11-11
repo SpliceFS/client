@@ -8,7 +8,7 @@ import (
 
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 // resolutionCacheSize bounds how many requested names are remembered together with the

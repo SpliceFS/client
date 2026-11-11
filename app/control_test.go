@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 // rawCall sends text to the control socket and returns everything the client answers.

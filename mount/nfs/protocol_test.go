@@ -16,7 +16,7 @@ import (
 	"github.com/willscott/go-nfs-client/nfs"
 	"github.com/willscott/go-nfs-client/nfs/rpc"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 // dialClient connects to the server. The client library picks its own local port

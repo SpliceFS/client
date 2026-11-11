@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/BlueRival/splicefs/client/app"
-	"github.com/BlueRival/splicefs/client/config"
-	"github.com/BlueRival/splicefs/internal/version"
+	"github.com/SpliceFS/client/app"
+	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/version"
 )
 
 func TestMainRunsTheProgram(t *testing.T) {

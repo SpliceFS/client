@@ -14,7 +14,7 @@ import (
 	"github.com/go-git/go-billy/v5"
 	"github.com/willscott/go-nfs/file"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 var testOwner = owner{uid: 501, gid: 20}

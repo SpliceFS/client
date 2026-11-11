@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/mount"
+	"github.com/SpliceFS/client/mount"
 )
 
 // fakeHost is a host whose answers a test scripts.

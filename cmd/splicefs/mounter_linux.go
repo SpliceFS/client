@@ -3,8 +3,8 @@
 package main
 
 import (
-	"github.com/BlueRival/splicefs/client/app"
-	"github.com/BlueRival/splicefs/client/mount/fuse"
+	"github.com/SpliceFS/client/app"
+	"github.com/SpliceFS/client/mount/fuse"
 )
 
 // platformMounter mounts through FUSE.

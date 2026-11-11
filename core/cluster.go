@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/config"
-	"github.com/BlueRival/splicefs/client/internal/fetch"
-	"github.com/BlueRival/splicefs/client/internal/remote"
-	"github.com/BlueRival/splicefs/client/internal/session"
-	"github.com/BlueRival/splicefs/client/internal/tree"
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/fetch"
+	"github.com/SpliceFS/client/internal/remote"
+	"github.com/SpliceFS/client/internal/session"
+	"github.com/SpliceFS/client/internal/tree"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 // cluster is everything the client keeps per configured cluster: the session that

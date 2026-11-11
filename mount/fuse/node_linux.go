@@ -12,7 +12,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 // nameMax is the longest file name reported by statfs.

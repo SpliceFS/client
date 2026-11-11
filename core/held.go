@@ -4,7 +4,7 @@ import (
 	"slices"
 	"sync"
 
-	"github.com/BlueRival/splicefs/client/internal/cache"
+	"github.com/SpliceFS/client/internal/cache"
 )
 
 // maxHeld bounds the remembered versions. Forgetting one costs a single HEAD round at

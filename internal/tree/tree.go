@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 // Errors that callers branch on, checked with errors.Is.

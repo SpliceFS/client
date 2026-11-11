@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/config"
-	"github.com/BlueRival/splicefs/client/core"
-	"github.com/BlueRival/splicefs/client/mount"
+	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 func TestRunMountsEveryConfiguredMount(t *testing.T) {

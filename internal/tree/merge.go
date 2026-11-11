@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 // record is a merged entry together with the nodes that reported the name, in any

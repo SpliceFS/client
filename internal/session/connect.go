@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 // ensureConnected connects on first use, and again after a failed attempt once its

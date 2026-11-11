@@ -13,7 +13,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/BlueRival/splicefs/internal/units"
+	"github.com/SpliceFS/client/internal/units"
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 func TestErrnoOf(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 func TestNewAttributes(t *testing.T) {

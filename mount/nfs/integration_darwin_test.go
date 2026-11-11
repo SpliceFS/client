@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/core"
-	"github.com/BlueRival/splicefs/client/mount"
+	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 // mountOrSkip mounts fsys on a new temporary directory with the real mount_nfs. The

@@ -23,8 +23,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/core"
-	"github.com/BlueRival/splicefs/client/mount"
+	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 // These tests mount for real and use ordinary system calls on the mount. They need

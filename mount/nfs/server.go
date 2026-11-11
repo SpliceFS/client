@@ -14,7 +14,7 @@ import (
 
 	gonfs "github.com/willscott/go-nfs"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 // defaultCallTimeout is how long one call into the core.FS may take. It is long enough

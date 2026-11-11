@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/BlueRival/splicefs/client/internal/session"
+	"github.com/SpliceFS/client/internal/session"
 )
 
 func TestConnect(t *testing.T) {

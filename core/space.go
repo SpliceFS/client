@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/internal/remote"
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/internal/remote"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 // spaceTTL is how long the capacity of a view is reused. Tools such as df and file

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/units"
+	"github.com/SpliceFS/client/internal/units"
 )
 
 // agingHarness is a harness whose cache evicts files not read for testMaxAge.

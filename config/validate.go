@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/BlueRival/splicefs/internal/units"
+	"github.com/SpliceFS/client/internal/units"
 )
 
 // Limits for values that have them.

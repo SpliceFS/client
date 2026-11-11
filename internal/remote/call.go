@@ -9,7 +9,7 @@ import (
 	"mime"
 	"net/http"
 
-	"github.com/BlueRival/splicefs/internal/version"
+	"github.com/SpliceFS/client/internal/version"
 )
 
 const (

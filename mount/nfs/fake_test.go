@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 var fakeMTime = time.Unix(1_700_000_000, 123_000_000)

@@ -4,7 +4,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 const (

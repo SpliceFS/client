@@ -12,8 +12,8 @@ import (
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
 
-	"github.com/BlueRival/splicefs/client/core"
-	"github.com/BlueRival/splicefs/client/mount"
+	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 const (

@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/internal/cache"
-	"github.com/BlueRival/splicefs/client/internal/fetch"
-	"github.com/BlueRival/splicefs/client/internal/remote"
-	"github.com/BlueRival/splicefs/internal/units"
+	"github.com/SpliceFS/client/internal/cache"
+	"github.com/SpliceFS/client/internal/fetch"
+	"github.com/SpliceFS/client/internal/remote"
+	"github.com/SpliceFS/client/internal/units"
 )
 
 // testSize spans several blocks and ends in a short one.

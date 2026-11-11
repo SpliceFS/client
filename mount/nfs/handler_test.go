@@ -8,7 +8,7 @@ import (
 
 	gonfs "github.com/willscott/go-nfs"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 func newTestHandler(t *testing.T, fsys core.FS, handleLimit, verifierLimit int) *handler {

@@ -19,11 +19,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/config"
-	"github.com/BlueRival/splicefs/client/internal/cache"
-	"github.com/BlueRival/splicefs/client/internal/fetch"
-	"github.com/BlueRival/splicefs/internal/units"
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/cache"
+	"github.com/SpliceFS/client/internal/fetch"
+	"github.com/SpliceFS/client/internal/units"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 // fakeClock fires timers only when the test advances it.

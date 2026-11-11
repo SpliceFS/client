@@ -16,7 +16,7 @@ import (
 	"github.com/go-git/go-billy/v5"
 	"github.com/willscott/go-nfs/file"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 // Permission bits every entry reports: nothing can be written, and a program that can

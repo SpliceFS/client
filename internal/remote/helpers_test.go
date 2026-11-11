@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/BlueRival/splicefs/internal/version"
+	"github.com/SpliceFS/client/internal/version"
 )
 
 const testToken = "tok-123"

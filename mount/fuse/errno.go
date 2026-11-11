@@ -7,7 +7,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/core"
 )
 
 // maxLoggedErrors bounds the memory used to remember which error texts were logged,

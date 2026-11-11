@@ -7,8 +7,8 @@ import (
 	"hash/fnv"
 	"strings"
 
-	"github.com/BlueRival/splicefs/client/config"
-	"github.com/BlueRival/splicefs/client/internal/tree"
+	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/tree"
 )
 
 // view is the FS of one mount: a directory of a cluster, read with the mount's cache

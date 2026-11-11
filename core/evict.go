@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/internal/cache"
+	"github.com/SpliceFS/client/internal/cache"
 )
 
 // evictInterval is the shortest time between two eviction passes of one cache. A pass

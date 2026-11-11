@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/config"
-	"github.com/BlueRival/splicefs/internal/units"
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/units"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 func TestNewWithDefaultOptions(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 var (

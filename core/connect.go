@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/BlueRival/splicefs/client/internal/session"
+	"github.com/SpliceFS/client/internal/session"
 )
 
 // ErrBadCredentials means a cluster rejected the configured user or password. Unlike

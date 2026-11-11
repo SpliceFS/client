@@ -7,7 +7,7 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/BlueRival/splicefs/client/app"
+	"github.com/SpliceFS/client/app"
 )
 
 // printStatus asks the running client for its report and prints it, as a table or as the

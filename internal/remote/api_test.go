@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/wire"
+	"github.com/SpliceFS/client/internal/wire"
 )
 
 var bearer = map[string]string{"Authorization": "Bearer " + testToken}

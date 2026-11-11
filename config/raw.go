@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/BlueRival/splicefs/internal/units"
+	"github.com/SpliceFS/client/internal/units"
 )
 
 // Sizes used by the defaults.

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/BlueRival/splicefs/client/app"
-	"github.com/BlueRival/splicefs/client/config"
-	"github.com/BlueRival/splicefs/client/core"
+	"github.com/SpliceFS/client/app"
+	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/core"
 )
 
 const helloText = "hello from the cluster\n"
