@@ -1,6 +1,6 @@
-# SpliceFS
+# SpliceFS client
 
-[![CI](https://github.com/BlueRival/splicefs/actions/workflows/ci.yml/badge.svg)](https://github.com/BlueRival/splicefs/actions/workflows/ci.yml)
+[![CI](https://github.com/SpliceFS/client/actions/workflows/ci.yml/badge.svg)](https://github.com/SpliceFS/client/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 SpliceFS mounts a read-only folder whose files are streamed from several servers at once.
@@ -9,6 +9,9 @@ blocks back together in order, caching them on local disk.
 
 It is built for throughput: a reader far away from every server gets the combined upload
 speed of all of them, and a slow or failing server is routed around while a file is being read.
+
+This repository holds the client, `splicefs`, which mounts the files. The server that runs on
+each node, `splicefsd`, is in the [server repository](https://github.com/SpliceFS/server).
 
 > **Status: alpha.** The server and the client work end to end on Linux and macOS and are
 > covered by tests, but nothing has been run in production yet and no release has been
@@ -32,8 +35,9 @@ speed of all of them, and a slow or failing server is routed around while a file
                 +------------------+
 ```
 
-- **Server (`splicefsd`)** runs on each node and serves its local directories over HTTP:
-  directory listings as JSON and file contents by byte range. It keeps no state about readers.
+- **Server (`splicefsd`)**, which is in its [own repository](https://github.com/SpliceFS/server),
+  runs on each node and serves its local directories over HTTP: directory listings as JSON and
+  file contents by byte range. It keeps no state about readers.
 - **Client (`splicefs`)** asks every node what it has, merges the answers into one tree and
   mounts it with FUSE. When a file is read, it requests blocks from all nodes that hold an
   identical copy, gives more work to the faster nodes, and requests a late block again from
@@ -50,44 +54,13 @@ speed of all of them, and a slow or failing server is routed around while a file
 - Multi-source block reads with per-node speed tracking and re-request of late blocks
 - Local block cache with size, age and free-space limits, kept across restarts; files that
   were read completely stay readable when every node is unreachable
-- Logins with per-user files and signed, short-lived tokens that any node can issue and check
-- Works behind a reverse proxy or stands alone with its own TLS
-- Plain HTTP API: every request can be reproduced with `curl`
 
 ## Quick start
 
-On every node, with the files already in place under `/srv/media`:
+The nodes must be running first. See the server's
+[quick start](https://github.com/SpliceFS/server#quick-start).
 
-```
-# /etc/splicefs/server/config.yaml
-listen:
-  - {address: 0.0.0.0, port: 8480}
-shares:
-  media: {path: /srv/media}
-cluster: {name: example, node: east, nodes_file: /srv/shared/nodes.yaml}
-auth: {users_dir: /srv/shared/users, keys_file: /srv/shared/keys.yaml}
-```
-
-The node list, the users directory and the keys file are the same on every node; copy or
-replicate them however you like. Create them once:
-
-```
-# /srv/shared/nodes.yaml
-cluster: example
-nodes:
-  - {name: east, url: "https://east.example.com/api"}
-  - {name: west, url: "https://west.example.com/api"}
-
-# /srv/shared/keys.yaml  (mode 600)
-keys:
-  - {id: "2026-11", secret: "<output of: head -c 48 /dev/urandom | base64>"}
-
-# /srv/shared/users/alice.yaml
-password_hash: "<output of: splicefsd hash-password>"
-shares: [media]
-```
-
-Start `splicefsd` on each node (a systemd unit is in `packaging/systemd`). On the reader:
+On the reader:
 
 ```
 # /etc/splicefs/client/config.yaml
@@ -108,16 +81,17 @@ The [configuration reference](docs/configuration.md) lists every setting.
 
 ## Documentation
 
-- [Design](docs/design.md): architecture, API, consistency rules, block scheduling
-- [Configuration](docs/configuration.md): server and client configuration reference
+- [Design](docs/design.md): structure, discovery, the merged tree, block scheduling, cache
+- [Configuration](docs/configuration.md): client configuration reference and commands
 - [Contributing](CONTRIBUTING.md): development setup, standards, how changes are reviewed
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)
+- [Server](https://github.com/SpliceFS/server): the server, the HTTP API and the consistency rules
 
 ## Requirements
 
-Both programs are single static binaries with every library built in. There is nothing to
-install for the server on any system, and nothing for the client in these cases:
+`splicefs` is a single static binary with every library built in. There is nothing to install
+in these cases:
 
 - **Linux, client run as root** (for example from a systemd unit): nothing. The FUSE driver
   is part of every mainstream kernel.
@@ -144,7 +118,7 @@ One case needs a package:
 Requires Go 1.26 or newer.
 
 ```
-make build      # binaries in ./bin: splicefsd (server), splicefs (client)
+make build      # the binary is ./bin/splicefs
 make check      # everything CI runs: format check, vet, tests with the race detector, coverage gate
 make check-linux  # the same on Linux with real FUSE mounts, in a container (needs Docker)
 make lint         # golangci-lint
@@ -153,22 +127,27 @@ make lint         # golangci-lint
 ## Repository layout
 
 ```
-server/     the server program (splicefsd) and its packages
-client/     the client program (splicefs), the importable client library (client/core)
-            and the mount layers (client/mount)
-internal/   code shared by both programs
-test/       end-to-end tests that run real servers against the real client
-docs/       design and configuration reference
-packaging/  systemd units
-scripts/    development helpers used by make and CI
+cmd/splicefs/  the splicefs program: the mount, umount and status commands
+app/           builds the client from a configuration, mounts it, serves the control socket
+config/        loads and validates config.yaml
+core/          the client as an importable library (github.com/SpliceFS/client/core)
+mount/         the contract every mount layer offers; mount/fuse is Linux, mount/nfs is macOS
+internal/      node HTTP client, cluster session, merged tree, block cache, block reader, and
+               units, version and wire (the JSON types of the HTTP API), which also exist in
+               the server repository
+docs/          design and configuration reference
+packaging/     systemd unit
+scripts/       development helpers used by make and CI
 ```
 
 ## Versioning
 
 SpliceFS follows [Semantic Versioning](https://semver.org). Releases are git tags of the form
-`vMAJOR.MINOR.PATCH`. The server and the client are released together under one version, and
-both print it with `--version`. Before 1.0.0 the API and the configuration format may change
-in any minor release; every change is listed in the changelog.
+`vMAJOR.MINOR.PATCH` in this repository, and `splicefs --version` prints the version. The
+server and the client are versioned separately: each repository has its own version tags. A
+client works with a server that serves the API version the client speaks, and that version is
+part of the URL (`/v1/`). Before 1.0.0 the API and the configuration format may change in any
+minor release; every change is listed in the changelog.
 
 ## License
 

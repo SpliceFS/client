@@ -4,7 +4,7 @@ about: Something does not work as documented
 labels: bug
 ---
 
-**Version** (`splicefsd --version`, `splicefs --version`):
+**Version** (`splicefs --version`):
 
 **What you did:**
 

@@ -17,9 +17,11 @@ Until 1.0.0, only the latest release receives security fixes.
 
 ## Scope
 
-In scope: reading files outside a shared directory, bypassing authentication, forging or
-replaying tokens, crashing the server with crafted requests, and the client serving wrong
-file contents.
+In scope: the client serving wrong file contents.
+
+Problems in the server (reading files outside a shared directory, authentication, tokens,
+crafted requests) are reported the same way in the
+[server repository](https://github.com/SpliceFS/server).
 
 Out of scope: the replication tool that keeps nodes in step, and the reverse proxy in front
 of a node.

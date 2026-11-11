@@ -8,7 +8,8 @@ held to. Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
 - **Bugs:** open an issue with the version, what you did, what you expected and what happened.
 - **Features and behavior changes:** open an issue first and describe the problem you want
   solved. The [design document](docs/design.md) is the specification; a change in behavior
-  starts as a change to that document.
+  starts as a change to that document. The HTTP API and the consistency rules are specified in
+  the [design document of the server repository](https://github.com/SpliceFS/server/blob/main/docs/design.md).
 - **Security problems:** do not open an issue. Follow the [security policy](SECURITY.md).
 
 ## Development setup
@@ -17,7 +18,7 @@ You need Go 1.26 or newer and `make`. Linting uses
 [golangci-lint](https://golangci-lint.run) version 2.
 
 ```
-make build        # build both programs into ./bin
+make build        # build splicefs into ./bin
 make check        # format check, vet, tests with the race detector, coverage gate
 make lint         # golangci-lint, the same configuration CI uses
 make fmt          # rewrite files with gofmt
@@ -51,8 +52,10 @@ make fmt          # rewrite files with gofmt
   dead code, no commented-out code.
 - Dependencies are added sparingly. A new module in `go.mod` needs a sentence of
   justification in the pull request.
-- The server and the client live in `server/` and `client/`. Code used by both lives in
-  `internal/`. Neither program imports the other.
+- The server lives in its [own repository](https://github.com/SpliceFS/server). Neither program
+  imports the other. `internal/wire` (the JSON types of the HTTP API), `internal/units` and
+  `internal/version` exist in both repositories and must stay identical, so a change to one
+  of them is made in both.
 
 ### Tests
 
