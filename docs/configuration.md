@@ -11,7 +11,7 @@ The main file in either directory is `config.yaml`. Relative paths inside a conf
 file are relative to the configuration directory. Sizes take the suffixes `KiB`, `MiB`,
 `GiB`, `TiB`; durations take `s`, `m`, `h`, `d`.
 
-This is the planned format. It is not implemented yet and may change before the first release.
+The format may change before the first release.
 
 ## Server
 
