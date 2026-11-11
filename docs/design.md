@@ -181,7 +181,20 @@ new cache entry, and two mounts of the same cluster share cached blocks. It surv
 
 Eviction removes the least recently read files first and is driven by three limits: a
 maximum total size, a maximum age since a file was last read, and a minimum amount of free
-space to leave on the cache disk. A file that is open is never evicted.
+space to leave on the cache disk. A file that is open is never evicted. With the size and
+age limits set to `unlimited`, nothing is ever evicted and every file that is read becomes
+a permanent local copy. When the cache disk is full, reads still succeed; the blocks are
+passed through without being stored.
+
+Files smaller than a configurable minimum size are never cached; they are read through
+from the nodes each time.
+
+**Revalidation.** A cache entry records when its file was last checked against the nodes.
+Once that is older than the configured revalidation time, the next open asks the nodes
+again and compares name, size, modification time and head digest. If anything differs, the
+entry is discarded and the file is read fresh. If no node can be reached, a file that is
+completely cached is still served from the cache, and the check is made at the next open
+after a node returns.
 
 The cache directory must not be a mount target, lie inside one, or contain one. The client
 refuses to start otherwise.
@@ -196,7 +209,9 @@ the limit. A mount of the cluster root adds up its shares.
 
 The mount has to behave like a local disk for ordinary tools. These are requirements:
 
-- **Read-only.** Any attempt to write, create, rename or remove fails with `EROFS`.
+- **Read-only.** Any attempt to write, create, rename, remove, or change attributes or
+  times fails with `EROFS`. Reading a file does not update its access time, on the mount or
+  on the nodes.
 - **Stable identity.** A path keeps the same inode number for the life of the mount and
   across restarts. Files report one link, mode `0444`; directories mode `0555`; owner and
   group are the user running the client. `st_blocks` reflects the file size.
@@ -210,8 +225,9 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
 - **Extended attributes and locks** are not supported; requests are refused in a way that
   stops the kernel from asking again.
 - **Names.** Names are passed through byte for byte. A name that is a file on one node and
-  a directory on another is listed as the kind most nodes report. *Open:* Unicode
-  normalization on macOS.
+  a directory on another is listed as the kind most nodes report. On macOS, where programs
+  may ask for an accented name in a different Unicode form than the one stored, a lookup
+  that finds no exact match falls back to comparing the normalized forms.
 - **A file that changes while open** keeps serving the version that was opened, as long as
   one node still has it; a new open sees the new version.
 - **All nodes unreachable** is an I/O error, never "not found" and never an empty directory.

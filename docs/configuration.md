@@ -99,10 +99,16 @@ keys:
 # lie inside one, or contain one.
 cache:
   dir: /var/cache/splicefs
-  max_size: 200GiB      # evict least recently read files beyond this
-  max_age: 30d          # evict files not read for this long; 0 keeps them until space is needed
-  min_free: 10GiB       # always leave this much free on the cache disk
+  max_size: 200GiB      # evict least recently read files beyond this; "unlimited" never evicts for size
+  max_age: 30d          # evict files not read for this long; "unlimited" never evicts for age
+  min_free: 10GiB       # always leave this much free on the cache disk; blocks are not stored below it
+  min_file_size: 0      # files smaller than this are never cached
+  revalidate: 1h        # how long a cached file is trusted before it is checked against the nodes again
   listing_ttl: 30s      # how long a directory listing is reused
+
+# Permanent local copies of everything that is read:
+#   max_size: unlimited
+#   max_age: unlimited
 
 clusters:
   example:
