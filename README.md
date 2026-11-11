@@ -59,6 +59,31 @@ speed of all of them, and a slow or failing server is routed around while a file
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)
 
+## Requirements
+
+Both programs are single static binaries with every library built in. There is nothing to
+install for the server on any system, and nothing for the client in these cases:
+
+- **Linux, client run as root** (for example from a systemd unit): nothing. The FUSE driver
+  is part of every mainstream kernel.
+- **macOS** (planned): nothing. The client uses the NFS client built into macOS.
+
+One case needs a package:
+
+- **Linux, client run as an ordinary user.** Mounting without root goes through the
+  `fusermount3` helper from the FUSE package.
+
+  | System | Command |
+  |---|---|
+  | Debian, Ubuntu | `sudo apt install fuse3` |
+  | Fedora, RHEL, Rocky, Alma | `sudo dnf install fuse3` |
+  | openSUSE | `sudo zypper install fuse3` |
+  | Arch | `sudo pacman -S fuse3` |
+  | Alpine | `sudo apk add fuse3` |
+
+  To let other users read a mount (`allow_other`), also uncomment `user_allow_other` in
+  `/etc/fuse.conf`.
+
 ## Building
 
 Requires Go 1.26 or newer.

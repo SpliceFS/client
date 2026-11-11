@@ -194,7 +194,7 @@ Once that is older than the configured revalidation time, the next open asks the
 again and compares name, size, modification time and head digest. If anything differs, the
 entry is discarded and the file is read fresh. If no node can be reached, a file that is
 completely cached is still served from the cache, and the check is made at the next open
-after a node returns.
+after a node returns. Each mount can turn this off, in which case such reads fail.
 
 The cache directory must not be a mount target, lie inside one, or contain one. The client
 refuses to start otherwise.
@@ -225,9 +225,9 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
 - **Extended attributes and locks** are not supported; requests are refused in a way that
   stops the kernel from asking again.
 - **Names.** Names are passed through byte for byte. A name that is a file on one node and
-  a directory on another is listed as the kind most nodes report. On macOS, where programs
-  may ask for an accented name in a different Unicode form than the one stored, a lookup
-  that finds no exact match falls back to comparing the normalized forms.
+  a directory on another is listed as the kind most nodes report. Accented names behave as
+  a downloaded file would on the same system: Linux matches names byte for byte; macOS keeps
+  the name as stored and also finds it when a program asks in the other Unicode form.
 - **A file that changes while open** keeps serving the version that was opened, as long as
   one node still has it; a new open sees the new version.
 - **All nodes unreachable** is an I/O error, never "not found" and never an empty directory.

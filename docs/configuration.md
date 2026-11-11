@@ -127,6 +127,8 @@ mounts:
     path: /media/movies     # or any subdirectory
     target: /srv/movies
     allow_other: true       # let other users read the mount; needs user_allow_other in /etc/fuse.conf
+    offline: true           # when no node can be reached, keep serving files that are completely
+                            # cached (default true); false makes those reads fail instead
     # cache:                # a mount may override any cache setting, for example to use another disk
     #   dir: /data/cache/movies
     #   max_size: 1TiB
