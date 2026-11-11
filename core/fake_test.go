@@ -517,6 +517,40 @@ func (h *harness) cache(i int) *cache.Cache {
 // for path, so that the entry is complete.
 func (h *harness) fill(i int, path string, data []byte) {
 	h.t.Helper()
+	h.fillBlocks(i, path, data, (int64(len(data))+testBlockSize-1)/testBlockSize)
+}
+
+// fillBlocks stores the first count blocks of data in the cache entry for the version
+// that is cached for path.
+func (h *harness) fillBlocks(i int, path string, data []byte, count int64) {
+	h.t.Helper()
+	e := h.pin(i, path)
+	for b := range count {
+		block := data[b*testBlockSize : min(int64(len(data)), (b+1)*testBlockSize)]
+		if err := e.WriteBlock(b, block); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	if err := e.Release(); err != nil {
+		h.t.Fatal(err)
+	}
+}
+
+// stored returns the bytes of the complete cache entry for path.
+func (h *harness) stored(i int, path string) []byte {
+	h.t.Helper()
+	e := h.pin(i, path)
+	defer func() { _ = e.Release() }()
+	data := make([]byte, e.Version().Size)
+	if n, err := e.ReadAt(data, 0); n != len(data) {
+		h.t.Fatalf("read cache entry of %s: %d bytes, %v", path, n, err)
+	}
+	return data
+}
+
+// pin acquires the cache entry for the version that is cached for path.
+func (h *harness) pin(i int, path string) *cache.Entry {
+	h.t.Helper()
 	key := cache.Key{Cluster: testCluster, Path: path}
 	info, ok := h.cache(i).Peek(key)
 	if !ok {
@@ -526,15 +560,7 @@ func (h *harness) fill(i int, path string, data []byte) {
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	for b := int64(0); b*testBlockSize < int64(len(data)); b++ {
-		block := data[b*testBlockSize : min(int64(len(data)), (b+1)*testBlockSize)]
-		if err := e.WriteBlock(b, block); err != nil {
-			h.t.Fatal(err)
-		}
-	}
-	if err := e.Release(); err != nil {
-		h.t.Fatal(err)
-	}
+	return e
 }
 
 // readFile opens name and reads it to the end in small pieces.

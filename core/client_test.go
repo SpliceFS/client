@@ -132,8 +132,8 @@ func TestStatus(t *testing.T) {
 	if s.Clusters[1].Name != "idle" || len(s.Clusters[1].Nodes) != 0 {
 		t.Errorf("Status of the idle cluster = %+v", s.Clusters[1])
 	}
-	if len(s.Caches) != 1 || s.Caches[0].Entries != 1 || s.Caches[0].Bytes != 0 {
-		t.Errorf("Status caches = %+v, want one entry without blocks", s.Caches)
+	if len(s.Caches) != 1 || s.Caches[0].Entries != 1 || s.Caches[0].Bytes != testSize {
+		t.Errorf("Status caches = %+v, want the one file that was read, all %d bytes", s.Caches, testSize)
 	}
 	if !strings.Contains(h.logs.String(), "cannot dial node") {
 		t.Error("the node with a bad URL was not reported")

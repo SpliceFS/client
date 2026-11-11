@@ -149,8 +149,14 @@ func TestChangedFileGetsANewCacheVersion(t *testing.T) {
 		t.Error("the old cached data was served for the changed file")
 	}
 	info, _ := h.cache(0).Peek(cacheKey("media/file"))
-	if info.Complete || info.Version.ETag != (fakeFile{changed, changedTime}).etag() {
-		t.Errorf("cache holds %+v, want the new version and none of the old blocks", info)
+	if info.Version.ETag != (fakeFile{changed, changedTime}).etag() || !info.Complete {
+		t.Fatalf("cache holds %+v, want the new version, complete after the read", info)
+	}
+	if u := h.cache(0).Usage(); u.Entries != 1 || u.Bytes != testSize {
+		t.Errorf("cache usage %+v, want one entry of %d bytes: the old version must be gone", u, testSize)
+	}
+	if !bytes.Equal(h.stored(0, "media/file"), changed) {
+		t.Error("the cache entry holds blocks of the old version")
 	}
 }
 
@@ -189,11 +195,18 @@ func TestOfflineServesCompleteCacheEntries(t *testing.T) {
 		h.cfg.Mounts[0].Offline = offline
 		data := pattern(1, testSize)
 		h.fc.put("media/file", data, fileTime)
-		h.fc.put("media/partial", data, fileTime)
+		// Larger than the reader's switch to block mode, so an isolated read of it stores
+		// nothing; one block is then stored by hand.
+		large := pattern(3, 40*testBlockSize)
+		h.fc.put("media/partial", large, fileTime)
 		fsys := h.view(0)
 		readFile(t, fsys, "media/file")
-		readFile(t, fsys, "media/partial")
 		h.fill(0, "media/file", data)
+		h.readHead(fsys, "media/partial")
+		h.fillBlocks(0, "media/partial", large, 1)
+		if info, _ := h.cache(0).Peek(cacheKey("media/partial")); info.Complete || info.Bytes != testBlockSize {
+			t.Fatalf("partial entry is %+v, want exactly one block", info)
+		}
 
 		h.fc.setAllDown()
 		h.clock.Advance(2 * testRevalid)
@@ -216,6 +229,21 @@ func TestOfflineServesCompleteCacheEntries(t *testing.T) {
 		if err := f.Close(); err != nil {
 			t.Error(err)
 		}
+	}
+}
+
+// readHead opens name, reads a few bytes at its start and closes it.
+func (h *harness) readHead(fsys FS, name string) {
+	h.t.Helper()
+	f, err := fsys.Open(context.Background(), name)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if _, err := f.ReadAt(context.Background(), make([]byte, 100), 0); err != nil {
+		h.t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		h.t.Fatal(err)
 	}
 }
 
