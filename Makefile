@@ -1,7 +1,13 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X github.com/BlueRival/splicefs/internal/version.version=$(VERSION)
 
-.PHONY: all build check fmt fmt-check vet test cover lint clean
+# Image and flags for running the Linux checks from another system. The FUSE device
+# and the SYS_ADMIN capability are what a container needs to mount inside itself.
+LINUX_IMAGE ?= golang:1.27
+LINUX_RUN := docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
+	-v "$(CURDIR)":/src:ro -v splicefs-gomod:/go/pkg/mod $(LINUX_IMAGE)
+
+.PHONY: all build check check-linux fmt fmt-check vet test cover lint clean
 
 all: check build
 
@@ -27,6 +33,12 @@ test:
 # Tests with the race detector; fails below 100% statement coverage.
 cover:
 	scripts/coverage.sh coverage.out
+
+# The same checks on Linux, with real FUSE mounts, from any system that has Docker.
+# The source is copied inside the container so nothing is written to the working tree.
+check-linux:
+	$(LINUX_RUN) sh -c 'apt-get update -qq && apt-get install -y -qq fuse3 >/dev/null && \
+		cp -r /src /tmp/w && cd /tmp/w && make check'
 
 lint:
 	golangci-lint run

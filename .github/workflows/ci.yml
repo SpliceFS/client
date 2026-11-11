@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test (Go ${{ matrix.go }})
+  linux:
+    name: Linux (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -29,14 +29,38 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+      - name: Install FUSE
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fuse3
+      # The mount tests need to mount. As root that works through the mount system
+      # call with no further setup, and it is the configuration the coverage gate
+      # is measured in locally (make check-linux).
+      - name: Format, vet, tests with race detector, 100% coverage
+        run: sudo -E env "PATH=$PATH" make check
+      - name: Build
+        run: make build
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
       - name: Format, vet, tests with race detector, 100% coverage
         run: make check
       - name: Build
         run: make build
 
   lint:
-    name: Lint
+    name: Lint (${{ matrix.goos }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin]
+    env:
+      GOOS: ${{ matrix.goos }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
