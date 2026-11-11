@@ -25,7 +25,7 @@ import (
 func mountOrSkip(t *testing.T, env environment, fsys *fakeFS) (*mounted, string) {
 	t.Helper()
 	dir := t.TempDir()
-	m, err := mountWith(fsys, mount.Options{Target: dir, Source: "splicefs:example/media"}, env)
+	m, err := mountWith(fsys, mount.Options{Target: dir, Source: "splicefs:accept/"}, env)
 	if err != nil {
 		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "not permitted") || strings.Contains(msg, "permission denied") {
@@ -209,8 +209,8 @@ func TestRealMountRefusesToUnmountWhileInUse(t *testing.T) {
 	}
 	closeAfter(t, open)
 
-	if err := m.Unmount(t.Context(), false); err == nil {
-		t.Fatal("a mount with an open file was unmounted without force")
+	if err := m.Unmount(t.Context(), false); !errors.Is(err, syscall.EBUSY) {
+		t.Fatalf("Unmount of a mount with an open file = %v, want EBUSY", err)
 	}
 	if err := m.Unmount(t.Context(), true); err != nil {
 		t.Fatal(err)
@@ -222,4 +222,14 @@ func TestRealMountRefusesToUnmountWhileInUse(t *testing.T) {
 func fastTicker(time.Duration) (<-chan time.Time, func()) {
 	t := time.NewTicker(5 * time.Millisecond)
 	return t.C, t.Stop
+}
+
+// TestRealMountIsFoundInTheMountTable is the regression test for a source with a
+// trailing slash: the kernel lists it without, and the mount was then never found.
+func TestRealMountIsFoundInTheMountTable(t *testing.T) {
+	env := systemEnvironment()
+	m, _ := mountOrSkip(t, env, realTree())
+	if found, err := env.isMounted(m.target, m.from); err != nil || !found {
+		t.Errorf("isMounted(%q, %q) = %v, %v", m.target, m.from, found, err)
+	}
 }

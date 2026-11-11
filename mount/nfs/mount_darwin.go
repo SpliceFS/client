@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -75,8 +76,12 @@ func mountArgs(port int, from, target string) []string {
 // mountFrom is the source mount_nfs is given, and the one the mount table shows. The
 // kernel needs a host and a path; the host is this machine, and the path carries the
 // name the caller wants to see. go-nfs accepts any path.
+//
+// The path is cleaned because the kernel stores it cleaned: a source with a trailing
+// slash is listed without it, and comparing the uncleaned string with the mount table
+// would never find the mount.
 func mountFrom(source string) string {
-	return loopbackHost + ":/" + strings.TrimLeft(source, "/")
+	return loopbackHost + ":" + path.Clean("/"+source)
 }
 
 // commandRunner runs a program and returns its combined output. It is injected so
@@ -178,6 +183,16 @@ func commandError(tool string, err error, out []byte) error {
 	return fmt.Errorf("%s: %w", tool, err)
 }
 
+// unmountError reports a failed umount. When umount says the mount is in use, the
+// error also matches syscall.EBUSY, so callers can test for it with errors.Is.
+func unmountError(err error, out []byte) error {
+	failure := commandError("umount", err, out)
+	if strings.Contains(strings.ToLower(string(out)), strings.ToLower(syscall.EBUSY.Error())) {
+		return fmt.Errorf("%w: %w", syscall.EBUSY, failure)
+	}
+	return failure
+}
+
 // mounted is a live mount. One goroutine, supervise, owns its end.
 type mounted struct {
 	env    environment
@@ -233,7 +248,7 @@ func (m *mounted) Unmount(ctx context.Context, force bool) error {
 			return nil
 		default:
 		}
-		return commandError("umount", err, out)
+		return unmountError(err, out)
 	}
 	m.unmountOnce.Do(func() { close(m.unmounted) })
 	select {

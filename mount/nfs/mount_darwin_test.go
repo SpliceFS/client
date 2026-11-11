@@ -42,6 +42,9 @@ func TestMountFrom(t *testing.T) {
 	tests := map[string]string{
 		"splicefs:example/media": "127.0.0.1:/splicefs:example/media",
 		"/already/rooted":        "127.0.0.1:/already/rooted",
+		"splicefs:accept/":       "127.0.0.1:/splicefs:accept",
+		"a//b/":                  "127.0.0.1:/a/b",
+		"/":                      "127.0.0.1:/",
 		"":                       "127.0.0.1:/",
 	}
 	for source, want := range tests {
@@ -313,8 +316,8 @@ func TestUnmountOfAMountInUseIsRefusedAndCanBeRepeated(t *testing.T) {
 	m, _ := startMount(t, sys, mount.Options{})
 
 	err := m.Unmount(t.Context(), false)
-	if err == nil || !strings.Contains(err.Error(), "Resource busy") {
-		t.Fatalf("Unmount of a busy mount = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Resource busy") || !errors.Is(err, syscall.EBUSY) {
+		t.Fatalf("Unmount of a busy mount = %v, want an error that is EBUSY", err)
 	}
 	select {
 	case <-m.Done():
@@ -332,6 +335,22 @@ func TestUnmountOfAMountInUseIsRefusedAndCanBeRepeated(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-m.Done()
+}
+
+func TestUnmountFailureThatIsNotBusyIsNotEBUSY(t *testing.T) {
+	t.Parallel()
+	sys := newFakeSystem()
+	sys.handle = func(c command) ([]byte, error) {
+		if c.name != "/sbin/umount" {
+			return nil, nil
+		}
+		return []byte("umount: Operation not permitted\n"), errors.New("exit status 1")
+	}
+	m, _ := startMount(t, sys, mount.Options{})
+	err := m.Unmount(t.Context(), false)
+	if err == nil || errors.Is(err, syscall.EBUSY) || !strings.Contains(err.Error(), "Operation not permitted") {
+		t.Errorf("Unmount = %v, want the failure without EBUSY", err)
+	}
 }
 
 func TestUnmountNoticesThatTheMountWentAwayMeanwhile(t *testing.T) {
