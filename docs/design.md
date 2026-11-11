@@ -132,12 +132,12 @@ The client is one program built from two layers:
 
 | Platform | Mount layer | Extra software on the reader |
 |---|---|---|
-| Linux | FUSE | the `fuse3` package |
-| macOS (planned after Linux) | a local NFS server inside the client, mounted with the built-in NFS client | none |
+| Linux | FUSE | none as root; the `fuse3` package for an ordinary user |
+| macOS | a local NFS server inside the client, mounted with the built-in NFS client | none |
 
 FUSE on macOS needs third-party software (macFUSE or FUSE-T) whose kernel interface is in
-transition, so the built-in NFS client is the dependable route there. The NFS mount layer
-also runs on Linux, which lets the same mount tests run on both systems.
+transition, so the built-in NFS client is the dependable route there. The NFS server only
+listens on the loopback address. See Known limitations for what that route costs.
 
 ### Discovery
 
@@ -163,7 +163,11 @@ for a short, configurable time.
   over separate HTTP/1.1 connections.
 - **Isolated reads**, such as a media scanner reading a header, fetch only the bytes asked
   for, rounded to a small granularity, so scanning a large library does not download a block
-  per file.
+  per file. These reads are not cached.
+- **Switching.** A read starts as isolated. Once reading has advanced sequentially by 1 MiB
+  it switches to blocks, and the blocks that were first covered by small reads are fetched
+  again as whole blocks behind the reader, so a file read from start to end is cached
+  completely. A file of at most 1 MiB is always fetched whole.
 - **Node choice.** The client measures each node's throughput and gives each node work in
   proportion to it.
 - **Late blocks.** The client tracks how long blocks normally take per node. When the block
@@ -181,7 +185,8 @@ new cache entry, and two mounts of the same cluster share cached blocks. It surv
 
 Eviction removes the least recently read files first and is driven by three limits: a
 maximum total size, a maximum age since a file was last read, and a minimum amount of free
-space to leave on the cache disk. A file that is open is never evicted. With the size and
+space to leave on the cache disk. A file that is open is never evicted. A pass runs when the
+client starts, whenever a write goes over a limit, and otherwise every ten minutes. With the size and
 age limits set to `unlimited`, nothing is ever evicted and every file that is read becomes
 a permanent local copy. When the cache disk is full, reads still succeed; the blocks are
 passed through without being stored.
@@ -213,7 +218,7 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
   times fails with `EROFS`. Reading a file does not update its access time, on the mount or
   on the nodes.
 - **Stable identity.** A path keeps the same inode number for the life of the mount and
-  across restarts. Files report one link, mode `0444`; directories mode `0555`; owner and
+  across restarts, as long as it stays the same kind of thing (file or directory). Files report one link, mode `0444`; directories mode `0555`; owner and
   group are the user running the client. `st_blocks` reflects the file size.
 - **Times.** Modification time comes from the nodes. Access and change time equal it.
 - **Reads arrive out of order.** The kernel issues read-ahead requests concurrently and not
@@ -222,8 +227,11 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
 - **Names that do not exist are remembered** for a short time, and the names desktop
   systems probe constantly (`.DS_Store`, `._*`, `.Spotlight-V100`, `.hidden`, `.Trash*`) are
   refused without asking any node.
-- **Extended attributes and locks** are not supported; requests are refused in a way that
-  stops the kernel from asking again.
+- **Extended attributes** are not supported; requests are refused in a way that stops the
+  kernel from asking again.
+- **Locks** are local. They always succeed and are not shared with other readers, which is
+  enough because the files cannot change; refusing them would break programs that lock
+  before reading.
 - **Names.** Names are passed through byte for byte. A name that is a file on one node and
   a directory on another is listed as the kind most nodes report. Accented names behave as
   a downloaded file would on the same system: Linux matches names byte for byte; macOS keeps
@@ -243,8 +251,29 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
 - **Standalone.** The server terminates TLS itself with a certificate and key from its
   configuration.
 
+## Known limitations
+
+- **Offline use needs a running client.** Directory listings are kept in memory only. A
+  client that is restarted while no node can be reached has nothing to list, even though
+  file contents are still in its cache.
+- **Tokens cannot be revoked.** A removed or disabled user keeps access until the token
+  already issued expires (30 minutes by default).
+- **Linux: read-ahead cannot be interrupted.** The kernel does not forward the interruption
+  of a program to requests it issued as read-ahead, so a killed reader's last block requests
+  run to completion.
+- **macOS: an outage can look like a missing file.** The NFS server library answers a failed
+  name lookup as "not found" whatever the cause. A name looked up for the first time while
+  no node can be reached is reported missing, and macOS may remember that for up to 30
+  seconds. Names that were already known keep working and report I/O errors correctly.
+- **macOS: a read that waits longer than about 9 seconds fails.** The mount is "soft" so
+  that a crashed client gives errors and not a frozen desktop, and macOS does not let that
+  timeout be raised. A block that cannot be fetched from any node in that time fails the read.
+- **macOS: requests are served one at a time per connection,** which caps throughput below
+  what the Linux mount reaches.
+
 ## Open questions
 
 - Per-block checksums (see Consistency).
 - Revoking one token before it expires.
+- Keeping directory listings on disk for offline starts.
 - A mount helper for `/etc/fstab`.

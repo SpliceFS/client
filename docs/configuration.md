@@ -139,13 +139,24 @@ Mounts that share a cache directory share cached blocks.
 ### Commands
 
 ```
-splicefs mount [TARGET...]    mount every entry in the configuration, or only the named targets;
-                              stays in the foreground and unmounts on exit
-splicefs umount [TARGET...]   ask the running client to unmount
-splicefs status               mounts, nodes and their measured speed, cache use
+splicefs [--config DIR] [--log-level LEVEL] mount [TARGET...]
+        mount every entry in the configuration, or only the named targets; stays in the
+        foreground; SIGINT or SIGTERM unmounts everything and exits
+splicefs [--config DIR] umount [--force] [TARGET...]
+        ask the running client to unmount; a mount in use is refused unless --force is given;
+        the client exits when its last mount is gone
+splicefs [--config DIR] status [--json]
+        mounts, nodes with their measured speed, cache use
+splicefs --version
 ```
 
+`mount` fails at once if a cluster rejects the user or password. If a cluster cannot be
+reached, it mounts anyway and the mount starts working when the cluster returns, so a
+machine can boot before its network is up.
+
 ### Starting at boot
+
+Ready-made units are in [`packaging/systemd`](../packaging/systemd). The client unit:
 
 ```ini
 # /etc/systemd/system/splicefs.service
@@ -155,12 +166,15 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Type=notify
 ExecStart=/usr/local/bin/splicefs mount
 Restart=on-failure
+CacheDirectory=splicefs
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Stopping the unit unmounts everything. Running `splicefs mount` by hand does the same job
-without the unit.
+The client tells systemd when every mount is up, so units ordered after it can rely on the
+mounts. Stopping the unit unmounts everything. Running `splicefs mount` by hand does the
+same job without the unit.

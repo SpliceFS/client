@@ -1,0 +1,20 @@
+[Unit]
+Description=SpliceFS mounts
+Documentation=https://github.com/BlueRival/splicefs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# The client reports READY once every mount is up, so units ordered after this one
+# can rely on the mounts being there.
+Type=notify
+ExecStart=/usr/local/bin/splicefs mount
+Restart=on-failure
+RestartSec=5
+# Creates /var/cache/splicefs, the default cache directory, owned by the service user.
+CacheDirectory=splicefs
+# Running as root needs no FUSE helper package. To run as another user, set User=
+# here and install the fuse3 package.
+
+[Install]
+WantedBy=multi-user.target
