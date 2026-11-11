@@ -1,0 +1,38 @@
+name: SonarQube
+
+# Code quality and security rating on SonarQube Cloud. The job does nothing until the
+# repository secret SONAR_TOKEN exists; see CONTRIBUTING.md for the one-time setup.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - name: Check that SonarQube is configured
+        id: gate
+        run: |
+          if [ -n "$SONAR_TOKEN" ]; then echo "enabled=true" >> "$GITHUB_OUTPUT"; else echo "SONAR_TOKEN is not set; skipping."; fi
+      - uses: actions/checkout@v7
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          fetch-depth: 0   # the scanner needs history to attribute new code
+      - uses: actions/setup-go@v7
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          go-version: stable
+      - name: Tests with coverage
+        if: steps.gate.outputs.enabled == 'true'
+        run: scripts/coverage.sh coverage.out
+      - uses: SonarSource/sonarqube-scan-action@v8
+        if: steps.gate.outputs.enabled == 'true'

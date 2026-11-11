@@ -38,7 +38,17 @@ make fmt          # rewrite files with gofmt
 - Every blocking call takes a `context.Context`. Nothing blocks forever.
 - No global mutable state. Dependencies (clock, filesystem, HTTP client) are passed in, so
   that every package can be tested without the network, the real clock or root.
-- Exported identifiers have doc comments. Packages have a package comment.
+- Exported identifiers have doc comments that tell a caller what the thing is for and what
+  it guarantees. Packages have a package comment.
+- **Comments inside code explain why, not what.** The code already says what it does. A
+  comment earns its place by recording a reason the code cannot show: the constraint being
+  respected, the attack being prevented, the alternative that was rejected, the surprising
+  behavior of something it calls. Delete comments that restate the line below them.
+- **SOLID and clean code.** Each package and type has one reason to change. Packages depend
+  on small interfaces they define themselves, not on concrete types from other packages,
+  so behavior is extended by adding an implementation and not by editing callers. Functions
+  are short, do one thing, and are named for it. No flag arguments, no duplicated logic, no
+  dead code, no commented-out code.
 - Dependencies are added sparingly. A new module in `go.mod` needs a sentence of
   justification in the pull request.
 - The server and the client live in `server/` and `client/`. Code used by both lives in
@@ -63,6 +73,19 @@ make fmt          # rewrite files with gofmt
 - Update the documents in `docs/` in the same pull request as the behavior they describe.
 - A pull request needs passing CI and one maintainer approval. Pull requests are squashed
   on merge.
+
+## What CI checks
+
+| Workflow | What it does |
+|---|---|
+| CI | format, vet, tests with the race detector on the two supported Go releases, the 100% coverage gate, a build, and `golangci-lint` (which includes the `gosec` security rules) |
+| Security | `govulncheck` for known vulnerabilities in dependencies and the standard library, CodeQL static analysis, and a dependency review on pull requests. Also runs weekly. |
+| SonarQube | quality and security rating on SonarQube Cloud. Skipped until a maintainer has set it up. |
+
+One-time SonarQube setup, by a maintainer: import the repository on
+[sonarcloud.io](https://sonarcloud.io), turn off its "Automatic Analysis", check that the
+organization and project keys match `sonar-project.properties`, and add a token as the
+repository secret `SONAR_TOKEN`.
 
 ## Versioning and releases
 
