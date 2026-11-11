@@ -1,7 +1,140 @@
+# Nothing matched here belongs in the repository: build output, local state,
+# secrets, and the files that tools, editors and operating systems leave behind.
+# A rule never affects a file that is already tracked. To commit a file that a
+# rule catches on purpose (a test fixture, for example), add a "!" exception
+# next to the rule instead of using "git add -f", so the choice stays visible.
+
+# --- Hidden entries at the top level -------------------------------------------
+# Tools keep private state in hidden files and folders at the top of a working
+# tree (editors, scanners, environment managers), and new ones keep appearing.
+# Listing them one by one always lags behind, so every hidden top-level entry
+# is ignored unless it is named below as part of the project.
+/.*
+!/.editorconfig
+!/.gitattributes
+!/.github/
+!/.gitignore
+!/.golangci.yml
+
+# --- Secrets -------------------------------------------------------------------
+# A committed secret stays in the history forever, so these are ignored at any
+# depth. Tests create the keys and certificates they need while they run.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.gpg
+*.kdbx
+*.secret
+*.token
+*.password
+*.passwd
+.htpasswd
+.netrc
+.pgpass
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+secring.*
+private-keys-v1.d/
+
+# --- Local working area --------------------------------------------------------
+# Hand-made configuration for trying the programs holds password hashes and
+# signing keys. Keep it, and anything else that must stay on this machine, here.
+/local/
+/scratch/
+tmp/
+temp/
+
+# --- Build and release output --------------------------------------------------
 /bin/
-/coverage.out
-/coverage.html
+/build/
+/dist/
+/out/
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.a
+*.o
+__debug_bin*
+
+# Packages and archives are produced from the source, never part of it.
+*.deb
+*.rpm
+*.apk
+*.pkg
+*.dmg
+*.tar
+*.tar.*
+*.tgz
+*.zip
+
+# --- Test, coverage and profiling output ---------------------------------------
 *.test
-.DS_Store
+*.out
+*.coverprofile
+*.prof
+*.pprof
+*.trace
+coverage.html
+coverage.txt
+coverage.xml
+
+# --- Go workspace files --------------------------------------------------------
+# A workspace points at other checkouts on one machine and breaks other builds.
+go.work
+go.work.sum
+
+# --- Logs and leftovers --------------------------------------------------------
+*.log
+*.pid
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+
+# --- Editors -------------------------------------------------------------------
 .idea/
+*.iml
+*.ipr
+*.iws
 .vscode/
+*.code-workspace
+.fleet/
+.zed/
+.history/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*.swn
+*~
+\#*\#
+.\#*
+
+# --- Operating systems ---------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.directory
+.Trash-*
+.nfs*
+.fuse_hidden*
