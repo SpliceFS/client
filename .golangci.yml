@@ -15,6 +15,18 @@ linters:
     - revive
     - unconvert
     - unparam
+  settings:
+    gosec:
+      excludes:
+        # Reading files whose paths come from the operator's configuration is the
+        # purpose of these programs.
+        - G304
+  exclusions:
+    rules:
+      # Tests create scratch files and directories with ordinary permissions.
+      - path: _test\.go
+        linters:
+          - gosec
 
 formatters:
   enable:
