@@ -44,7 +44,8 @@ and login need `Authorization: Bearer <token>`.
 | `GET /v1/nodes` | `{"cluster":"...","nodes":[{"name":"...","url":"..."}]}` from the node list file. |
 | `GET /v1/tree/` | The shares this user may read, as directory entries. |
 | `GET /v1/tree/<share>/<dir>/` | `{"entries":[{"name":"...","dir":false,"size":123,"mtime":"<RFC 3339>","etag":"..."}]}`, sorted by name. `404` if the directory does not exist on this node. |
-| `GET`, `HEAD /v1/file/<share>/<path>` | The file. Supports `Range` (one range), `If-Range` and `If-Match`. Sends `ETag` and `Accept-Ranges: bytes`. |
+| `GET`, `HEAD /v1/file/<share>/<path>` | The file. Supports `Range` (one range), `If-Range` and `If-Match`. Sends `ETag` and `Accept-Ranges: bytes`. `HEAD` also sends `X-SpliceFS-Head-Digest` (see File identity). |
+| `GET /v1/space/<share>` | `{"total":<bytes>,"free":<bytes>}` for the filesystem holding the share. |
 
 Errors are JSON, `{"error":"..."}`, with the usual status codes: `400` malformed request,
 `401` missing or invalid token, `403` share not allowed for this user, `404` not found,
@@ -61,12 +62,18 @@ Errors are JSON, `{"error":"..."}`, with the usual status codes: `400` malformed
   protects against replication tools that write files in place. The default is zero, which
   is right for tools that write to a temporary name and rename.
 
-### Entity tags
+### File identity
 
-A file's tag is derived from its size and its modification time, truncated to the
+A file's tag (`ETag`) is derived from its size and its modification time, truncated to the
 configured precision (default one second). Two nodes therefore produce the same tag for the
-same file whenever the replication tool preserves modification times. The tag is the only
-thing the client uses to decide that two copies are the same file.
+same file whenever the replication tool preserves modification times.
+
+A `HEAD` request also returns `X-SpliceFS-Head-Digest`: the SHA-256 of the first 64 KiB of
+the file. It costs one small read, which the server remembers per file until the file's size
+or modification time changes. It catches two different files that happen to share a size
+and a modification time.
+
+Two copies are treated as the same file when their tag and their head digest are equal.
 
 ### Compression
 
@@ -85,6 +92,8 @@ receive exact byte ranges.
   adding a new first key, waiting one token lifetime, and removing the old one.
 - Tokens are short-lived (default 30 minutes). Removing or disabling a user stops new
   tokens at once; tokens already issued run out on their own.
+- Expiry is checked with 30 seconds of leeway in both directions, so node clocks only need
+  to agree roughly. Run NTP or an equivalent on every node.
 - Login attempts are rate limited per client address. Behind a reverse proxy the address
   comes from `X-Forwarded-For`, and only when the request arrives from a configured trusted
   proxy.
@@ -97,18 +106,38 @@ every node is the operator's choice.
 SpliceFS assumes: *a file with the same path, size and modification time has the same
 content on every node.* It enforces what it can:
 
-1. When a file is opened, the client groups the nodes by the tag they report and reads only
-   from the largest group. Ties go to the newest modification time.
+1. When a file is opened, the client sends `HEAD` to every node, groups the nodes by tag and
+   head digest, and reads only from the largest group. Ties go to the newest modification time.
 2. Every block request carries `If-Match` with that tag. A node whose copy has changed
    answers `412`, and the client drops it for that file.
 3. A file that disappears from every node during a read fails the read with an I/O error.
 
-Content hashes are not part of version 1. *Open:* an optional per-block checksum for
-deployments that cannot trust modification times.
+Beyond the head digest, content hashes are not part of version 1. *Open:* an optional
+per-block checksum for deployments that cannot trust modification times.
 
 ## Client
 
 The client (`splicefs`) is one process that serves every configured mount.
+
+### Structure and platforms
+
+The client is one program built from two layers:
+
+- **Core** (`client/core`): clusters, logins, the merged tree, block scheduling and the
+  cache. It exposes a small read-only filesystem interface (look up, list, stat, open, read
+  at an offset, filesystem statistics) and knows nothing about mounting. It is a library
+  that other programs can import.
+- **Mount layer** (`client/mount/...`): one implementation per way of mounting, selected at
+  build time per operating system. Each one translates kernel requests into calls on the core.
+
+| Platform | Mount layer | Extra software on the reader |
+|---|---|---|
+| Linux | FUSE | the `fuse3` package |
+| macOS (planned after Linux) | a local NFS server inside the client, mounted with the built-in NFS client | none |
+
+FUSE on macOS needs third-party software (macFUSE or FUSE-T) whose kernel interface is in
+transition, so the built-in NFS client is the dependable route there. The NFS mount layer
+also runs on Linux, which lets the same mount tests run on both systems.
 
 ### Discovery
 
@@ -148,13 +177,48 @@ for a short, configurable time.
 
 Blocks are stored on local disk in one sparse file per remote file, with a map of the
 blocks present. The cache is keyed by cluster, path and tag, so a file that changes gets a
-new cache entry. The cache has a size limit, evicts least recently used files first, and
-survives a restart.
+new cache entry, and two mounts of the same cluster share cached blocks. It survives a restart.
 
-### Mount
+Eviction removes the least recently read files first and is driven by three limits: a
+maximum total size, a maximum age since a file was last read, and a minimum amount of free
+space to leave on the cache disk. A file that is open is never evicted.
 
-The mount is read-only FUSE on Linux. File contents never change under a given tag, so the
-kernel is allowed to keep file data and directory entries cached.
+The cache directory must not be a mount target, lie inside one, or contain one. The client
+refuses to start otherwise.
+
+### Free space
+
+A mount reports, per share, the smallest total and the smallest free space of any node
+that answers. Every node is expected to end up holding every file, so the fullest node is
+the limit. A mount of the cluster root adds up its shares.
+
+### Filesystem behavior
+
+The mount has to behave like a local disk for ordinary tools. These are requirements:
+
+- **Read-only.** Any attempt to write, create, rename or remove fails with `EROFS`.
+- **Stable identity.** A path keeps the same inode number for the life of the mount and
+  across restarts. Files report one link, mode `0444`; directories mode `0555`; owner and
+  group are the user running the client. `st_blocks` reflects the file size.
+- **Times.** Modification time comes from the nodes. Access and change time equal it.
+- **Reads arrive out of order.** The kernel issues read-ahead requests concurrently and not
+  in sequence; the detection of sequential reading tolerates that.
+- **Interrupted reads** cancel their block requests.
+- **Names that do not exist are remembered** for a short time, and the names desktop
+  systems probe constantly (`.DS_Store`, `._*`, `.Spotlight-V100`, `.hidden`, `.Trash*`) are
+  refused without asking any node.
+- **Extended attributes and locks** are not supported; requests are refused in a way that
+  stops the kernel from asking again.
+- **Names.** Names are passed through byte for byte. A name that is a file on one node and
+  a directory on another is listed as the kind most nodes report. *Open:* Unicode
+  normalization on macOS.
+- **A file that changes while open** keeps serving the version that was opened, as long as
+  one node still has it; a new open sees the new version.
+- **All nodes unreachable** is an I/O error, never "not found" and never an empty directory.
+- **Start and stop.** A stale mount left by a crash is detected and cleared at start. The
+  client unmounts on `SIGINT` and `SIGTERM`, and tells systemd when all mounts are ready.
+- **Kernel caching.** File contents never change under a given tag, so the kernel may keep
+  file data and directory entries cached.
 
 ## Deployment shapes
 

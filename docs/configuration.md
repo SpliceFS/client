@@ -9,7 +9,7 @@ Both programs read a configuration directory:
 
 The main file in either directory is `config.yaml`. Relative paths inside a configuration
 file are relative to the configuration directory. Sizes take the suffixes `KiB`, `MiB`,
-`GiB`, `TiB`; durations take `s`, `m`, `h`.
+`GiB`, `TiB`; durations take `s`, `m`, `h`, `d`.
 
 This is the planned format. It is not implemented yet and may change before the first release.
 
@@ -48,7 +48,7 @@ cluster:
 auth:
   users_dir: /srv/shared/users        # one <user>.yaml per user
   keys_file: /srv/shared/keys.yaml    # token signing keys, mode 600
-  token_ttl: 30m
+  token_ttl: 30m                      # checked with 30s of leeway; keep node clocks in step with NTP
   login_rate: 10/m                    # attempts per client address
 
 mtime_precision: 1s   # modification times are compared at this precision
@@ -95,9 +95,14 @@ keys:
 ```yaml
 # /etc/splicefs/client/config.yaml
 
+# Where and how file contents are cached. The directory must not be a mount target,
+# lie inside one, or contain one.
 cache:
   dir: /var/cache/splicefs
-  max_size: 200GiB
+  max_size: 200GiB      # evict least recently read files beyond this
+  max_age: 30d          # evict files not read for this long; 0 keeps them until space is needed
+  min_free: 10GiB       # always leave this much free on the cache disk
+  listing_ttl: 30s      # how long a directory listing is reused
 
 clusters:
   example:
@@ -116,7 +121,12 @@ mounts:
     path: /media/movies     # or any subdirectory
     target: /srv/movies
     allow_other: true       # let other users read the mount; needs user_allow_other in /etc/fuse.conf
+    # cache:                # a mount may override any cache setting, for example to use another disk
+    #   dir: /data/cache/movies
+    #   max_size: 1TiB
 ```
+
+Mounts that share a cache directory share cached blocks.
 
 ### Commands
 
