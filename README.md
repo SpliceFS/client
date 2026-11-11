@@ -10,8 +10,8 @@ blocks back together in order, caching them on local disk.
 It is built for throughput: a reader far away from every server gets the combined upload
 speed of all of them, and a slow or failing server is routed around while a file is being read.
 
-> **Status: pre-alpha.** The design is written down and the repository is set up. The server
-> and the client are not implemented yet. Nothing here is usable today.
+> **Status: pre-alpha.** The server is implemented and tested. The client is being built;
+> until it can mount, there is nothing to use except the HTTP API itself.
 
 ## How it works
 
