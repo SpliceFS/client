@@ -45,8 +45,9 @@ type Attr struct {
 	Size int64
 	// MTime is the modification time reported by the nodes.
 	MTime time.Time
-	// Inode identifies the path. It is stable across restarts, because programs
-	// such as backup tools and media libraries remember files by inode number.
+	// Inode identifies the path. It is stable across restarts for a path as long
+	// as it stays the same kind of thing, file or directory, because programs such
+	// as backup tools and media libraries remember files by inode number.
 	Inode uint64
 }
 

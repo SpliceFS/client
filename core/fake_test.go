@@ -481,7 +481,6 @@ func (h *harness) options() Options {
 		Logger:       slog.New(slog.NewTextHandler(h.logs, nil)),
 		HTTPClient:   &http.Client{},
 		Now:          h.clock.Now,
-		Clock:        h.clock,
 		ReadPassword: func(string) (string, error) { return testPassword, nil },
 	}
 }
@@ -489,7 +488,7 @@ func (h *harness) options() Options {
 // start builds the Client, which is closed when the test ends.
 func (h *harness) start() {
 	h.t.Helper()
-	c, err := New(h.cfg, h.options())
+	c, err := newClient(h.cfg, h.options(), h.clock)
 	if err != nil {
 		h.t.Fatalf("New: %v", err)
 	}
@@ -511,7 +510,7 @@ func (h *harness) view(i int) FS {
 }
 
 func (h *harness) cache(i int) *cache.Cache {
-	return h.client.caches[h.cfg.Mounts[i].Cache.Dir]
+	return h.client.caches[h.cfg.Mounts[i].Cache.Dir].Cache
 }
 
 // fill stores every block of data in the cache entry for the version that is cached

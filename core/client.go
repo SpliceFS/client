@@ -26,10 +26,9 @@ type Options struct {
 	// HTTPClient carries every request to every node. Nil builds one client, shared by
 	// all clusters, with a transport tuned for block reads.
 	HTTPClient *http.Client
-	// Now is the clock of logins, listings, the cache and free space. Nil is time.Now.
+	// Now is the clock of logins, listings, the cache, eviction and free space. Nil is
+	// time.Now.
 	Now func() time.Time
-	// Clock is the time source of block reads. Nil is fetch.SystemClock.
-	Clock fetch.Clock
 	// ReadPassword returns the password stored at path. Nil reads the file and strips
 	// one trailing newline.
 	ReadPassword func(path string) (string, error)
@@ -45,9 +44,6 @@ func (o Options) withDefaults(cfg *config.Config) Options {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
-	if o.Clock == nil {
-		o.Clock = fetch.SystemClock{}
-	}
 	if o.ReadPassword == nil {
 		o.ReadPassword = readPasswordFile
 	}
@@ -62,16 +58,23 @@ type readerFunc func(fetch.Options, []fetch.Source, fetch.Store, fetch.Meter) (*
 // It is safe for concurrent use.
 type Client struct {
 	opts      Options
+	clock     fetch.Clock // the time source of block reads
 	clusters  map[string]*cluster
-	caches    map[string]*cache.Cache
+	caches    map[string]*cacheDir
 	newReader readerFunc
 }
 
 // New prepares a Client for cfg. It reads each cluster's password file once and opens
-// one cache per distinct cache directory of the mounts, but does not use the network:
-// clusters are contacted on first use. Two mounts that share a cache directory must
-// have the same cache limits.
+// one cache per distinct cache directory of the mounts, applying the cache limits to
+// what an earlier run left there, but does not use the network: clusters are contacted
+// on first use, or by Connect. Two mounts that share a cache directory must have the
+// same cache limits.
 func New(cfg *config.Config, opts Options) (*Client, error) {
+	return newClient(cfg, opts, fetch.SystemClock{})
+}
+
+// newClient is New with the time source of block reads, which tests replace.
+func newClient(cfg *config.Config, opts Options, clock fetch.Clock) (*Client, error) {
 	opts = opts.withDefaults(cfg)
 	clusters, err := newClusters(cfg, opts)
 	if err != nil {
@@ -81,11 +84,15 @@ func New(cfg *config.Config, opts Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{opts: opts, clusters: clusters, caches: caches, newReader: fetch.New}, nil
+	for _, d := range caches {
+		d.maybeEvict()
+	}
+	return &Client{opts: opts, clock: clock, clusters: clusters, caches: caches, newReader: fetch.New}, nil
 }
 
 // View returns the filesystem of one configured mount: the mount's directory of its
-// cluster, read with the mount's cache settings.
+// cluster, read with the mount's cache settings. All mounts of a cluster share one
+// merged tree, so its listings are reused for the shortest listing_ttl among them.
 func (c *Client) View(m config.Mount) (FS, error) {
 	cl, ok := c.clusters[m.Cluster]
 	if !ok {
@@ -193,11 +200,11 @@ func checkSharedCaches(mounts []config.Mount) error {
 	return nil
 }
 
-func openCaches(mounts []config.Mount, opts Options) (map[string]*cache.Cache, error) {
+func openCaches(mounts []config.Mount, opts Options) (map[string]*cacheDir, error) {
 	if err := checkSharedCaches(mounts); err != nil {
 		return nil, err
 	}
-	caches := make(map[string]*cache.Cache)
+	caches := make(map[string]*cacheDir)
 	for _, m := range mounts {
 		if _, ok := caches[m.Cache.Dir]; ok {
 			continue
@@ -217,7 +224,7 @@ func openCaches(mounts []config.Mount, opts Options) (map[string]*cache.Cache, e
 			}
 			return nil, err
 		}
-		caches[m.Cache.Dir] = c
+		caches[m.Cache.Dir] = &cacheDir{Cache: c, dir: m.Cache.Dir, now: opts.Now, log: opts.Logger}
 	}
 	return caches, nil
 }

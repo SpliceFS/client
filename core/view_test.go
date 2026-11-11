@@ -128,7 +128,7 @@ func TestInodes(t *testing.T) {
 		t.Errorf("media/a has inode %d in the root view and %d in the media view", fromRoot, fromMedia)
 	}
 	hash := fnv.New64a()
-	_, _ = hash.Write([]byte(testCluster + "\x00media/a"))
+	_, _ = hash.Write([]byte(testCluster + "\x00media/a\x00f"))
 	if want := hash.Sum64(); fromRoot != want {
 		t.Errorf("inode of media/a = %d, want FNV-1a %d", fromRoot, want)
 	}
@@ -143,6 +143,33 @@ func TestInodes(t *testing.T) {
 	again.fc.put("media/a", pattern(1, 10), fileTime)
 	if got := stat(again.view(0), "media/a"); got != fromRoot {
 		t.Errorf("after a restart media/a has inode %d, want %d", got, fromRoot)
+	}
+}
+
+func TestInodeDependsOnTheKind(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, "a")
+	node := h.fc.nodes[0]
+	node.put("media/x", pattern(1, 10), fileTime)
+	fsys := h.view(0)
+	ctx := context.Background()
+	asFile, err := fsys.Stat(ctx, "media/x")
+	if err != nil || asFile.Dir {
+		t.Fatalf("Stat(media/x) = %+v, %v; want a file", asFile, err)
+	}
+
+	node.remove("media/x")
+	node.put("media/x/y", pattern(1, 10), fileTime)
+	h.clock.Advance(testCacheTTL)
+	asDir, err := fsys.Stat(ctx, "media/x")
+	if err != nil || !asDir.Dir {
+		t.Fatalf("Stat(media/x) = %+v, %v; want a directory", asDir, err)
+	}
+	if asDir.Inode == asFile.Inode {
+		t.Error("a file and the directory that replaced it share an inode")
+	}
+	if root, _ := fsys.Stat(ctx, ""); root.Inode != inode(testCluster, "", kindDir) {
+		t.Errorf("root inode %d, want the cluster root as a directory", root.Inode)
 	}
 }
 

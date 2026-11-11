@@ -33,7 +33,7 @@ func TestOpenReadsTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	if a := f.Attr(); a.Name != "file" || a.Size != testSize || !a.MTime.Equal(fileTime) || a.Inode != inode(testCluster, "media/file") {
+	if a := f.Attr(); a.Name != "file" || a.Size != testSize || !a.MTime.Equal(fileTime) || a.Inode != inode(testCluster, "media/file", kindFile) {
 		t.Errorf("Attr = %+v", a)
 	}
 	if got := readAll(t, f); !bytes.Equal(got, data) {

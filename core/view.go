@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/BlueRival/splicefs/client/config"
-	"github.com/BlueRival/splicefs/client/internal/cache"
 	"github.com/BlueRival/splicefs/client/internal/tree"
 )
 
@@ -19,7 +18,7 @@ type view struct {
 	c      *cluster
 	prefix string // the mount's directory inside the cluster, "" for its root
 	mount  config.Mount
-	cache  *cache.Cache
+	cache  *cacheDir
 	space  spaceMemo
 }
 
@@ -69,7 +68,7 @@ func (v *view) attr(name string, e tree.Entry) Attr {
 		Dir:   e.Dir,
 		Size:  e.Size,
 		MTime: e.MTime,
-		Inode: inode(v.c.name, v.full(name)),
+		Inode: inode(v.c.name, v.full(name), kindOf(e)),
 	}
 }
 
@@ -138,14 +137,32 @@ const (
 	inodeRoot = 1
 )
 
+// kind is the byte that tells a file from a directory in an inode number.
+type kind byte
+
+const (
+	kindFile kind = 'f'
+	kindDir  kind = 'd'
+)
+
+func kindOf(e tree.Entry) kind {
+	if e.Dir {
+		return kindDir
+	}
+	return kindFile
+}
+
 // inode is the number of a path inside a cluster. It depends on nothing but the
-// cluster name and the path, so it is the same in every view and after a restart.
-func inode(clusterName, path string) uint64 {
+// cluster name, the path and its kind, so it is the same in every view and after a
+// restart. The kind is part of it because a mount layer keeps one kernel inode per
+// number: a name that turns from a file into a directory must not reuse the number.
+func inode(clusterName, path string, k kind) uint64 {
 	h := fnv.New64a()
 	// Writes to a hash never fail.
 	_, _ = h.Write([]byte(clusterName))
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(path))
+	_, _ = h.Write([]byte{0, byte(k)})
 	return remapReserved(h.Sum64())
 }
 

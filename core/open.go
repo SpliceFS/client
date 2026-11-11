@@ -36,6 +36,8 @@ type choice struct {
 // when it was confirmed recently enough, otherwise the one most nodes hold now.
 func (v *view) Open(ctx context.Context, name string) (File, error) {
 	const op = "open"
+	// Deferred, so that the entry this open pins is safe from the pass.
+	defer v.cache.maybeEvict()
 	e, err := v.stat(ctx, op, name)
 	if err != nil {
 		return nil, err
@@ -56,14 +58,14 @@ func (v *view) Open(ctx context.Context, name string) (File, error) {
 		BlockSize: ch.version.BlockSize,
 		Streams:   v.c.cfg.StreamsPerNode,
 		ReadAhead: int64(v.c.cfg.ReadAhead),
-		Clock:     v.client.opts.Clock,
+		Clock:     v.client.clock,
 	}, v.sources(full, ch), storeOf(entry), v.c.meter)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("%s %q: %w", op, name, err), release(entry))
 	}
 	attr := v.attr(name, e)
 	attr.Size, attr.MTime = ch.version.Size, ch.mtime
-	return &file{attr: attr, reader: reader, entry: entry}, nil
+	return &file{attr: attr, reader: reader, entry: entry, cache: v.cache}, nil
 }
 
 // choose picks the version to open, asking the nodes unless the cache vouches for it.
@@ -259,6 +261,7 @@ type file struct {
 	attr   Attr
 	reader *fetch.Reader
 	entry  *cache.Entry
+	cache  *cacheDir
 	closed atomic.Bool
 }
 
@@ -273,10 +276,13 @@ func (f *file) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 }
 
 // Close stops the reader, which waits for its fetches to end, before the cache entry
-// is released: the reader writes blocks into the entry until then.
+// is released: the reader writes blocks into the entry until then. A due eviction
+// pass runs afterwards, when the entry may be evicted too.
 func (f *file) Close() error {
 	if !f.closed.CompareAndSwap(false, true) {
 		return fs.ErrClosed
 	}
-	return errors.Join(f.reader.Close(), release(f.entry))
+	err := errors.Join(f.reader.Close(), release(f.entry))
+	f.cache.maybeEvict()
+	return err
 }
