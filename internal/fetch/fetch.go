@@ -3,12 +3,20 @@
 //
 // A Reader starts in probe mode: each read fetches only the small aligned
 // chunks that cover it, so a media scanner reading headers and indexes across
-// a library does not download a block per file. Once reads advance
-// sequentially it switches to block mode and keeps whole blocks fetched ahead
-// of the read position, spread over the sources by measured speed, with the
-// block the reader needs next always on a fast source. A block that is late
-// while a read waits for it is requested again from another source, and the
-// first complete answer wins.
+// a large library does not download a block per file. Probe chunks are not
+// cached, so isolated reads leave no trace in the Store.
+//
+// Once reads advance sequentially it switches to block mode and keeps whole
+// blocks fetched ahead of the read position, spread over the sources by
+// measured speed, with the block the reader needs next always on a fast
+// source. Every block goes to the Store. On the switch, the blocks the streak
+// had read through probe chunks are fetched whole as backfill, at lower
+// priority than anything a read needs, so that a file read from start to end
+// becomes a complete cache entry. A file no larger than the switch distance
+// skips probe mode altogether, so a small file that is read is cached.
+//
+// A block that is late while a read waits for it is requested again from
+// another source, and the first complete answer wins.
 package fetch
 
 import (

@@ -100,11 +100,12 @@ func TestAssign(t *testing.T) {
 	fast := func(free int) sourceView { return sourceView{rate: 100, known: true, free: free, usable: true} }
 	slow := func(free int) sourceView { return sourceView{rate: 10, known: true, free: free, usable: true} }
 	tests := []struct {
-		name    string
-		wanted  []int64
-		views   []sourceView
-		streams int
-		want    []assignment
+		name     string
+		wanted   []int64
+		backfill []int64
+		views    []sourceView
+		streams  int
+		want     []assignment
 	}{
 		{
 			name:    "fast takes lowest, slow skips the first F",
@@ -146,11 +147,34 @@ func TestAssign(t *testing.T) {
 			views:   []sourceView{fast(2)},
 			streams: 2,
 		},
+		{
+			name:     "front before backfill",
+			wanted:   []int64{8},
+			backfill: []int64{1, 2},
+			views:    []sourceView{slow(1), fast(2)},
+			streams:  2,
+			want:     []assignment{{1, 8}, {1, 1}, {0, 2}},
+		},
+		{
+			name:     "backfill starts after the reserved positions",
+			wanted:   []int64{8},
+			backfill: []int64{1, 2},
+			views:    []sourceView{fast(1), slow(2)},
+			streams:  2,
+			want:     []assignment{{0, 8}, {1, 1}, {1, 2}},
+		},
+		{
+			name:     "backfill alone goes to every source",
+			backfill: []int64{1, 2},
+			views:    []sourceView{fast(1), slow(1)},
+			streams:  1,
+			want:     []assignment{{0, 1}, {1, 2}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := assign(tt.wanted, tt.views, tt.streams); !slices.Equal(got, tt.want) {
+			if got := assign(tt.wanted, tt.backfill, tt.views, tt.streams); !slices.Equal(got, tt.want) {
 				t.Errorf("assign = %v, want %v", got, tt.want)
 			}
 		})

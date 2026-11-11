@@ -114,6 +114,17 @@ func (s *fakeSource) call(off int64) *call {
 	}
 }
 
+// manual makes the source wait for the test again, and hands it every call
+// made so far, so that later lookups by offset find only new calls.
+func (s *fakeSource) manual() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.respond = nil
+	for _, c := range s.calls {
+		c.claimed = true
+	}
+}
+
 func (s *fakeSource) snapshot() (calls []*call, peak int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -125,6 +136,7 @@ func always(err error) func(int64) error { return func(int64) error { return err
 // fakeStore is an in-memory Store.
 type fakeStore struct {
 	mu        sync.Mutex
+	cond      *sync.Cond
 	blockSize int64
 	blocks    map[int64][]byte
 	writeErr  error
@@ -135,6 +147,7 @@ type fakeStore struct {
 // holding the given blocks.
 func newFakeStore(size int64, present ...int64) *fakeStore {
 	s := &fakeStore{blockSize: 100, blocks: make(map[int64][]byte)}
+	s.cond = sync.NewCond(&s.mu)
 	for _, b := range present {
 		start, length := span(b, s.blockSize, size)
 		s.blocks[b] = fileBytes(start, length)
@@ -169,7 +182,30 @@ func (s *fakeStore) WriteBlock(b int64, data []byte) error {
 		return s.writeErr
 	}
 	s.blocks[b] = append([]byte(nil), data...)
+	s.cond.Broadcast()
 	return nil
+}
+
+// awaitCount blocks until the Store holds n blocks.
+func (s *fakeStore) awaitCount(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for len(s.blocks) < n {
+		s.cond.Wait()
+	}
+}
+
+// check asserts that every stored block holds the file's bytes.
+func (s *fakeStore) check(t *testing.T, size int64) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for b, data := range s.blocks {
+		start, length := span(b, s.blockSize, size)
+		if string(data) != string(fileBytes(start, length)) {
+			t.Errorf("stored block %d holds wrong bytes", b)
+		}
+	}
 }
 
 func (s *fakeStore) count() int {

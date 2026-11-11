@@ -35,6 +35,7 @@ type Reader struct {
 	streak       streak
 	blocks       map[int64]*block
 	resident     int    // blocks holding data in memory
+	storeFailed  bool   // a Store write failed; backfill stops
 	tick         uint64 // use counter for least recently used eviction
 	lowestWaited int64  // lowest block a read waits for, or -1
 	ops          map[*op]struct{}
@@ -139,15 +140,15 @@ func (r *Reader) serve(ctx context.Context, p []byte, off int64) (int, []int64, 
 
 // track feeds a read into sequential detection and reports whether the
 // Reader is in block mode. A read that starts a new streak cancels the block
-// fetches nobody needs any more.
+// fetches nobody needs any more, backfill of the old streak included.
 func (r *Reader) track(off, end int64) bool {
 	if r.streak.joins(off, end, r.opts.Slack) {
 		r.streak.pos = max(r.streak.pos, end)
 	} else {
 		r.streak = streak{started: true, start: off, pos: end}
-		r.cancelOutside(windowAt(end, r.opts.ReadAhead, r.opts.BlockSize, r.opts.Size))
+		r.cancelOutside(r.keepRange())
 	}
-	return r.streak.length() >= r.opts.SwitchAfter
+	return r.blockMode()
 }
 
 // readStored copies the parts of p that lie in the given blocks from the

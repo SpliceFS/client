@@ -560,6 +560,105 @@ func TestBlocksGoToStore(t *testing.T) {
 	})
 }
 
+func TestSequentialReadFillsStore(t *testing.T) {
+	t.Parallel()
+	opts := baseOptions(2000)
+	opts.ReadAhead = 300
+	opts.Streams = 2
+	opts.SwitchAfter = 200
+	store := newFakeStore(2000)
+	h := newHarness(t, opts, store, map[string]float64{"a": 100, "b": 10}, "a", "b")
+	for _, s := range h.src {
+		s.setRespond(always(nil))
+	}
+	for off := int64(0); off < opts.Size; off += 50 {
+		h.mustRead(off, 50)
+	}
+	store.awaitCount(20) // blocks 0 and 1 were read through probe chunks
+	store.check(t, opts.Size)
+}
+
+func TestSmallFileSkipsProbeMode(t *testing.T) {
+	t.Parallel()
+	store := newFakeStore(40)
+	h := newHarness(t, baseOptions(40), store, nil, "a")
+	h.src["a"].setRespond(always(nil))
+	h.mustRead(0, 10)
+	if !store.Has(0) {
+		t.Error("the small file is not in the Store after a read")
+	}
+	calls, _ := h.src["a"].snapshot()
+	if len(calls) != 1 || calls[0].n != 40 {
+		t.Errorf("fetches %d, want one fetch of the whole 40-byte file", len(calls))
+	}
+}
+
+// backfillHarness reads [0, 100) through probe chunks and then [100, 160),
+// which switches to block mode with block 0 left to backfill.
+func backfillHarness(t *testing.T, rates map[string]float64, ids ...string) *harness {
+	t.Helper()
+	opts := baseOptions(10000)
+	opts.SwitchAfter = 150
+	h := newHarness(t, opts, newFakeStore(10000), rates, ids...)
+	for _, s := range h.src {
+		s.setRespond(always(nil))
+	}
+	h.mustRead(0, 100)
+	for _, s := range h.src {
+		s.manual()
+	}
+	return h
+}
+
+func TestBackfillYieldsToFastSource(t *testing.T) {
+	t.Parallel()
+	h := backfillHarness(t, map[string]float64{"a": 100, "b": 10}, "a", "b")
+	res := h.start(bg, 100, 60)
+	h.src["a"].call(100).succeed()
+	h.check(<-res, 100, 60)
+	want := []started{{"a", 1, false}, {"b", 0, false}}
+	if got := h.rec.startList(); !slices.Equal(got, want) {
+		t.Errorf("fetches %v, want the read's block on the fast source and backfill on the slow one", got)
+	}
+}
+
+func TestStuckBackfillDoesNotDelayReads(t *testing.T) {
+	t.Parallel()
+	h := backfillHarness(t, nil, "a")
+	a := h.src["a"]
+	res := h.start(bg, 100, 60)
+	a.call(100).succeed()
+	h.check(<-res, 100, 60)
+	backfill := a.call(0) // the only slot is now busy with block 0
+
+	res = h.start(bg, 200, 60)
+	if !backfill.cancelled() {
+		t.Fatal("the backfill fetch kept the slot a read needs")
+	}
+	a.call(200).succeed()
+	h.check(<-res, 200, 60)
+	a.call(0).succeed() // backfill resumes once the read is served
+	h.store.awaitCount(3)
+	h.store.check(t, 10000)
+}
+
+func TestSeekCancelsBackfill(t *testing.T) {
+	t.Parallel()
+	h := backfillHarness(t, nil, "a")
+	a := h.src["a"]
+	res := h.start(bg, 100, 60)
+	a.call(100).succeed()
+	h.check(<-res, 100, 60)
+	backfill := a.call(0)
+
+	res = h.start(bg, 5000, 8)
+	a.call(4992).succeed()
+	h.check(<-res, 5000, 8)
+	if !backfill.cancelled() {
+		t.Error("the seek left the old streak's backfill running")
+	}
+}
+
 func TestFailingStoreWriteStillDelivers(t *testing.T) {
 	t.Parallel()
 	store := newFakeStore(2000)

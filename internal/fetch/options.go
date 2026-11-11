@@ -27,7 +27,8 @@ type Options struct {
 	// ProbeSize is the granularity of isolated reads. Default 256 KiB.
 	ProbeSize int64
 	// SwitchAfter is how far reads must advance sequentially before block
-	// mode starts. Default 1 MiB.
+	// mode starts. A file of at most this size is read in block mode from
+	// the start. Default 1 MiB.
 	SwitchAfter int64
 	// Slack is how far out of order a read may be and still count as
 	// sequential. Default 2 MiB.

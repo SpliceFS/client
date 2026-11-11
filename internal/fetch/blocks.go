@@ -100,10 +100,10 @@ func (r *Reader) collect(p []byte, off int64, pending []int64) (missing, inStore
 }
 
 // abandon stops waiting for the blocks a read ends without. Their fetches
-// are cancelled unless another read or the read-ahead window needs them, so
+// are cancelled unless another read or the current streak needs them, so
 // that an interrupted read does not leave its requests running.
 func (r *Reader) abandon(blocks []int64) {
-	first, last := r.window()
+	first, last := r.keepRange()
 	for _, i := range blocks {
 		r.unwait(i)
 		if b := r.blocks[i]; b != nil {
@@ -185,48 +185,116 @@ func copyOverlap(p []byte, off int64, data []byte, at int64) {
 	copy(p[lo-off:hi-off], data[lo-at:hi-at])
 }
 
-// window returns the read-ahead window, which exists only in block mode.
-func (r *Reader) window() (first, last int64) {
-	if r.streak.length() < r.opts.SwitchAfter {
+// blockMode reports whether reads are served in whole blocks. A file no
+// larger than SwitchAfter is always, so that a small file that is read ends
+// up in the Store; probe mode would never cache it.
+func (r *Reader) blockMode() bool {
+	return r.opts.Size <= r.opts.SwitchAfter || r.streak.length() >= r.opts.SwitchAfter
+}
+
+// front returns the read-ahead window, from the block at the read position
+// on. It exists only in block mode.
+func (r *Reader) front() (first, last int64) {
+	if !r.blockMode() {
 		return 0, -1
 	}
 	return windowAt(r.streak.pos, r.opts.ReadAhead, r.opts.BlockSize, r.opts.Size)
 }
 
-// wanted lists, in ascending order, the blocks to fetch: those of the window
-// and those reads wait for, unless they are stored, in memory or in flight.
-func (r *Reader) wanted() []int64 {
-	var blocks []int64
-	first, last := r.window()
+// backfillRange returns the blocks of the current streak behind the read
+// position. Before the switch to block mode they were read through probe
+// chunks, which are not cached; fetching them whole makes a file read from
+// start to end a complete cache entry. Without a working Store this would
+// only download blocks to throw them away, so it stops at the first failed
+// write.
+func (r *Reader) backfillRange() (first, last int64) {
+	if !r.blockMode() || r.store == nil || r.storeFailed {
+		return 0, -1
+	}
+	return r.streak.start / r.opts.BlockSize, r.streak.pos/r.opts.BlockSize - 1
+}
+
+// keepRange returns the blocks whose fetches serve the current streak: from
+// its start through the end of the read-ahead window.
+func (r *Reader) keepRange() (first, last int64) {
+	_, last = windowAt(r.streak.pos, r.opts.ReadAhead, r.opts.BlockSize, r.opts.Size)
+	return r.streak.start / r.opts.BlockSize, last
+}
+
+// wanted lists, in ascending order, the blocks to fetch that are not stored,
+// in memory or in flight: front holds those of the read-ahead window and
+// those reads wait for, backfill the rest of the streak.
+func (r *Reader) wanted() (front, backfill []int64) {
+	first, last := r.front()
 	for b := first; b <= last; b++ {
-		blocks = append(blocks, b)
+		front = append(front, b)
 	}
 	for b, e := range r.blocks {
 		if e.waiters > 0 {
-			blocks = append(blocks, b)
+			front = append(front, b)
 		}
 	}
-	slices.Sort(blocks)
-	return slices.DeleteFunc(slices.Compact(blocks), func(b int64) bool {
-		e := r.blocks[b]
-		return e != nil && (e.inFlight() || e.data != nil) || r.hasStored(b)
-	})
+	slices.Sort(front)
+	front = slices.DeleteFunc(slices.Compact(front), r.satisfied)
+	first, last = r.backfillRange()
+	for b := first; b <= last; b++ {
+		if !r.satisfied(b) && !slices.Contains(front, b) {
+			backfill = append(backfill, b)
+		}
+	}
+	return front, backfill
+}
+
+// satisfied reports whether block b needs no fetch.
+func (r *Reader) satisfied(b int64) bool {
+	e := r.blocks[b]
+	return e != nil && (e.inFlight() || e.data != nil) || r.hasStored(b)
 }
 
 // schedule starts fetches for wanted blocks on free slots. Called with r.mu
 // held after anything that frees a slot or changes what is wanted.
+//
+// When a block a read waits for finds no slot, backfill gives way: none is
+// started, and backfill fetches in flight are cancelled so their slots come
+// free. A read thus never waits behind a block it does not need.
 func (r *Reader) schedule() {
 	if r.closed {
 		return
 	}
-	wanted := r.wanted()
-	if len(wanted) == 0 {
+	front, backfill := r.wanted()
+	if len(front)+len(backfill) == 0 {
 		return
 	}
-	for _, a := range assign(wanted, r.views((*source).ready), r.opts.Streams) {
+	plan := assign(front, backfill, r.views((*source).ready), r.opts.Streams)
+	if r.starved(front, plan) {
+		plan = slices.DeleteFunc(plan, func(a assignment) bool { return !slices.Contains(front, a.block) })
+		r.yieldBackfill()
+	}
+	for _, a := range plan {
 		s, b := r.sources[a.source], r.block(a.block)
 		r.launch(&fetch{src: s, block: b})
 		r.armHedge(b, s)
+	}
+}
+
+// starved reports whether plan leaves a front block that a read waits for
+// without a fetch.
+func (r *Reader) starved(front []int64, plan []assignment) bool {
+	return slices.ContainsFunc(front, func(b int64) bool {
+		e := r.blocks[b]
+		return e != nil && e.waiters > 0 &&
+			!slices.ContainsFunc(plan, func(a assignment) bool { return a.block == b })
+	})
+}
+
+// yieldBackfill cancels the backfill fetches in flight.
+func (r *Reader) yieldBackfill() {
+	first, last := r.backfillRange()
+	for _, b := range r.blocks {
+		if b.index >= first && b.index <= last && b.waiters == 0 && len(b.fetches) > 0 {
+			r.cancelFetches(b)
+			r.tidy(b)
+		}
 	}
 }
 
@@ -301,6 +369,7 @@ func (r *Reader) publish(f *fetch, stored bool) {
 	if stored {
 		r.bufs.Put(f.buf)
 	} else {
+		r.storeFailed = r.store != nil
 		b.buf, b.data = f.buf, f.data
 		r.resident++
 		r.touch(b)
@@ -330,7 +399,7 @@ func (r *Reader) evict() {
 // the least recently used. Plain LRU would drop unread blocks ahead of the
 // reader, which arrived before the blocks it has just read.
 func (r *Reader) victim() *block {
-	first, last := r.window()
+	first, last := r.front()
 	inWindow := func(b *block) bool { return b.index >= first && b.index <= last }
 	before := func(b, v *block) bool {
 		if inWindow(b) != inWindow(v) {

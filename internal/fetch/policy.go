@@ -31,8 +31,9 @@ func (s streak) joins(off, end, slack int64) bool {
 // length is how far the streak has advanced.
 func (s streak) length() int64 { return s.pos - s.start }
 
-// windowAt returns the first and last block of the read-ahead window at read
-// position pos, clipped to the file. The window is empty when first > last.
+// windowAt returns the block at read position pos and the last block of the
+// read-ahead window, clipped to the file. The window is empty when
+// first > last.
 func windowAt(pos, readAhead, blockSize, size int64) (first, last int64) {
 	return pos / blockSize, min((pos+readAhead)/blockSize, ceilDiv(size, blockSize)-1)
 }
@@ -93,12 +94,18 @@ type assignment struct {
 	block  int64
 }
 
-// assign hands wanted blocks, in ascending order, to free fetch slots. A fast
-// source takes the lowest wanted block. A slow source never takes one of the
-// first F wanted blocks, F being the slots of all fast sources: the block the
-// reader needs next is then always with a fast node, while slow nodes still
-// add throughput further ahead, where lateness costs nothing.
-func assign(wanted []int64, views []sourceView, streams int) []assignment {
+// assign hands wanted blocks to free fetch slots. front lists, in ascending
+// order, the blocks reads need or will need next; backfill lists blocks
+// wanted only so that the Store ends up complete, which come after every
+// front block.
+//
+// A fast source takes the first wanted block. A slow source never takes one
+// of the first F wanted blocks, F being the slots of all fast sources: the
+// block the reader needs next is then always with a fast node, while slow
+// nodes still add throughput further ahead, where lateness costs nothing.
+// While front blocks are wanted, backfill starts no earlier than position F,
+// so it never holds a position reserved for fast sources.
+func assign(front, backfill []int64, views []sourceView, streams int) []assignment {
 	order := rank(views)
 	reserved := 0
 	for _, s := range order {
@@ -106,7 +113,14 @@ func assign(wanted []int64, views []sourceView, streams int) []assignment {
 			reserved += streams
 		}
 	}
-	taken := make([]bool, len(wanted))
+	wanted := slices.Clone(front)
+	taken := make([]bool, len(front))
+	for len(front) > 0 && len(wanted) < reserved {
+		wanted = append(wanted, -1)
+		taken = append(taken, true)
+	}
+	wanted = append(wanted, backfill...)
+	taken = append(taken, make([]bool, len(backfill))...)
 	var out []assignment
 	for _, s := range order {
 		from := 0
