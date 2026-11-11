@@ -57,5 +57,6 @@ func statfsFree(dir string) (uint64, error) {
 	if err := syscall.Statfs(dir, &st); err != nil {
 		return 0, err
 	}
-	return st.Bavail * uint64(st.Bsize), nil
+	block := uint64(st.Bsize) //nolint:gosec // a block size reported by the kernel is never negative
+	return st.Bavail * block, nil
 }
