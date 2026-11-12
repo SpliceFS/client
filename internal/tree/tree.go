@@ -192,11 +192,19 @@ func notFound(name string) error {
 // them "." or "..", with no leading or trailing slash.
 func validName(name string) bool {
 	for seg := range strings.SplitSeq(name, "/") {
-		if seg == "" || seg == "." || seg == ".." {
+		if !validSegment(seg) {
 			return false
 		}
 	}
 	return true
+}
+
+// validSegment reports whether name can be one entry of a directory. Nodes choose the
+// names they list, and a caller joins them to a path, so one that is empty, a dot
+// segment or holds a slash could point outside the directory it was listed in. A NUL
+// byte ends a name early in the kernel, which would make it a different name there.
+func validSegment(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\x00")
 }
 
 // cut splits a valid, non-empty name into its parent directory and its last segment.

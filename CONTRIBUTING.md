@@ -81,6 +81,10 @@ must pass before a merge.
 - Tests do not sleep to wait for something and do not depend on wall-clock time. Use an
   injected clock.
 - A bug fix comes with a test that fails without the fix.
+- Code that parses input from a user or a remote system gets a fuzz test (`FuzzXxx`) that checks
+  properties such as no panic, invalid input changing nothing and entries staying inside their
+  root. Run them with `make fuzz`, or longer with `FUZZTIME=1m make fuzz`. An input that found a
+  bug is added to the table tests of the package.
 
 ### Commits and pull requests
 

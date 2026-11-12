@@ -46,6 +46,9 @@ func merge(have []reply) []record {
 	byName := make(map[string][]report)
 	for _, r := range have {
 		for _, e := range r.entries {
+			if !validSegment(e.Name) {
+				continue
+			}
 			byName[e.Name] = append(byName[e.Name], report{node: r.node, entry: e})
 		}
 	}

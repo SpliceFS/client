@@ -10,6 +10,8 @@ All notable changes to this project are recorded here. The format follows
 
 - Repository setup: design and configuration documents, contribution process, CI.
 - `splicefs --version`.
+- Fuzz tests for the configuration, server responses, the merged directory tree, the cache
+  metadata and the block arithmetic, and `make fuzz` to run them.
 - Client (`splicefs`): `mount`, `umount` and `status`; several clusters and mounts in one
   configuration; merged directory tree; block reads from every node holding an identical
   copy, with per-node speed tracking and re-request of late blocks; on-disk block cache
@@ -27,3 +29,9 @@ All notable changes to this project are recorded here. The format follows
 - Signed apt, rpm and Alpine repositories built from the packages (`make repo`), with a test
   that installs from each on every supported system with signature checks on
   (`make repo-test`).
+
+### Security
+
+- Entry names that a node lists are checked. A name that is empty, a dot segment, or holds a
+  slash or a NUL byte is dropped, so a hostile node cannot make an entry point outside the
+  directory it was listed in. Found by the new fuzz tests.
