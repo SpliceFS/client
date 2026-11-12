@@ -8,7 +8,8 @@ block), the HTTP API and the consistency rules are in the
 [design document of the server repository](https://github.com/SpliceFS/server/blob/main/docs/design.md),
 which should be read first.
 
-The client (`splicefs`) is one process that serves every configured mount.
+The client (`splicefs`) is one process that serves every configured mount. It keeps running
+when it has none.
 
 ## Structure and platforms
 
@@ -29,6 +30,63 @@ The client is one program built from two layers:
 FUSE on macOS needs third-party software (macFUSE or FUSE-T) whose kernel interface is in
 transition, so the built-in NFS client is the dependable route there. The NFS server only
 listens on the loopback address. See Known limitations for what that route costs.
+
+## Configuration
+
+The configuration is a folder of small files, so that a package can ship the folder and an
+administrator can add files without editing one that a package owns. The reference for every
+key is the [configuration document](configuration.md).
+
+- `conf.d/*.yaml` holds settings. They are read in name order and merged, a later file winning.
+  Today the settings are the cache keys that every mount inherits.
+- `clusters.d/<name>.yaml` is one cluster. The file name is the cluster name.
+- `mounts.d/<name>.yaml` is one mount. The file name is the mount name, and mounts are ordered
+  by it. A mount may override any cache key.
+- Relative paths are relative to the configuration folder.
+- An empty or missing folder is a valid configuration with no clusters and no mounts. A fresh
+  install runs in that state.
+- The whole configuration is validated in one pass. Every problem is reported, and each names
+  the file its value came from.
+
+## Lifetime and reload
+
+The run ends only when the client is told to stop. A mount that ends does not end the run. It
+may end because it was unmounted through the control socket, because the administrator ran
+`umount`, or because a reload detached it. The client takes it out of its set and gives back
+what the mount used. A mount that ended without a reload stays unmounted until the next reload
+or restart. With no mounts the client idles, and it tells systemd that it is ready.
+
+`SIGHUP` applies the configuration without a restart. Reloads run one at a time.
+
+1. The client reads and validates the whole configuration. It then makes the clusters and
+   cache folders match it. Anything that can fail, such as an unreadable password file, a
+   cache folder that cannot be opened, or two mounts that share a cache folder with different
+   limits, is done before anything changes. If it fails, nothing changes and the error is
+   logged.
+2. A mount that is no longer configured, whose settings changed, or whose cluster or cache
+   folder was replaced is detached. The detach is forced: the mount point disappears at once,
+   and files that are open keep working until they are closed.
+3. Every configured mount that is not live is mounted. This covers new mounts and the ones
+   that were just detached because they changed. The cluster is logged in to first, as at
+   start. An unreachable cluster is a warning and the mount is made anyway. Rejected
+   credentials, or a mount that cannot be made, are logged and that mount is skipped. The
+   others are still applied.
+4. A mount with nothing changed is not touched.
+
+Mounts share clusters and cache folders, and a reload changes them while mounts use them:
+
+- A cluster whose settings, password and listing TTL are unchanged is kept, with its session
+  and its measured node speeds. Any other cluster is built new.
+- A cache folder that is already open is kept, with its files, and the next eviction pass uses
+  the new limits. A folder that is new is opened.
+- A cluster or cache folder that a reload replaced or removed is retired. It goes on serving
+  the mounts that already use it, and it is closed when the last of them has ended, or at
+  once if none uses it.
+- Each cluster has its own HTTP connection pool. It is closed with the cluster, so replacing
+  one cluster never drops the connections of another.
+
+Stopping unmounts every mount that is live, with force if needed, and then closes everything,
+including what detached mounts still held.
 
 ## Discovery
 
@@ -93,7 +151,7 @@ completely cached is still served from the cache, and the check is made at the n
 after a node returns. Each mount can turn this off, in which case such reads fail.
 
 The cache directory must not be a mount target, lie inside one, or contain one. The client
-refuses to start otherwise.
+refuses to start, and a reload refuses to apply the configuration, otherwise.
 
 ## Free space
 
@@ -132,7 +190,8 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
   one node still has it; a new open sees the new version.
 - **All nodes unreachable** is an I/O error, never "not found" and never an empty directory.
 - **Start and stop.** A stale mount left by a crash is detected and cleared at start. The
-  client unmounts on `SIGINT` and `SIGTERM`, and tells systemd when all mounts are ready.
+  client unmounts on `SIGINT` and `SIGTERM`, and tells systemd when all mounts are ready,
+  which with no mounts is at once. See Lifetime and reload.
 - **Kernel caching.** File contents never change under a given tag, so the kernel may keep
   file data and directory entries cached.
 
