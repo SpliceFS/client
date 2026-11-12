@@ -17,6 +17,7 @@ import (
 	"github.com/willscott/go-nfs/file"
 
 	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 // Permission bits every entry reports: nothing can be written, and a program that can
@@ -26,6 +27,17 @@ const (
 	dirMode  fs.FileMode = 0o555
 )
 
+const (
+	// rootAttrBudget is how long a request for the attributes of the root waits for the
+	// core before it is answered without it.
+	rootAttrBudget = time.Second
+
+	// rootInode is the file id of the root, whether the core has answered or not: the
+	// kernel must not see the id of the root change when the first real answer arrives.
+	// The core never gives this number to anything else.
+	rootInode = 1
+)
+
 // billyFS is a read-only billy.Filesystem over a core.FS. billy has no contexts, so
 // every call gets one from base with a time limit: when the mount ends, base is
 // cancelled and no call outlives it.
@@ -33,12 +45,46 @@ const (
 // go-nfs refuses every write to a filesystem that does not report billy.WriteCapability
 // (it answers NFS3ERR_ROFS before the filesystem is asked), so the mutating methods
 // below are only a second line of defence and return billy.ErrReadOnly.
+//
+// The attributes of the root never fail and never take longer than rootBudget, because
+// the kernel asks for them before it looks up any name and before it accepts a mount:
+// with the cluster unreachable they would otherwise refuse the mount and delay even the
+// probe name, which is meant to be answered without the cluster.
 type billyFS struct {
 	base    context.Context
 	fsys    core.FS
 	timeout time.Duration
 	owner   owner
 	log     *slog.Logger
+
+	rootBudget time.Duration
+	created    time.Time // modification time of the root until the core has answered
+	root       rootAttr
+}
+
+// rootAttr is the state of the root's attributes: the last answer of the core and the
+// call that is asking for the next one. At most one call runs at a time, so a core that
+// never answers costs one goroutine, which ends with the call context.
+type rootAttr struct {
+	mu      sync.Mutex
+	last    core.Attr
+	known   bool
+	pending chan struct{} // closed when the running call has ended; nil if none runs
+	started time.Time
+}
+
+func newBillyFS(
+	base context.Context, fsys core.FS, timeout time.Duration, o owner, log *slog.Logger,
+) *billyFS {
+	return &billyFS{
+		base:       base,
+		fsys:       fsys,
+		timeout:    timeout,
+		owner:      o,
+		log:        log,
+		rootBudget: rootAttrBudget,
+		created:    time.Now(),
+	}
 }
 
 var (
@@ -58,12 +104,14 @@ func (b *billyFS) callContext() (context.Context, context.CancelFunc) {
 }
 
 // corePath converts a billy path to a core name. Paths come from Join, which cleans
-// them, so the only unusable ones are those that climb out of the root.
+// them, so the only unusable ones are those that climb out of the root. The probe name
+// directly in the root never exists and is refused here, before any call into the core
+// could be made for it; below the root it is an ordinary name.
 func corePath(op, name string) (string, error) {
 	if name == "" || name == "." {
 		return "", nil
 	}
-	if !fs.ValidPath(name) {
+	if !fs.ValidPath(name) || name == mount.ProbeName {
 		return "", &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
 	}
 	return name, nil
@@ -102,6 +150,9 @@ func (b *billyFS) Stat(name string) (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cname == "" {
+		return fileInfo{attr: b.rootAttr(), owner: b.owner}, nil
+	}
 	ctx, cancel := b.callContext()
 	defer cancel()
 	attr, err := b.fsys.Stat(ctx, cname)
@@ -109,6 +160,61 @@ func (b *billyFS) Stat(name string) (os.FileInfo, error) {
 		return nil, b.mapError("stat", name, err)
 	}
 	return fileInfo{attr: attr, owner: b.owner}, nil
+}
+
+// rootAttr answers within rootBudget whatever the core does. It asks the core and
+// waits for the answer; if the core fails or is too slow it returns the last answer it
+// got, or a fixed read-only directory if it never got one. The real modification time is
+// kept whenever the core answers because macOS decides from it whether a cached listing
+// is still good.
+//
+// A call that is too slow is not abandoned: it keeps running and its result, if it
+// succeeds, is remembered for the next request. Requests that arrive meanwhile wait for
+// that same call instead of starting another, and only for what is left of its budget.
+func (b *billyFS) rootAttr() core.Attr {
+	r := &b.root
+	r.mu.Lock()
+	if r.pending == nil {
+		r.pending = make(chan struct{})
+		r.started = time.Now()
+		go b.refreshRoot(r.pending)
+	}
+	pending, wait := r.pending, b.rootBudget-time.Since(r.started)
+	r.mu.Unlock()
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-pending:
+	case <-timer.C:
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.known {
+		return r.last
+	}
+	return core.Attr{Dir: true, MTime: b.created, Inode: rootInode}
+}
+
+// refreshRoot is the one running call for the attributes of the root. It ends the call
+// by closing done.
+func (b *billyFS) refreshRoot(done chan struct{}) {
+	ctx, cancel := b.callContext()
+	defer cancel()
+	attr, err := b.fsys.Stat(ctx, "")
+	if err != nil {
+		b.log.Warn("core call failed, answering with the last known root", "op", "stat", "err", err)
+	}
+	r := &b.root
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err == nil {
+		attr.Inode = rootInode
+		r.last, r.known = attr, true
+	}
+	r.pending = nil
+	close(done)
 }
 
 // Lstat is Stat: there are no symbolic links.

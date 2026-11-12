@@ -26,6 +26,7 @@ const defaultCallTimeout = 60 * time.Second
 type serverConfig struct {
 	owner       owner
 	callTimeout time.Duration
+	rootBudget  time.Duration // zero means rootAttrBudget
 	logger      *slog.Logger
 }
 
@@ -70,12 +71,9 @@ func startServer(fsys core.FS, ln net.Listener, cfg serverConfig) (*server, erro
 		cfg.callTimeout = defaultCallTimeout
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	billyView := &billyFS{
-		base:    ctx,
-		fsys:    newNormalizingFS(fsys),
-		timeout: cfg.callTimeout,
-		owner:   cfg.owner,
-		log:     cfg.logger,
+	billyView := newBillyFS(ctx, newNormalizingFS(fsys), cfg.callTimeout, cfg.owner, cfg.logger)
+	if cfg.rootBudget > 0 {
+		billyView.rootBudget = cfg.rootBudget
 	}
 	s := &server{
 		guard:  &guardListener{Listener: ln, log: cfg.logger, conns: make(map[*trackedConn]struct{})},

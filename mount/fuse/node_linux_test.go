@@ -216,6 +216,100 @@ func TestLookupOfMissingNameIsANegativeEntry(t *testing.T) {
 	}
 }
 
+func TestProbeNameInTheRootIsNotFoundWithoutTheCore(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+
+	id, out, st := h.lookupStatus(rootID, mount.ProbeName)
+	if st != fuse.OK || id != 0 {
+		t.Fatalf("Lookup = node %d, %v; want the node id 0 of a negative entry", id, st)
+	}
+	if out.EntryTimeout() != testSettings.negativeTimeout {
+		t.Fatalf("negative entry timeout = %v, want %v", out.EntryTimeout(), testSettings.negativeTimeout)
+	}
+	var entry fuse.EntryOut
+	if _, errno := h.root.Lookup(context.Background(), mount.ProbeName, &entry); errno != syscall.ENOENT {
+		t.Fatalf("node Lookup = %v, want ENOENT", errno)
+	}
+	if n := h.fake.calls.Load(); n != 0 {
+		t.Fatalf("the probe name reached the core %d times, want 0", n)
+	}
+	entries, st := h.readDir(rootID)
+	if st != fuse.OK {
+		t.Fatal(st)
+	}
+	for _, e := range entries {
+		if e.Name == mount.ProbeName {
+			t.Fatal("the probe name is listed")
+		}
+	}
+}
+
+func TestProbeNameIsAnsweredWhileACoreCallIsBlocked(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	id := h.lookup(rootID, "hello.txt")
+	fh, _, st := h.open(id, syscall.O_RDONLY)
+	if st != fuse.OK {
+		t.Fatal(st)
+	}
+	h.fake.blockReadsOf("hello.txt")
+	cancel := make(chan struct{})
+	result := make(chan fuse.Status, 1)
+	go func() {
+		buf := make([]byte, 16)
+		_, st := h.raw.Read(cancel, &fuse.ReadIn{InHeader: *hdr(id), Fh: fh, Size: 16}, buf)
+		result <- st
+	}()
+	select {
+	case <-h.fake.reading:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read never reached the core")
+	}
+	before := h.fake.calls.Load()
+
+	answered := make(chan fuse.Status, 1)
+	go func() {
+		_, _, st := h.lookupStatus(rootID, mount.ProbeName)
+		answered <- st
+	}()
+	select {
+	case st := <-answered:
+		if st != fuse.OK {
+			t.Fatalf("Lookup = %v, want a negative entry", st)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe name waited for the blocked core call")
+	}
+	if n := h.fake.calls.Load(); n != before {
+		t.Fatalf("the probe name reached the core: %d calls, want %d", n, before)
+	}
+	close(cancel)
+	if err := <-h.fake.cancelled; !errors.Is(err, context.Canceled) {
+		t.Fatalf("core saw %v, want context.Canceled", err)
+	}
+	<-result
+}
+
+func TestProbeNameInASubdirectoryIsAnOrdinaryName(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.fake.files["docs/"+mount.ProbeName] = []byte("x")
+	docs := h.lookup(rootID, "docs")
+
+	before := h.fake.calls.Load()
+	if id, _, st := h.lookupStatus(docs, mount.ProbeName); st != fuse.OK || id == 0 {
+		t.Fatalf("Lookup of an existing file named like the probe = node %d, %v", id, st)
+	}
+	if h.fake.calls.Load() == before {
+		t.Fatal("the lookup in a subdirectory did not ask the core")
+	}
+	delete(h.fake.files, "docs/"+mount.ProbeName)
+	if id, _, st := h.lookupStatus(docs, mount.ProbeName); st != fuse.OK || id != 0 {
+		t.Fatalf("Lookup of a missing file in a subdirectory = node %d, %v", id, st)
+	}
+}
+
 func TestErrorsAreMappedForEveryOperation(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

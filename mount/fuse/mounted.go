@@ -23,6 +23,12 @@ type host interface {
 	// from the tree at once and the filesystem is released when its last user is gone;
 	// without it, a mount that is in use is refused with an error wrapping EBUSY.
 	Unmount(ctx context.Context, target string, detach bool) error
+	// ConnectionID returns the number the kernel gave the connection of the mount at
+	// target, which names the connection in the control directory of the FUSE driver.
+	ConnectionID(target string) (uint32, error)
+	// AbortConnection ends the kernel connection with the given number: requests that
+	// wait for an answer fail at once and later ones are refused.
+	AbortConnection(id uint32) error
 }
 
 // serveLoop is the part of a go-fuse server that a mounted drives.
@@ -59,6 +65,11 @@ type mounted struct {
 	host   host
 	done   chan struct{}
 	err    error // written before done is closed
+
+	// connection is the kernel connection of the mount; known says it could be found.
+	// Both are set before start returns and never change.
+	connection uint32
+	known      bool
 }
 
 var _ mount.Mounted = (*mounted)(nil)
@@ -69,8 +80,9 @@ func start(loop serveLoop, h host, target string) (mount.Mounted, error) {
 	m := &mounted{target: target, host: h, done: make(chan struct{})}
 	go m.run(loop.Serve)
 	if err := loop.WaitMount(); err != nil {
-		return nil, errors.Join(fmt.Errorf("wait for mount of %s: %w", target, err), m.abort())
+		return nil, errors.Join(fmt.Errorf("wait for mount of %s: %w", target, err), m.cleanUp())
 	}
+	m.connection, m.known = rememberConnection(h, target)
 	return m, nil
 }
 
@@ -90,7 +102,16 @@ func (m *mounted) endError() error {
 	return nil
 }
 
-func (m *mounted) abort() error {
+// rememberConnection looks up the kernel connection of a mount that is up, so that a
+// forced unmount can abort it later, when the mount point no longer leads to it. A
+// failure only means that no abort will be possible; the mount itself is fine.
+func rememberConnection(h host, target string) (uint32, bool) {
+	id, err := h.ConnectionID(target)
+	return id, err == nil
+}
+
+// cleanUp takes down a mount that never became ready.
+func (m *mounted) cleanUp() error {
 	ctx, cancel := context.WithTimeout(context.Background(), abortTimeout)
 	defer cancel()
 	return m.Unmount(ctx, false)
@@ -103,8 +124,8 @@ func (m *mounted) Done() <-chan struct{} { return m.done }
 func (m *mounted) Err() error { return m.err }
 
 // Unmount implements mount.Mounted. Without force it returns after the serve loop has
-// ended. With force it returns once the mount is detached; the loop then ends when the
-// last program using the mount lets go of it.
+// ended. With force it returns once the mount is detached and its kernel connection is
+// aborted; the loop then ends when the last program using the mount lets go of it.
 func (m *mounted) Unmount(ctx context.Context, force bool) error {
 	select {
 	case <-m.done:
@@ -115,6 +136,7 @@ func (m *mounted) Unmount(ctx context.Context, force bool) error {
 		return err
 	}
 	if force {
+		m.abortConnection()
 		return nil
 	}
 	select {
@@ -122,6 +144,17 @@ func (m *mounted) Unmount(ctx context.Context, force bool) error {
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("wait for %s to unmount: %w", m.target, ctx.Err())
+	}
+}
+
+// abortConnection fails the requests that wait on the kernel connection of a detached
+// mount. A detach alone leaves them waiting for an answer that will never come when the
+// serve loop is dead. Errors are ignored: a missing control file means the connection
+// is already gone, and a client that is not allowed to write it cannot do better than
+// the detach it has already made.
+func (m *mounted) abortConnection() {
+	if m.known {
+		_ = m.host.AbortConnection(m.connection)
 	}
 }
 
