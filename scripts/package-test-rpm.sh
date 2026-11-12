@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs the rpm package for this CPU type, checks what the package promises, then
-# removes it and checks what is left. It runs inside a throwaway Rocky Linux container
-# (make package-test).
+# removes it and checks what is left. It runs inside a throwaway container of any rpm based
+# system (make package-test): Rocky Linux, Amazon Linux, openSUSE.
 set -eu
 
 dir="${1:?usage: package-test-rpm.sh PACKAGE_DIR}"
@@ -10,9 +10,17 @@ unit="/usr/lib/systemd/system/$program.service"
 rpm="$dir/$name-$rpmver-1.$(uname -m).rpm"
 [ -f "$rpm" ] || fail "$rpm does not exist; run make package first"
 
-# rpm alone cannot fetch dependencies; dnf does when one is missing.
+# rpm alone cannot fetch dependencies; the system's package manager does when one is
+# missing. The build key is a throwaway, so zypper must be told to accept an unsigned file.
+install_missing() {
+    if command -v dnf >/dev/null 2>&1; then
+        dnf install -y -q "$1" >/dev/null
+    else
+        zypper --non-interactive install --allow-unsigned-rpm "$1" >/dev/null
+    fi
+}
 if ! rpm -i "$rpm" >/dev/null 2>&1; then
-    dnf install -y -q "$rpm" >/dev/null
+    install_missing "$rpm"
 fi
 rpm -q "$name" >/dev/null || fail "package is not installed"
 

@@ -53,8 +53,16 @@ jobs:
         run: make build
 
   package:
-    name: Packages
-    runs-on: ubuntu-latest
+    name: Packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@v7
       - name: Build the packages
@@ -62,6 +70,7 @@ jobs:
       - name: Install and remove each package in a clean system of its kind
         run: make package-test
       - uses: actions/upload-artifact@v7
+        if: matrix.arch == 'amd64'
         with:
           name: packages
           path: |

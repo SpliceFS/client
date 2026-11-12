@@ -1,6 +1,7 @@
 #!/bin/sh
 # A broken configuration must not turn an upgrade into a failed install.
 if [ -e /run/openrc/softlevel ]; then
-    rc-service --ifstarted splicefs restart || echo "splicefs did not restart; see /var/log/splicefs.log" >&2
+    rc-service --ifstarted splicefs restart ||
+        echo "splicefs did not restart; see /var/log/splicefs.log" >&2
 fi
 exit 0

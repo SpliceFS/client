@@ -1,0 +1,18 @@
+# The systems every package is install-tested on: one line per system, "<format> <image>".
+# Both make package-test and CI read this file; it is the only place test images are named.
+# The format picks the package and the script that tests it (scripts/package-test-<format>.sh).
+deb debian:12
+# golang:1.27 is Debian 13 and is the image the packages are built in.
+deb golang:1.27
+deb ubuntu:22.04
+deb ubuntu:24.04
+deb ubuntu:26.04
+rpm rockylinux/rockylinux:8
+rpm rockylinux/rockylinux:9
+rpm rockylinux/rockylinux:10
+rpm amazonlinux:2023
+rpm opensuse/leap:15.6
+rpm opensuse/leap:16.0
+apk alpine:3.22
+apk alpine:3.23
+apk alpine:3.24

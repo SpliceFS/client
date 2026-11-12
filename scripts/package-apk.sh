@@ -27,7 +27,8 @@ for arch in amd64 arm64; do
         cd "$work"
         # CARCH labels the package for the CPU type of the binary inside it; nothing is
         # compiled here, so no cross compiler is involved.
-        CARCH="$apkarch" STAGE="$out/stage/$arch" SRC="$OLDPWD" REPODEST="$work/repo" abuild -F -q rootpkg
+        CARCH="$apkarch" STAGE="$out/stage/$arch" SRC="$OLDPWD" REPODEST="$work/repo" \
+            abuild -F -q rootpkg
     )
     mkdir -p "$out/alpine/$apkarch"
     cp "$work/repo/splicefs/$apkarch/$name-$apkver-r0.apk" "$out/alpine/$apkarch/"

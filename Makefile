@@ -11,7 +11,9 @@ LINUX_RUN := docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-o
 # container, on every system, so a package built here is the package CI builds.
 RPM_IMAGE ?= rockylinux/rockylinux:9
 APK_IMAGE ?= alpine:3.22
-UBUNTU_IMAGE ?= ubuntu:24.04
+# Empty tests this machine's own CPU type; linux/amd64 or linux/arm64 tests the other one
+# by emulation (Docker Desktop provides it).
+PLATFORM ?=
 # Alpine versions cannot carry a commit, so builds between releases carry its date.
 PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
 PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
@@ -61,12 +63,10 @@ package:
 	$(PACKAGE_RUN) $(RPM_IMAGE) sh -c 'cd /src && scripts/package-rpm.sh /out'
 	$(PACKAGE_RUN) $(APK_IMAGE) sh -c 'cd /src && scripts/package-apk.sh /out'
 
-# Installs and removes each package in a clean system of its kind.
+# Installs and removes each package in a clean container of every system listed in
+# packaging/test-systems (CI reads the same list) and reports each system's result.
 package-test:
-	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cd /src && scripts/package-test-deb.sh /out'
-	$(PACKAGE_RUN) $(UBUNTU_IMAGE) sh -c 'cd /src && scripts/package-test-deb.sh /out'
-	$(PACKAGE_RUN) $(RPM_IMAGE) sh -c 'cd /src && scripts/package-test-rpm.sh /out'
-	$(PACKAGE_RUN) $(APK_IMAGE) sh -c 'cd /src && scripts/package-test-apk.sh /out'
+	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh
 
 clean:
 	rm -rf bin dist coverage.out coverage.html

@@ -123,7 +123,11 @@ make check      # everything CI runs: format check, vet, tests with the race det
 make check-linux  # the same on Linux with real FUSE mounts, in a container (needs Docker)
 make lint         # golangci-lint
 make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (needs Docker)
-make package-test # installs and removes each package in a clean container of its kind
+make package-test # installs and removes each package in a clean container of every system
+```
+
+`make package-test` covers every system listed in `packaging/test-systems`. From an arm64
+machine, `make package-test PLATFORM=linux/amd64` tests the other CPU type by emulation.
 ```
 
 ## Repository layout
