@@ -60,17 +60,35 @@ func (s *Session) connect(ctx context.Context) error {
 	return nil
 }
 
-// enter logs in at the entry node and fetches the node list with that token.
+// entryNode returns the cluster host. It is dialed on first use and kept; if dialing fails, the
+// next attempt dials again.
+func (s *Session) entryNode() (Node, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entry == nil {
+		entry, err := s.opts.Dial(entryName, s.opts.EntryURL)
+		if err != nil {
+			return nil, err
+		}
+		s.entry = entry
+	}
+	return s.entry, nil
+}
+
+func (s *Session) badCredentials(what string, err error) error {
+	return fmt.Errorf("cluster %q: %s: %w: %w", s.opts.Cluster, what, ErrBadCredentials, err)
+}
+
+// enter logs in at the cluster host and fetches the node list with that token.
 func (s *Session) enter(ctx context.Context) (wire.LoginResponse, []*member, error) {
-	entry, err := s.opts.Dial(entryName, s.opts.EntryURL)
+	entry, err := s.entryNode()
 	if err != nil {
 		return wire.LoginResponse{}, nil, s.unavailable("dial entry", err)
 	}
 	login, err := entry.Login(ctx, s.opts.User, s.opts.Password)
 	if err != nil {
 		if s.opts.IsUnauthorized(err) {
-			return wire.LoginResponse{}, nil, fmt.Errorf("cluster %q: log in at entry: %w: %w",
-				s.opts.Cluster, ErrBadCredentials, err)
+			return wire.LoginResponse{}, nil, s.badCredentials("log in at entry", err)
 		}
 		return wire.LoginResponse{}, nil, s.unavailable("log in at entry", err)
 	}
@@ -155,7 +173,7 @@ func (s *Session) login(ctx context.Context, stale string) error {
 	nodes := nodesOf(s.members)
 	s.mu.Unlock()
 
-	login, err := s.loginAny(ctx, nodes)
+	login, err := s.loginEntryFirst(ctx, nodes)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -168,6 +186,26 @@ func (s *Session) login(ctx context.Context, stale string) error {
 	s.loginRetry.reset()
 	s.token, s.expires = login.Token, login.Expires
 	return nil
+}
+
+// loginEntryFirst logs in at the cluster host. Only when it cannot be reached does it log in at
+// the known nodes, so that a client that knows the nodes keeps working while the cluster host
+// is down. Rejected credentials are final: the nodes would share the user file.
+func (s *Session) loginEntryFirst(ctx context.Context, nodes []Node) (wire.LoginResponse, error) {
+	entry, err := s.entryNode()
+	if err != nil {
+		return s.loginAny(ctx, nodes)
+	}
+	login, err := entry.Login(ctx, s.opts.User, s.opts.Password)
+	switch {
+	case err == nil:
+		return login, nil
+	case s.opts.IsUnauthorized(err):
+		return wire.LoginResponse{}, s.badCredentials("log in at entry", err)
+	case s.opts.IsUnavailable(err):
+		return s.loginAny(ctx, nodes)
+	}
+	return wire.LoginResponse{}, s.unavailable("log in at entry", err)
 }
 
 // loginAny logs in at all nodes at once and returns the first success, so that a
@@ -211,7 +249,7 @@ func (s *Session) loginAny(parent context.Context, nodes []Node) (wire.LoginResp
 	case parent.Err() != nil:
 		return wire.LoginResponse{}, parent.Err()
 	case denied != nil:
-		return wire.LoginResponse{}, fmt.Errorf("cluster %q: log in: %w: %w", s.opts.Cluster, ErrBadCredentials, denied)
+		return wire.LoginResponse{}, s.badCredentials("log in", denied)
 	}
 	return wire.LoginResponse{}, s.unavailable("log in", last)
 }

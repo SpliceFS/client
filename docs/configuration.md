@@ -91,7 +91,7 @@ name is the name.
 
 | Key                | Meaning                                                | Default   | Limits |
 |--------------------|--------------------------------------------------------|-----------|--------|
-| `url`              | Address of any node, or of a name that resolves to several | required | absolute `http` or `https` URL with a host, no `?` or `#`; a trailing `/` is dropped |
+| `url`              | Address of the cluster host: one name for the whole cluster | required | absolute `http` or `https` URL with a host, no `?` or `#`; a trailing `/` is dropped |
 | `user`             | Login name                                             | required  | not empty |
 | `password_file`    | File that holds the password                           | required  | not empty; a relative path is relative to the configuration folder |
 | `block_size`       | Size of the byte ranges that are requested and cached  | `5MiB`    | `64KiB` to `1GiB` |
@@ -100,13 +100,20 @@ name is the name.
 
 ```yaml
 # /etc/splicefs/client/clusters.d/east.yaml
-url: https://east.example.com:8480/api   # any node, or a name that resolves to several
+url: https://sync.example.com:8480/api   # the cluster host
 user: alice
 password_file: secrets/east              # relative to the configuration folder
 block_size: 5MiB
 streams_per_node: 4
 read_ahead: 64MiB
 ```
+
+**Cluster host and node hosts.** The `url` is the cluster host: one name for the whole cluster,
+which should resolve to as many of its servers as possible. The client logs in there and gets
+the list of node hosts there, and asks again every minute. File contents, directory listings
+and statistics are requested from the node hosts, which each server publishes with its
+`cluster.url`. If the cluster host cannot be reached, a client that already knows the node
+hosts keeps working through them.
 
 The password file holds the password and nothing else. A newline at the end is ignored. Keep
 the file readable only by the user the client runs as:

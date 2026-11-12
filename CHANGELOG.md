@@ -79,6 +79,8 @@ notable ones.
 - **Breaking:** `splicefs mount` no longer exits when its last mount ends, and it starts
   without a configuration.
 - Packages start the service on install even when nothing is configured.
+- The client logs in, renews its token and asks for the node list at the cluster host, every
+  minute instead of every 5 minutes, and uses the node hosts only when it cannot be reached.
 
 ### Fixed
 

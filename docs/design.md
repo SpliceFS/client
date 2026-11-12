@@ -153,13 +153,18 @@ never overlaps a reload or a mount request.
 
 ## Discovery
 
-Each cluster is configured with one entry URL. The client logs in there, fetches the node
-list, and from then on talks to every node by its own URL. If the entry name resolves to
-several addresses, they are tried in random order. A node is addressed by one URL; split
-DNS decides whether that URL leads to an internal or a public address.
+Each cluster is configured with one URL, the cluster host: one name for the whole cluster,
+which resolves to as many of its servers as possible. Every server also has its own node host,
+which it publishes. The client logs in at the cluster host, including every time it renews its
+token, and asks the cluster host for the list of node hosts again every minute, because the
+call is cheap. Only requests for file contents, directory listings and statistics go to the
+node hosts. A node is addressed by one URL; split DNS decides whether that URL leads to an
+internal or a public address.
 
-Login is sent to all nodes at once and the first success wins, so a user file that has not
-reached every node yet still works.
+If the cluster host cannot be reached, a client that already knows the node hosts keeps
+working: it logs in at all node hosts at once, so a user file that has not reached every node
+yet still works, and asks one node host for the list. Rejected credentials are final and are
+not retried at the node hosts.
 
 ## The merged tree
 

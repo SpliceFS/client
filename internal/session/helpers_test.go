@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -188,6 +189,46 @@ func (e *env) dials() []string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return slices.Clone(e.dialed)
+}
+
+// entryDown makes the cluster host fail every call as unreachable.
+func (e *env) entryDown() {
+	e.entry.setLogin(failWith(errDown))
+	e.entry.setNodes(nodesFail(errDown))
+}
+
+// dialCount is how often the name was dialed.
+func (e *env) dialCount(name string) int {
+	n := 0
+	for _, d := range e.dials() {
+		if strings.HasPrefix(d, name+" ") {
+			n++
+		}
+	}
+	return n
+}
+
+// nodeLogins is the number of logins at the named nodes together; the cluster host is not
+// one of them.
+func (e *env) nodeLogins() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	total := 0
+	for _, n := range e.nodes {
+		total += n.loginCount()
+	}
+	return total
+}
+
+// nodeListings is the number of node list requests at the named nodes together.
+func (e *env) nodeListings() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	total := 0
+	for _, n := range e.nodes {
+		total += len(n.listingTokens())
+	}
+	return total
 }
 
 func (e *env) options() Options {
