@@ -9,17 +9,18 @@ command=/usr/bin/splicefs
 command_args="mount"
 output_log=/var/log/splicefs.log
 error_log=/var/log/splicefs.log
+extra_started_commands="reload"
+description_reload="Apply the configuration without a restart"
 
 depend() {
     need net
     after firewall
 }
 
-start_pre() {
-    # The client cannot run without its configuration. Saying so here is clearer than a
-    # service that starts and dies.
-    if [ ! -f /etc/splicefs/client/config.yaml ]; then
-        eerror "/etc/splicefs/client/config.yaml does not exist"
-        return 1
-    fi
+reload() {
+    # The client applies its configuration again on SIGHUP: added mounts are mounted,
+    # removed ones are detached, and a configuration with an error is refused and logged.
+    ebegin "Reloading $RC_SVCNAME"
+    supervise-daemon "$RC_SVCNAME" --signal HUP
+    eend $?
 }
