@@ -218,13 +218,15 @@ func (s *Session) refreshNodes(ctx context.Context) {
 		return
 	}
 	s.fetched = now
-	pick := s.usable(now)[0]
 	known := s.members
 	s.mu.Unlock()
 
-	list, from, err := s.fetchNodeList(ctx, pick)
+	list, err := s.fetchNodeList(ctx)
 	if err != nil {
-		s.opts.Logger.Warn("node list refresh failed", "cluster", s.opts.Cluster, "node", from, "error", err)
+		// The list the client has stays until the next attempt; the nodes are not asked, as
+		// a cluster host that cannot be reached means no node is assumed reachable.
+		s.opts.Logger.Warn("node list refresh failed", "cluster", s.opts.Cluster,
+			"cluster_host", s.opts.EntryURL, "error", err)
 		return
 	}
 	next := s.dialAll(list.Nodes, known)
@@ -237,25 +239,18 @@ func (s *Session) refreshNodes(ctx context.Context) {
 	s.mu.Unlock()
 }
 
-// fetchNodeList asks the cluster host for the node list. Only when the cluster host cannot be
-// reached does it ask fallback, a known node, so that a client that knows the nodes keeps
-// following changes while the cluster host is down. from names who answered or was asked last.
-func (s *Session) fetchNodeList(ctx context.Context, fallback *member) (list wire.Nodes, from string, err error) {
-	get := func(n Node) func(context.Context, string) error {
-		return func(ctx context.Context, token string) (err error) {
-			list, err = n.Nodes(ctx, token)
-			return err
-		}
-	}
+// fetchNodeList asks the cluster host for the node list.
+func (s *Session) fetchNodeList(ctx context.Context) (list wire.Nodes, err error) {
 	entry, err := s.entryNode()
-	if err == nil {
-		// Not Do: the cluster host is not a member, so its outcome is no node's health.
-		if _, err = s.withToken(ctx, get(entry)); err == nil || !s.opts.IsUnavailable(err) {
-			return list, entryName, err
-		}
+	if err != nil {
+		return list, err
 	}
-	err = s.Do(ctx, fallback.node, get(fallback.node))
-	return list, fallback.name, err
+	// Not Do: the cluster host is not a member, so its outcome is no node's health.
+	_, err = s.withToken(ctx, func(ctx context.Context, token string) (err error) {
+		list, err = entry.Nodes(ctx, token)
+		return err
+	})
+	return list, err
 }
 
 // usable is the members that are not cooling, or the one that stops cooling first.

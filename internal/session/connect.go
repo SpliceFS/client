@@ -2,9 +2,7 @@ package session
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/SpliceFS/common/wire"
 )
@@ -81,16 +79,9 @@ func (s *Session) badCredentials(what string, err error) error {
 
 // enter logs in at the cluster host and fetches the node list with that token.
 func (s *Session) enter(ctx context.Context) (wire.LoginResponse, []*member, error) {
-	entry, err := s.entryNode()
+	entry, login, err := s.loginAtEntry(ctx)
 	if err != nil {
-		return wire.LoginResponse{}, nil, s.unavailable("dial entry", err)
-	}
-	login, err := entry.Login(ctx, s.opts.User, s.opts.Password)
-	if err != nil {
-		if s.opts.IsUnauthorized(err) {
-			return wire.LoginResponse{}, nil, s.badCredentials("log in at entry", err)
-		}
-		return wire.LoginResponse{}, nil, s.unavailable("log in at entry", err)
+		return wire.LoginResponse{}, nil, err
 	}
 	list, err := entry.Nodes(ctx, login.Token)
 	if err != nil {
@@ -170,10 +161,9 @@ func (s *Session) login(ctx context.Context, stale string) error {
 		s.mu.Unlock()
 		return err
 	}
-	nodes := nodesOf(s.members)
 	s.mu.Unlock()
 
-	login, err := s.loginEntryFirst(ctx, nodes)
+	_, login, err := s.loginAtEntry(ctx)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -188,68 +178,20 @@ func (s *Session) login(ctx context.Context, stale string) error {
 	return nil
 }
 
-// loginEntryFirst logs in at the cluster host. Only when it cannot be reached does it log in at
-// the known nodes, so that a client that knows the nodes keeps working while the cluster host
-// is down. Rejected credentials are final: the nodes would share the user file.
-func (s *Session) loginEntryFirst(ctx context.Context, nodes []Node) (wire.LoginResponse, error) {
+// loginAtEntry logs in at the cluster host and returns it with the login. Every login goes
+// there and nowhere else: when the cluster host cannot be reached, no node is assumed to be
+// reachable either, so the failure is final until the next attempt.
+func (s *Session) loginAtEntry(ctx context.Context) (Node, wire.LoginResponse, error) {
 	entry, err := s.entryNode()
 	if err != nil {
-		return s.loginAny(ctx, nodes)
+		return nil, wire.LoginResponse{}, s.unavailable("dial entry", err)
 	}
 	login, err := entry.Login(ctx, s.opts.User, s.opts.Password)
 	switch {
 	case err == nil:
-		return login, nil
+		return entry, login, nil
 	case s.opts.IsUnauthorized(err):
-		return wire.LoginResponse{}, s.badCredentials("log in at entry", err)
-	case s.opts.IsUnavailable(err):
-		return s.loginAny(ctx, nodes)
+		return nil, wire.LoginResponse{}, s.badCredentials("log in at entry", err)
 	}
-	return wire.LoginResponse{}, s.unavailable("log in at entry", err)
-}
-
-// loginAny logs in at all nodes at once and returns the first success, so that a
-// user file that has not reached every node yet still works. The slower attempts are
-// cancelled and have ended when loginAny returns.
-func (s *Session) loginAny(parent context.Context, nodes []Node) (wire.LoginResponse, error) {
-	if len(nodes) == 0 {
-		return wire.LoginResponse{}, s.unavailable("log in", errors.New("no nodes known"))
-	}
-	ctx, cancel := context.WithCancel(parent)
-	type result struct {
-		login wire.LoginResponse
-		err   error
-	}
-	results := make(chan result, len(nodes))
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	defer cancel()
-	for _, n := range nodes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			login, err := n.Login(ctx, s.opts.User, s.opts.Password)
-			results <- result{login, err}
-		}()
-	}
-
-	var denied, last error
-	for range nodes {
-		r := <-results
-		switch {
-		case r.err == nil:
-			return r.login, nil
-		case s.opts.IsUnauthorized(r.err):
-			denied = r.err
-		default:
-			last = r.err
-		}
-	}
-	switch {
-	case parent.Err() != nil:
-		return wire.LoginResponse{}, parent.Err()
-	case denied != nil:
-		return wire.LoginResponse{}, s.badCredentials("log in", denied)
-	}
-	return wire.LoginResponse{}, s.unavailable("log in", last)
+	return nil, wire.LoginResponse{}, s.unavailable("log in at entry", err)
 }

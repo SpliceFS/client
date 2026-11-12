@@ -112,8 +112,10 @@ read_ahead: 64MiB
 which should resolve to as many of its servers as possible. The client logs in there and gets
 the list of node hosts there, and asks again every minute. File contents, directory listings
 and statistics are requested from the node hosts, which each server publishes with its
-`cluster.url`. If the cluster host cannot be reached, a client that already knows the node
-hosts keeps working through them.
+`cluster.url`. The client needs the cluster host to log in and to learn the node hosts. If the
+cluster host cannot be reached, the client treats the cluster as unreachable for those two
+things. It keeps using the node hosts it already knows until its login runs out, and it
+recovers by itself when the cluster host answers again.
 
 The password file holds the password and nothing else. A newline at the end is ignored. Keep
 the file readable only by the user the client runs as:

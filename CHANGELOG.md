@@ -80,7 +80,9 @@ notable ones.
   without a configuration.
 - Packages start the service on install even when nothing is configured.
 - The client logs in, renews its token and asks for the node list at the cluster host, every
-  minute instead of every 5 minutes, and uses the node hosts only when it cannot be reached.
+  minute instead of every 5 minutes. If the cluster host cannot be reached, the client treats
+  the cluster as unreachable, keeps the node hosts it knows until its login runs out, and
+  recovers by itself when the cluster host answers again.
 
 ### Fixed
 

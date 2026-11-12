@@ -161,10 +161,11 @@ call is cheap. Only requests for file contents, directory listings and statistic
 node hosts. A node is addressed by one URL; split DNS decides whether that URL leads to an
 internal or a public address.
 
-If the cluster host cannot be reached, a client that already knows the node hosts keeps
-working: it logs in at all node hosts at once, so a user file that has not reached every node
-yet still works, and asks one node host for the list. Rejected credentials are final and are
-not retried at the node hosts.
+The client needs the cluster host to log in and to learn the node hosts. If the cluster host
+cannot be reached, the client assumes that no node can be reached either and treats the
+cluster as unreachable for those two things: it does not log in or ask for the list at a node
+host. It keeps using the node hosts it already knows until its login runs out, and it recovers
+by itself when the cluster host answers again.
 
 ## The merged tree
 
