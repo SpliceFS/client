@@ -60,6 +60,9 @@ type billyFS struct {
 	rootBudget time.Duration
 	created    time.Time // modification time of the root until the core has answered
 	root       rootAttr
+
+	spaceMu   sync.Mutex
+	lastSpace core.Space // the last capacity the core reported; zero until it has
 }
 
 // rootAttr is the state of the root's attributes: the last answer of the core and the
@@ -204,7 +207,9 @@ func (b *billyFS) refreshRoot(done chan struct{}) {
 	defer cancel()
 	attr, err := b.fsys.Stat(ctx, "")
 	if err != nil {
-		b.log.Warn("core call failed, answering with the last known root", "op", "stat", "err", err)
+		// The kernel asks for the root many times a second. The session already warns
+		// that the cluster cannot be reached, so this line is for debugging only.
+		b.log.Debug("core call failed, answering with the last known root", "err", err)
 	}
 	r := &b.root
 	r.mu.Lock()
@@ -313,15 +318,22 @@ func (b *billyFS) Root() string {
 	return "/"
 }
 
-// space reports the capacity of the view.
-func (b *billyFS) space(ctx context.Context) (core.Space, error) {
+// space reports the capacity of the view. It never fails: the kernel asks for it while it
+// mounts, and a mount must succeed while no node can be reached. When the core cannot
+// answer, the last capacity it reported is given, which is zero before the first answer.
+func (b *billyFS) space(ctx context.Context) core.Space {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 	sp, err := b.fsys.StatFS(ctx)
+	b.spaceMu.Lock()
+	defer b.spaceMu.Unlock()
 	if err != nil {
-		return core.Space{}, b.mapError("statfs", "", err)
+		// mapError is called for its log line; the error itself is not passed on.
+		_ = b.mapError("statfs", "", err)
+		return b.lastSpace
 	}
-	return sp, nil
+	b.lastSpace = sp
+	return sp
 }
 
 // fileInfo presents a core.Attr as an os.FileInfo with the attributes the mount

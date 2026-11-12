@@ -318,6 +318,9 @@ func TestBillyRootAttrNeverRunsTwoCallsAtOnce(t *testing.T) {
 
 	release()
 	waitFor(t, pendingRoot(t, b), "the call to end")
+	// With a long budget the next request waits for its own call, so the count below does
+	// not depend on how fast that call is scheduled.
+	b.rootBudget = 5 * time.Second
 	wantRootDir(t, b, fakeMTime)
 	if n := rootStats(fsys); n != 2 {
 		t.Errorf("the core got %d root calls after the first ended, want 2", n)
@@ -330,7 +333,9 @@ func TestBillyRootAttrLogsAFailure(t *testing.T) {
 	failRoot(fsys, core.ErrUnavailable)
 	var logged bytes.Buffer
 	b := newTestBilly(t, fsys)
-	b.log = slog.New(slog.NewTextHandler(&logged, nil))
+	// The line is at debug level, because the kernel asks for the root many times a second.
+	debug := &slog.HandlerOptions{Level: slog.LevelDebug}
+	b.log = slog.New(slog.NewTextHandler(&logged, debug))
 	wantRootDir(t, b, b.created)
 	if !strings.Contains(logged.String(), core.ErrUnavailable.Error()) {
 		t.Errorf("the failure was not logged: %q", logged.String())
@@ -447,7 +452,6 @@ func TestBillyErrorMapping(t *testing.T) {
 				"stat":    func() error { _, err := b.Stat("dir"); return err },
 				"readdir": func() error { _, err := b.ReadDir("dir"); return err },
 				"open":    func() error { _, err := b.Open("dir/hello.txt"); return err },
-				"space":   func() error { _, err := b.space(t.Context()); return err },
 			}
 			for op, call := range calls {
 				if err := call(); err == nil || !tt.check(err) {
@@ -647,9 +651,8 @@ func TestBillyChrootAndRoot(t *testing.T) {
 func TestBillySpace(t *testing.T) {
 	t.Parallel()
 	b := newTestBilly(t, treeFS())
-	got, err := b.space(t.Context())
-	if err != nil || got != (core.Space{Total: 1000, Free: 400}) {
-		t.Errorf("space = %+v, %v", got, err)
+	if got := b.space(t.Context()); got != (core.Space{Total: 1000, Free: 400}) {
+		t.Errorf("space = %+v", got)
 	}
 }
 

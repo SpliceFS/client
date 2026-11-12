@@ -86,10 +86,7 @@ func (h *handler) Change(billy.Filesystem) billy.Change {
 
 // FSStat reports the capacity of the view.
 func (h *handler) FSStat(ctx context.Context, _ billy.Filesystem, stat *gonfs.FSStat) error {
-	space, err := h.fs.space(ctx)
-	if err != nil {
-		return &gonfs.NFSStatusError{NFSStatus: gonfs.NFSStatusIO, WrappedErr: err}
-	}
+	space := h.fs.space(ctx)
 	stat.TotalSize = space.Total
 	stat.FreeSize = space.Free
 	stat.AvailableSize = space.Free
