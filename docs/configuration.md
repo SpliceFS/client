@@ -281,6 +281,31 @@ A password file that cannot be read, two mounts that share a cache folder but se
 limits, and a cache folder that cannot be opened all make the whole reload fail, because they
 are found before anything changes.
 
+## What the client repairs by itself
+
+**A mount that stops answering.** Every 10 seconds the client checks every mount. It looks up
+a reserved name, `.splicefs-probe`, in the root of the mount. The name never exists and is
+never listed in a directory. The client answers the lookup itself and asks no server, so the
+check works whatever the cluster is doing. A cluster that is down does not fail the check.
+
+A mount that fails three checks in a row is force unmounted and mounted again from the
+configuration it has. A check fails when there is no answer within 5 seconds or the answer is
+wrong. The log has the line `mount does not answer, mounting it again`.
+
+- Programs that have files open in the old mount get errors. They must open the files again.
+- On Linux the forced unmount also aborts the kernel connection of the mount, so programs
+  that are waiting on it get an error and do not wait forever.
+- A mount that you asked for with `mount -t splicefs` or fstab is mounted again too.
+
+**A client that is stuck.** After every round of checks the client tells systemd that it is
+alive. The packaged unit has `WatchdogSec=300`. If the loop that owns the mounts is stuck for
+five minutes, systemd kills the client and starts it again. The heartbeat says that the client
+is alive. It does not say that every mount is healthy: a bad mount is found by the check
+above.
+
+On Alpine (OpenRC) there is no heartbeat. `supervise-daemon` restarts the client only when it
+exits.
+
 ## Checking
 
 Check the configuration before you start the client or reload it:

@@ -48,9 +48,10 @@ each node, `splicefsd`, is in the [server repository](https://github.com/SpliceF
   mounts it with FUSE. When a file is read, it requests blocks from all nodes that hold an
   identical copy, gives more work to the faster nodes, and requests a late block again from
   another node.
-- **Replication is not part of SpliceFS.** Use Syncthing, rsync, a clustered filesystem, or
-  nothing at all: a cluster of one node works. SpliceFS only requires that a file with the
-  same path, size and modification time has the same content on every node.
+- **Replication is not part of SpliceFS yet.** Today, use Syncthing, rsync, a clustered
+  filesystem, or nothing at all: a cluster of one node works. SpliceFS only requires that a
+  file with the same path, size and modification time has the same content on every node.
+  Reading is the first step; writing and built-in redundancy are planned for later versions.
 
 ## Features
 
@@ -65,6 +66,8 @@ each node, `splicefsd`, is in the [server repository](https://github.com/SpliceF
   ones are detached at once, files that are open keep working until they are closed
 - On Linux, `mount -t splicefs` and `/etc/fstab` lines of type `splicefs` work too: the helper
   asks the running client to make the mount
+- Repairs itself: every mount is checked every 10 seconds and a mount that stops answering is
+  mounted again; on systemd the client sends a heartbeat and is restarted if its loop gets stuck
 - Several clusters and several mounts in one client
 - Multi-source block reads with per-node speed tracking and re-request of late blocks
 - Local block cache with size, age and free-space limits, kept across restarts; files that

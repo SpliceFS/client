@@ -54,6 +54,15 @@ All notable changes to this project are recorded here. The format follows
   `/usr/sbin/mount.splicefs`, a link to the program. Mounts made this way come back when the
   service restarts, and are cleared on a reboot. See "Mounting with mount and fstab" in the
   configuration reference.
+- Health check: every 10 seconds the client looks up the reserved name `.splicefs-probe` in
+  the root of every mount. The client answers it itself and asks no server. A mount that fails
+  three checks in a row (no answer within 5 seconds, or a wrong answer) is force unmounted
+  and mounted again, and the log has `mount does not answer, mounting it again`. On Linux the
+  forced unmount also aborts the kernel connection, so programs waiting on the mount get an
+  error and do not wait forever.
+- Heartbeat: after every round of checks the client sends `WATCHDOG=1` to systemd, and the
+  packaged unit has `WatchdogSec=300`. A client whose run loop is stuck for five minutes is
+  killed and started again. On Alpine (OpenRC) there is no heartbeat.
 
 ### Changed
 
@@ -67,6 +76,12 @@ All notable changes to this project are recorded here. The format follows
 - **Breaking:** `splicefs mount` no longer exits when its last mount ends, and it starts
   without a configuration.
 - Packages start the service on install even when nothing is configured.
+
+### Fixed
+
+- macOS: the client now starts and mounts while no server can be reached, as it already did
+  on Linux. The mount appears, listings fail with an input/output error until a server
+  answers, and then it recovers by itself.
 
 ### Security
 
