@@ -122,6 +122,8 @@ make build      # the binary is ./bin/splicefs
 make check      # everything CI runs: format check, vet, tests with the race detector, coverage gate
 make check-linux  # the same on Linux with real FUSE mounts, in a container (needs Docker)
 make lint         # golangci-lint
+make package      # Debian packages for amd64 and arm64 in ./dist (needs Docker)
+make package-test # installs, removes and purges the package in a clean container
 ```
 
 ## Repository layout

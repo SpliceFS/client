@@ -1,0 +1,17 @@
+#!/bin/sh
+# Runs after the package's files are removed.
+set -e
+
+case "$1" in
+    remove)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+        fi
+        ;;
+    purge)
+        # Purge means the administrator wants the configuration gone as well. The files in
+        # this directory were never part of the package, so dpkg does not know them.
+        rm -rf /etc/splicefs/client
+        rmdir /etc/splicefs 2>/dev/null || true
+        ;;
+esac

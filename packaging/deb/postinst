@@ -1,0 +1,21 @@
+#!/bin/sh
+# Runs after the package's files are in place. $2 is the version that was installed
+# before, and is empty on a first install.
+set -e
+
+case "$1" in
+    configure)
+        # A container or a chroot has no running systemd. The files are installed and
+        # there is nothing to start.
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload
+            if [ -z "$2" ]; then
+                systemctl enable splicefs.service
+                systemctl start splicefs.service || echo "splicefs did not start; see: journalctl -u splicefs" >&2
+            else
+                # A broken configuration must not turn an upgrade into a failed install.
+                systemctl try-restart splicefs.service || echo "splicefs did not restart; see: journalctl -u splicefs" >&2
+            fi
+        fi
+        ;;
+esac

@@ -3,6 +3,9 @@ Description=SpliceFS mounts
 Documentation=https://github.com/SpliceFS/client
 After=network-online.target
 Wants=network-online.target
+# The client cannot run without its configuration. With this condition a fresh install
+# stays stopped, without an error, until the file exists.
+ConditionPathExists=/etc/splicefs/client/config.yaml
 
 [Service]
 # The client reports READY once every mount is up, so units ordered after this one

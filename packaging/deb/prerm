@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs before the package's files are removed. On an upgrade the service keeps running
+# and the new version's postinst restarts it.
+set -e
+
+case "$1" in
+    remove | deconfigure)
+        if [ -d /run/systemd/system ]; then
+            systemctl disable --now splicefs.service || true
+        fi
+        ;;
+esac

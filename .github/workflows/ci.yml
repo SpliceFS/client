@@ -52,6 +52,21 @@ jobs:
       - name: Build
         run: make build
 
+  package:
+    name: Packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build the packages
+        run: make package
+      - name: Install, remove and purge in a clean system
+        run: make package-test
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: dist/*.deb
+          if-no-files-found: error
+
   lint:
     name: Lint (${{ matrix.goos }})
     runs-on: ubuntu-latest

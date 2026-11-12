@@ -7,7 +7,12 @@ LINUX_IMAGE ?= golang:1.27
 LINUX_RUN := docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
 	-v "$(CURDIR)":/src:ro -v splicefs-gomod:/go/pkg/mod $(LINUX_IMAGE)
 
-.PHONY: all build check check-linux fmt fmt-check vet test cover lint clean
+# The package steps run in a plain container of the same image on every system, so a
+# package built here is the package CI builds.
+PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out \
+	-v splicefs-gomod:/go/pkg/mod $(LINUX_IMAGE)
+
+.PHONY: all build check check-linux fmt fmt-check vet test cover lint package package-test clean
 
 all: check build
 
@@ -42,5 +47,14 @@ check-linux:
 lint:
 	golangci-lint run
 
+# Installable packages in ./dist.
+package:
+	mkdir -p dist
+	$(PACKAGE_RUN) sh -c 'cp -r /src /tmp/w && cd /tmp/w && scripts/package.sh /out'
+
+# Installs, removes and purges the package in a clean system.
+package-test:
+	$(PACKAGE_RUN) sh -c 'cd /src && scripts/package-test.sh /out'
+
 clean:
-	rm -rf bin coverage.out coverage.html
+	rm -rf bin dist coverage.out coverage.html
