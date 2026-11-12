@@ -26,6 +26,21 @@ make fmt          # rewrite files with gofmt
 
 `make check` and `make lint` are exactly what CI runs. If both pass locally, CI will pass.
 
+## Branches
+
+SpliceFS uses the gitflow branching model.
+
+- `main` holds released code only. Every commit on it is a release and carries a version tag.
+- `develop` is where work comes together. It is the default branch, and pull requests target it.
+- `feature/<name>` branches start from `develop` and merge back into it by pull request.
+- `release/<version>` branches start from `develop` when a release is prepared. They take only
+  fixes and the changelog, and merge into `main` and back into `develop`.
+- `hotfix/<version>` branches start from `main` for urgent fixes and merge into `main` and
+  `develop`.
+
+`main` and `develop` are protected: no direct pushes, no force pushes, no deletion, and CI
+must pass before a merge.
+
 ## Standards
 
 ### Code
@@ -74,8 +89,8 @@ make fmt          # rewrite files with gofmt
   "Added" or "Adds"). The body explains why, not what.
 - Update [CHANGELOG.md](CHANGELOG.md) under **Unreleased** for anything a user would notice.
 - Update the documents in `docs/` in the same pull request as the behavior they describe.
-- A pull request needs passing CI and one maintainer approval. Pull requests are squashed
-  on merge.
+- A pull request targets `develop` and needs passing CI. Approval by a second maintainer
+  becomes a requirement as soon as the project has one.
 
 ## What CI checks
 
@@ -110,9 +125,13 @@ for as long as a supported client release uses it.
 
 A release is cut by a maintainer:
 
-1. Move the **Unreleased** entries in `CHANGELOG.md` under a new version heading with the date.
-2. Commit as `Release vX.Y.Z` and tag that commit `vX.Y.Z`.
-3. Push the tag. The version printed by `--version` comes from the tag at build time.
+1. Start `release/X.Y.Z` from `develop`.
+2. Move the **Unreleased** entries in `CHANGELOG.md` under a new version heading with the date
+   and commit as `Release vX.Y.Z`.
+3. Merge the branch into `main` by pull request, with a merge commit.
+4. Tag that merge commit `vX.Y.Z` and push the tag. The version printed by `--version` comes
+   from the tag at build time, and the tag starts the publish job.
+5. Merge `main` back into `develop`.
 
 ## License
 
