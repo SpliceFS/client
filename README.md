@@ -4,7 +4,6 @@
 [![Security](https://github.com/SpliceFS/client/actions/workflows/security.yml/badge.svg)](https://github.com/SpliceFS/client/actions/workflows/security.yml)
 [![Coverage](https://codecov.io/gh/SpliceFS/client/graph/badge.svg)](https://codecov.io/gh/SpliceFS/client)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/SpliceFS/client/badge)](https://scorecard.dev/viewer/?uri=github.com/SpliceFS/client)
-[![Go Report Card](https://goreportcard.com/badge/github.com/SpliceFS/client)](https://goreportcard.com/report/github.com/SpliceFS/client)
 [![Go Reference](https://pkg.go.dev/badge/github.com/SpliceFS/client.svg)](https://pkg.go.dev/github.com/SpliceFS/client)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16606/badge)](https://www.bestpractices.dev/projects/16606)
 [![Quality gate](https://sonarcloud.io/api/project_badges/measure?project=SpliceFS_client&metric=alert_status)](https://sonarcloud.io/summary/overall?id=SpliceFS_client)
@@ -131,6 +130,8 @@ make check-linux  # the same on Linux with real FUSE mounts, in a container (nee
 make lint         # golangci-lint
 make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (needs Docker)
 make package-test # installs and removes each package in a clean container of every system
+make repo         # signed apt, rpm and Alpine repositories in ./dist/repo from the packages in ./dist
+make repo-test    # installs from the repositories with signature checks on, in every system
 ```
 
 `make package-test` covers every system listed in `packaging/test-systems`. From an arm64

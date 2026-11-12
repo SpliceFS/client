@@ -84,6 +84,10 @@ jobs:
         run: make package
       - name: Install and remove each package in a clean system of its kind
         run: make package-test
+      - name: Build the signed package repositories
+        run: make repo
+      - name: Install from the repositories with signature checks on
+        run: make repo-test
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.arch == 'amd64'
         with:

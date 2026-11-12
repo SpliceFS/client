@@ -24,3 +24,6 @@ All notable changes to this project are recorded here. The format follows
   `/etc/splicefs/client`. The service is enabled and starts once a configuration exists.
 - `make package-test` install-tests the packages on every supported Debian, Ubuntu, Rocky
   Linux, Amazon Linux, openSUSE and Alpine version, listed in `packaging/test-systems`.
+- Signed apt, rpm and Alpine repositories built from the packages (`make repo`), with a test
+  that installs from each on every supported system with signature checks on
+  (`make repo-test`).

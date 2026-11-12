@@ -19,7 +19,8 @@ PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null
 PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
-.PHONY: all build check check-linux fmt fmt-check vet test cover lint package package-test clean
+.PHONY: all build check check-linux fmt fmt-check vet test cover lint package package-test \
+	repo repo-test clean
 
 all: check build
 
@@ -55,18 +56,40 @@ lint:
 	golangci-lint run
 
 # Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
-# for amd64 and arm64. The program is compiled once and every format wraps that binary.
+# for amd64 and arm64. The program is compiled once and every format wraps that binary. The
+# apk files are signed with the repository key that signing-keys.sh puts in dist/keys.
 package:
 	mkdir -p dist
+	scripts/signing-keys.sh
 	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cp -r /src /tmp/w && cd /tmp/w && \
 		scripts/package-binaries.sh /out && scripts/package-deb.sh /out'
 	$(PACKAGE_RUN) $(RPM_IMAGE) sh -c 'cd /src && scripts/package-rpm.sh /out'
-	$(PACKAGE_RUN) $(APK_IMAGE) sh -c 'cd /src && scripts/package-apk.sh /out'
+	$(PACKAGE_RUN) -v "$(CURDIR)/dist/keys":/keys:ro $(APK_IMAGE) \
+		sh -c 'cd /src && scripts/package-apk.sh /out'
 
 # Installs and removes each package in a clean container of every system listed in
 # packaging/test-systems (CI reads the same list) and reports each system's result.
 package-test:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh
+
+# Signed package repositories in ./dist/repo, made from the packages make package left in
+# ./dist (it builds none). Keys come from scripts/signing-keys.sh, which is the one place that
+# picks real or throwaway keys. Each format runs in its own distribution's container, with
+# the keys mounted read-only.
+REPO_RUN := docker run --rm -v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out \
+	-v "$(CURDIR)/dist/keys":/keys:ro -w /src
+repo:
+	@ls dist/*.deb dist/*.rpm dist/alpine/*/*.apk >/dev/null 2>&1 || \
+		{ echo "no packages in dist: run make package first"; exit 1; }
+	scripts/signing-keys.sh
+	$(REPO_RUN) $(LINUX_IMAGE) sh scripts/repo-apt.sh /out
+	$(REPO_RUN) $(RPM_IMAGE) sh scripts/repo-rpm.sh /out
+	$(REPO_RUN) $(APK_IMAGE) sh scripts/repo-apk.sh /out
+
+# Installs from the repository on every system in packaging/test-systems with signature
+# checks on, and checks that a damaged repository is refused.
+repo-test:
+	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh repo
 
 clean:
 	rm -rf bin dist coverage.out coverage.html
