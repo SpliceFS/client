@@ -2,9 +2,8 @@
 # A container has no running OpenRC; the files are installed and there is nothing to start.
 if [ -e /run/openrc/softlevel ]; then
     rc-update add splicefs default
-    # Without its configuration the client cannot start, and that is not an error here.
-    if [ -f /etc/splicefs/client/config.yaml ]; then
-        rc-service splicefs start || echo "splicefs did not start; see /var/log/splicefs.log" >&2
-    fi
+    # The client needs no configuration: installed means running, with no mounts until
+    # the administrator adds one.
+    rc-service splicefs start || echo "splicefs did not start; see /var/log/splicefs.log" >&2
 fi
 exit 0

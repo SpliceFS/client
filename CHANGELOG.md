@@ -22,8 +22,9 @@ All notable changes to this project are recorded here. The format follows
 - A systemd unit for the program.
 - Packages named `splicefs-client` for amd64 and arm64: deb (Debian, Ubuntu), rpm (Red Hat
   family) and apk (Alpine). Each installs the program and the service for its system
-  (systemd, or OpenRC on Alpine), depends on `fuse3` and creates an empty
-  `/etc/splicefs/client`. The service is enabled and starts once a configuration exists.
+  (systemd, or OpenRC on Alpine), depends on `fuse3` and creates the empty folders `conf.d`,
+  `clusters.d` and `mounts.d` in `/etc/splicefs/client`. The service is enabled and started on
+  install, and an upgrade never touches the files an administrator put in those folders.
 - `make package-test` install-tests the packages on every supported Debian, Ubuntu, Rocky
   Linux, Amazon Linux, openSUSE and Alpine version, listed in `packaging/test-systems`.
 - Signed apt, rpm and Alpine repositories built from the packages (`make repo`), with a test
@@ -35,6 +36,32 @@ All notable changes to this project are recorded here. The format follows
   signature (`make release-assets`). Pre-release tags such as `v1.2.0-rc.1` give versions that
   sort before the release in deb, rpm and apk; `make publish-test` checks the publishing
   without a server.
+- The client runs with nothing configured: no clusters and no mounts. It keeps running, with
+  or without mounts, until it is stopped. A mount unmounted by hand stays unmounted until the
+  next reload or restart.
+- `splicefs config check` validates the configuration and prints every problem with the file
+  it came from. `splicefs config show` prints the effective configuration with the file each
+  value came from. Both take `--config DIR`.
+- `SIGHUP` applies the configuration without a restart (`systemctl reload splicefs`,
+  `rc-service splicefs reload`). Added mounts are mounted, removed ones are detached at once
+  while open files keep working until they are closed, changed ones are mounted again, and
+  unchanged ones are not touched. A mount that cannot be made is logged and the others are
+  still applied. A configuration with an error is refused and only logged.
+- Default folders for a macOS build: `~/.splicefs/client` for the configuration and
+  `~/Library/Caches/splicefs` for the cache.
+
+### Changed
+
+- **Breaking:** the configuration is a set of files instead of one `config.yaml`. Settings go
+  in `conf.d/*.yaml`, read in name order and merged (today these are the `cache` defaults),
+  each cluster is one file in `clusters.d/` whose file name is the cluster name, and each mount
+  is one file in `mounts.d/` whose file name is the mount name. The top-level keys `clusters`
+  and `mounts` are gone. A configuration written for an earlier build must be rewritten.
+- **Breaking:** the default cache folder is `/var/cache/splicefs` (`~/Library/Caches/splicefs`
+  on macOS) instead of a required setting.
+- **Breaking:** `splicefs mount` no longer exits when its last mount ends, and it starts
+  without a configuration.
+- Packages start the service on install even when nothing is configured.
 
 ### Security
 

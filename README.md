@@ -55,7 +55,14 @@ each node, `splicefsd`, is in the [server repository](https://github.com/SpliceF
 ## Features
 
 - Read-only mount on Linux (FUSE) and macOS (through the built-in NFS client)
-- One mount definition per target; a cluster root or any subdirectory can be mounted anywhere
+- Nothing has to be configured: a fresh install runs with no mounts, and packages start the
+  service on install
+- Settings, clusters and mounts are small files in folders that upgrades never touch; one
+  mount per file, and a cluster root or any subdirectory can be mounted anywhere
+- `splicefs config check` validates the files; `splicefs config show` prints the result and
+  the file each value came from
+- Applies a changed configuration on `SIGHUP` without a restart: new mounts appear, removed
+  ones are detached at once, files that are open keep working until they are closed
 - Several clusters and several mounts in one client
 - Multi-source block reads with per-node speed tracking and re-request of late blocks
 - Local block cache with size, age and free-space limits, kept across restarts; files that
@@ -66,24 +73,53 @@ each node, `splicefsd`, is in the [server repository](https://github.com/SpliceF
 The nodes must be running first. See the server's
 [quick start](https://github.com/SpliceFS/server#quick-start).
 
-On the reader:
+On the reader, install the package for your system. The service starts at once and keeps
+running. No cluster and no mount is configured yet, so nothing is mounted.
+
+Add a cluster. The file name is the cluster name. `password_file` is relative to the
+configuration folder:
 
 ```
-# /etc/splicefs/client/config.yaml
-cache: {dir: /var/cache/splicefs, max_size: 200GiB}
-clusters:
-  example: {url: "https://east.example.com/api", user: alice, password_file: secrets/example}
-mounts:
-  - {cluster: example, path: /, target: /mnt/files}
+# /etc/splicefs/client/clusters.d/example.yaml
+url: "https://east.example.com/api"
+user: alice
+password_file: secrets/example
 ```
 
+Put the password in that file and make the target folder:
+
 ```
-splicefs mount          # stays in the foreground; Ctrl-C unmounts
-splicefs status         # from another terminal: mounts, node speeds, cache use
-splicefs umount
+install -d -m 700 /etc/splicefs/client/secrets
+(umask 077; cat > /etc/splicefs/client/secrets/example)   # type the password, then Ctrl-D
+mkdir -p /mnt/files
 ```
 
-The [configuration reference](docs/configuration.md) lists every setting.
+Add a mount. The file name is the mount name:
+
+```
+# /etc/splicefs/client/mounts.d/files.yaml
+cluster: example
+path: /
+target: /mnt/files
+```
+
+Check the files and apply them without a restart:
+
+```
+splicefs config check
+systemctl reload splicefs        # on Alpine: rc-service splicefs reload
+splicefs status                  # mounts, node speeds, cache use
+```
+
+The files of the cluster appear in `/mnt/files`. To stop a mount, delete its file and reload,
+or run `splicefs umount /mnt/files`; a mount unmounted by hand stays unmounted until the next
+reload or restart.
+
+The cache is in `/var/cache/splicefs` unless a file in `conf.d/` says otherwise. On a macOS
+build the folders are `~/.splicefs/client` and `~/Library/Caches/splicefs`, and there is no
+service: run `splicefs mount`, which stays in the foreground, and send it `SIGHUP` to apply a
+changed configuration. The [configuration reference](docs/configuration.md) lists every
+setting.
 
 ## Documentation
 
@@ -141,20 +177,20 @@ make release-assets # package files, SHA256SUMS and its signature for the GitHub
 
 `make package-test` covers every system listed in `packaging/test-systems`. From an arm64
 machine, `make package-test PLATFORM=linux/amd64` tests the other CPU type by emulation.
-```
 
 ## Repository layout
 
 ```
-cmd/splicefs/  the splicefs program: the mount, umount and status commands
-app/           builds the client from a configuration, mounts it, serves the control socket
-config/        loads and validates config.yaml
+cmd/splicefs/  the splicefs program: the mount, umount, status and config commands
+app/           builds the client from the configuration, mounts it, serves the control socket
+               and applies a changed configuration on SIGHUP
+config/        loads and validates the files in conf.d, clusters.d and mounts.d
 core/          the client as an importable library (github.com/SpliceFS/client/core)
 mount/         the contract every mount layer offers; mount/fuse is Linux, mount/nfs is macOS
 internal/      node HTTP client, cluster session, merged tree, block cache, block reader, and
                the version number set at build time
 docs/          design and configuration reference
-packaging/     systemd unit
+packaging/     systemd unit, OpenRC script, package files
 scripts/       development helpers used by make and CI
 ```
 

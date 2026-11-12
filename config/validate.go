@@ -20,16 +20,39 @@ const (
 	maxStreamsPerNode            = 64
 )
 
-// namePattern is the form of a cluster name.
+// namePattern is the form of a cluster or mount name, which is the rule for share names.
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
-// validate returns every problem in cfg, each naming its key.
+// validate returns every problem in cfg, each naming its key and the file the value came
+// from. A cluster or mount is its file, so its problems always name that file; a problem in
+// the top-level cache names the file that set the key, and none when the default is wrong.
 func validate(cfg *Config) []error {
 	var problems []error
 	problems = append(problems, validateClusters(cfg)...)
 	problems = append(problems, validateMounts(cfg)...)
-	problems = append(problems, validateCaches(cfg)...)
-	problems = append(problems, validateCacheDirs(cfg)...)
+	top := validateCache("cache", cfg.Cache, largestBlockSize(cfg.Clusters))
+	top = append(top, validateCacheDir("cache.dir", cfg.Cache.Dir, cfg.Mounts)...)
+	for _, p := range top {
+		problems = append(problems, attribute(p, cfg.Sources))
+	}
+	return problems
+}
+
+// attribute adds the name of the file that set the value an error is about. The error text
+// starts with the key.
+func attribute(err error, sources map[string]string) error {
+	key, _, _ := strings.Cut(err.Error(), ":")
+	if file, ok := sources[key]; ok {
+		return fmt.Errorf("%w (file %s)", err, file)
+	}
+	return err
+}
+
+// inFile adds the name of the file of a cluster or mount to each problem.
+func inFile(sub, name string, problems []error) []error {
+	for i, p := range problems {
+		problems[i] = fmt.Errorf("%w (file %s)", p, source(sub, name+yamlExt))
+	}
 	return problems
 }
 
@@ -55,12 +78,10 @@ func required(key, value string) []error {
 }
 
 func validateClusters(cfg *Config) []error {
-	if len(cfg.Clusters) == 0 {
-		return []error{errors.New("clusters: at least one cluster is required")}
-	}
 	var problems []error
 	for _, name := range cfg.clusterNames() {
-		problems = append(problems, validateCluster(name, cfg.Clusters[name])...)
+		found := validateCluster(name, cfg.Clusters[name])
+		problems = append(problems, inFile(clustersDirName, name, found)...)
 	}
 	return problems
 }
@@ -113,18 +134,21 @@ func validateURL(raw string) error {
 }
 
 func validateMounts(cfg *Config) []error {
-	if len(cfg.Mounts) == 0 {
-		return []error{errors.New("mounts: at least one mount is required")}
-	}
 	var problems []error
-	for i, m := range cfg.Mounts {
-		problems = append(problems, validateMount(fmt.Sprintf("mounts[%d]", i), m, cfg)...)
+	for _, m := range cfg.Mounts {
+		found := validateMount(m, cfg)
+		found = append(found, validateMountCache(m, cfg)...)
+		problems = append(problems, inFile(mountsDirName, m.Name, found)...)
 	}
 	return append(problems, validateTargets(cfg.Mounts)...)
 }
 
-func validateMount(key string, m Mount, cfg *Config) []error {
+func validateMount(m Mount, cfg *Config) []error {
+	key := "mounts." + m.Name
 	var problems []error
+	if !namePattern.MatchString(m.Name) {
+		problems = append(problems, fmt.Errorf("%s: name must match %s", key, namePattern))
+	}
 	if _, ok := cfg.Clusters[m.Cluster]; !ok {
 		problems = append(problems, fmt.Errorf("%s.cluster: %q is not a cluster defined in clusters", key, m.Cluster))
 	}
@@ -157,9 +181,10 @@ func hasDotDot(p string) bool {
 func validateTargets(mounts []Mount) []error {
 	var problems []error
 	for j, later := range mounts {
-		for i, earlier := range mounts[:j] {
+		for _, earlier := range mounts[:j] {
 			if err := checkTargets(earlier.Target, later.Target); err != nil {
-				problems = append(problems, fmt.Errorf("mounts[%d].target: %w (mounts[%d])", j, err, i))
+				found := []error{fmt.Errorf("mounts.%s.target: %w (mounts.%s)", later.Name, err, earlier.Name)}
+				problems = append(problems, inFile(mountsDirName, later.Name, found)...)
 			}
 		}
 	}
@@ -194,16 +219,16 @@ func contains(outer, inner string) bool {
 	return strings.HasPrefix(inner, prefix)
 }
 
-// validateCaches checks the top-level cache and every mount cache that differs
-// from it. A mount that inherits the top-level cache unchanged would only
-// repeat its problems.
-func validateCaches(cfg *Config) []error {
-	largest := largestBlockSize(cfg.Clusters)
-	problems := validateCache("cache", cfg.Cache, largest)
-	for i, m := range cfg.Mounts {
-		if m.Cache != cfg.Cache {
-			problems = append(problems, validateCache(fmt.Sprintf("mounts[%d].cache", i), m.Cache, largest)...)
-		}
+// validateMountCache checks the cache of a mount when it differs from the top-level one. A
+// mount that inherits the top-level cache unchanged would only repeat its problems.
+func validateMountCache(m Mount, cfg *Config) []error {
+	key := "mounts." + m.Name + ".cache"
+	var problems []error
+	if m.Cache != cfg.Cache {
+		problems = validateCache(key, m.Cache, largestBlockSize(cfg.Clusters))
+	}
+	if m.Cache.Dir != cfg.Cache.Dir {
+		problems = append(problems, validateCacheDir(key+".dir", m.Cache.Dir, cfg.Mounts)...)
 	}
 	return problems
 }
@@ -243,28 +268,18 @@ func validateCache(key string, c Cache, largestBlock units.Size) []error {
 	return problems
 }
 
-// validateCacheDirs applies the rule that a cache directory must not be a
-// mount target, lie inside one or contain one: the client would cache the
-// files it is serving into the mount, or hide the cache under it.
-func validateCacheDirs(cfg *Config) []error {
-	problems := validateCacheDir("cache.dir", cfg.Cache.Dir, cfg.Mounts)
-	for i, m := range cfg.Mounts {
-		if m.Cache.Dir != cfg.Cache.Dir {
-			problems = append(problems, validateCacheDir(fmt.Sprintf("mounts[%d].cache.dir", i), m.Cache.Dir, cfg.Mounts)...)
-		}
-	}
-	return problems
-}
-
+// validateCacheDir applies the rule that a cache directory must not be a mount target, lie
+// inside one or contain one: the client would cache the files it is serving into the
+// mount, or hide the cache under it.
 func validateCacheDir(key, dir string, mounts []Mount) []error {
 	if !filepath.IsAbs(dir) {
 		return nil
 	}
 	var problems []error
-	for i, m := range mounts {
+	for _, m := range mounts {
 		if filepath.IsAbs(m.Target) && (contains(m.Target, dir) || contains(dir, m.Target)) {
-			problems = append(problems, fmt.Errorf("%s: %s must not be, lie inside or contain the target %s of mounts[%d]",
-				key, dir, m.Target, i))
+			problems = append(problems, fmt.Errorf("%s: %s must not be, lie inside or contain the target %s of mounts.%s",
+				key, dir, m.Target, m.Name))
 		}
 	}
 	return problems

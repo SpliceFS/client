@@ -3,15 +3,16 @@ Description=SpliceFS mounts
 Documentation=https://github.com/SpliceFS/client
 After=network-online.target
 Wants=network-online.target
-# The client cannot run without its configuration. With this condition a fresh install
-# stays stopped, without an error, until the file exists.
-ConditionPathExists=/etc/splicefs/client/config.yaml
 
 [Service]
-# The client reports READY once every mount is up, so units ordered after this one
-# can rely on the mounts being there.
+# The client reports READY once every configured mount is up, so units ordered after this
+# one can rely on the mounts being there. With nothing configured it runs without mounts.
 Type=notify
 ExecStart=/usr/local/bin/splicefs mount
+# The client applies its configuration again on SIGHUP: added mounts are mounted, removed
+# ones are detached, changed ones are mounted again, and a configuration with an error is
+# refused and only logged.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 # Creates /var/cache/splicefs, the default cache directory, owned by the service user.

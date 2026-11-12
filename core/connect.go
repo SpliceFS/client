@@ -17,7 +17,9 @@ var ErrBadCredentials = errors.New("cluster rejected the user or password")
 // with ErrUnavailable when no node can be reached; the session's error is kept as the
 // cause. A cluster that is not configured is a plain error.
 func (c *Client) Connect(ctx context.Context, cluster string) error {
+	c.mu.Lock()
 	cl, ok := c.clusters[cluster]
+	c.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("connect: cluster %q is not configured", cluster)
 	}

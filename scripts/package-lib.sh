@@ -6,6 +6,8 @@
 name="$(sed -n 's/^Package: //p' packaging/deb/control)"
 program="$(basename cmd/*)"
 confdir="/etc/splicefs/${name#splicefs-}"
+# One folder name per line; see the file for why the package ships them empty.
+confsubdirs="$(grep -v -e '^#' -e '^$' packaging/config-folders)"
 
 fail() {
     echo "FAIL: $*" >&2

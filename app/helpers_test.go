@@ -177,6 +177,11 @@ type fakeCore struct {
 	closed      int
 	status      core.Status
 	viewedMount []config.Mount
+	applyErr    error
+	applied     []*config.Config
+	released    []core.FS
+	// stale names the targets whose views are no longer current.
+	stale map[string]bool
 }
 
 func newFakeCore() *fakeCore {
@@ -208,6 +213,35 @@ func (f *fakeCore) View(m config.Mount) (core.FS, error) {
 
 func (f *fakeCore) Status() core.Status { return f.status }
 
+func (f *fakeCore) Apply(cfg *config.Config) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.applyErr != nil {
+		return f.applyErr
+	}
+	f.applied = append(f.applied, cfg)
+	return nil
+}
+
+func (f *fakeCore) Release(fsys core.FS) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released = append(f.released, fsys)
+}
+
+func (f *fakeCore) Current(fsys core.FS) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	named, _ := fsys.(namedFS)
+	return !f.stale[named.name]
+}
+
+func (f *fakeCore) releasedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.released)
+}
+
 func (f *fakeCore) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -225,6 +259,19 @@ func (f *fakeCore) closeCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.closed
+}
+
+// waitFor returns once cond holds. The watchers and the run loop work in their own
+// goroutines, so a test that needs their result has to wait for it.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // notifications records the states passed to Notify, and signals each one.

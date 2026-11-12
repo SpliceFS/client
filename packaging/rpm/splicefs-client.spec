@@ -25,7 +25,8 @@ disk.
 %install
 install -D -m 755 %{stage}/splicefs %{buildroot}/usr/bin/splicefs
 install -D -m 644 %{unit} %{buildroot}/usr/lib/systemd/system/splicefs.service
-install -d %{buildroot}/etc/splicefs/client
+install -d %{buildroot}/etc/splicefs/client/conf.d %{buildroot}/etc/splicefs/client/clusters.d \
+    %{buildroot}/etc/splicefs/client/mounts.d
 install -D -m 644 %{src}/LICENSE %{buildroot}/usr/share/doc/splicefs-client/LICENSE
 install -m 644 %{src}/README.md %{src}/CHANGELOG.md %{src}/docs/configuration.md \
     %{buildroot}/usr/share/doc/splicefs-client/
@@ -35,6 +36,10 @@ install -m 644 %{src}/README.md %{src}/CHANGELOG.md %{src}/docs/configuration.md
 /usr/lib/systemd/system/splicefs.service
 %dir /etc/splicefs
 %dir /etc/splicefs/client
+# Empty on purpose: the administrator's files go here and no package file ever does.
+%dir /etc/splicefs/client/conf.d
+%dir /etc/splicefs/client/clusters.d
+%dir /etc/splicefs/client/mounts.d
 /usr/share/doc/splicefs-client
 
 %post

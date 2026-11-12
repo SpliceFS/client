@@ -28,7 +28,18 @@ type cluster struct {
 	tree    *tree.Tree
 	meter   *fetch.RateMeter
 	held    heldVersions
-	opts    Options
+	opts    Options // with this cluster's own HTTPClient
+
+	// password and ttl are what the cluster was built with, to tell on a reload whether
+	// it can be kept.
+	password string
+	ttl      time.Duration
+	ownHTTP  bool // the HTTP client was made for this cluster and is closed with it
+
+	// holds counts the views that use the cluster and retired says that a reload replaced
+	// or removed it. Both are guarded by the Client's mu.
+	holds   int
+	retired bool
 
 	mu     sync.Mutex
 	dialed map[string]*remote.Node // by node name, the latest one dialed
@@ -37,11 +48,17 @@ type cluster struct {
 
 func newCluster(name string, cfg config.Cluster, password string, ttl time.Duration, opts Options) *cluster {
 	c := &cluster{
-		name:   name,
-		cfg:    cfg,
-		meter:  fetch.NewMeter(),
-		opts:   opts,
-		dialed: make(map[string]*remote.Node),
+		name:     name,
+		cfg:      cfg,
+		meter:    fetch.NewMeter(),
+		opts:     opts,
+		password: password,
+		ttl:      ttl,
+		dialed:   make(map[string]*remote.Node),
+	}
+	if opts.HTTPClient == nil {
+		c.opts.HTTPClient = newHTTPClient(cfg.StreamsPerNode, systemDialer())
+		c.ownHTTP = true
 	}
 	c.session = session.New(session.Options{
 		Cluster:        name,
@@ -60,6 +77,21 @@ func newCluster(name string, cfg config.Cluster, password string, ttl time.Durat
 		IsNotFound: isError(remote.ErrNotFound),
 	})
 	return c
+}
+
+// matches reports whether a cluster built with cfg, password and ttl would behave as this
+// one does.
+func (c *cluster) matches(cfg config.Cluster, password string, ttl time.Duration) bool {
+	return c.cfg == cfg && c.password == password && c.ttl == ttl
+}
+
+// close ends the session and drops the idle connections of the cluster's own HTTP client.
+// A client that was passed in with Options is shared and left alone.
+func (c *cluster) close() {
+	c.session.Close()
+	if c.ownHTTP {
+		c.opts.HTTPClient.CloseIdleConnections()
+	}
 }
 
 func isError(target error) func(error) bool {

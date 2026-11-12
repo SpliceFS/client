@@ -12,22 +12,16 @@ import (
 	"time"
 
 	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/core"
 	"github.com/SpliceFS/client/mount"
 )
 
-// selectMounts returns the mounts a run is responsible for: all of them when targets is
-// empty, otherwise the named ones in configuration order. Targets are compared as
-// cleaned absolute paths.
-func (s system) selectMounts(cfg *config.Config, targets []string) ([]config.Mount, error) {
-	if len(cfg.Mounts) == 0 {
-		return nil, errors.New("the configuration has no mounts")
-	}
-	if len(targets) == 0 {
+// selectMounts returns the mounts a run is responsible for: all of them when wanted is
+// empty, otherwise the ones whose targets are in it, in configuration order. The targets
+// in wanted are absolute and cleaned, as absTargets makes them.
+func selectMounts(cfg *config.Config, wanted []string) ([]config.Mount, error) {
+	if len(wanted) == 0 {
 		return slices.Clone(cfg.Mounts), nil
-	}
-	wanted, err := s.absTargets(targets)
-	if err != nil {
-		return nil, err
 	}
 	var selected []config.Mount
 	for _, m := range cfg.Mounts {
@@ -60,6 +54,11 @@ type liveMount struct {
 	target  string
 	source  string
 	mounted mount.Mounted
+	// cfg is what the mount was made from, so that a reload can tell a changed mount
+	// from an unchanged one.
+	cfg config.Mount
+	// fs is the view the mount serves, which the core releases when the mount has ended.
+	fs core.FS
 
 	// unmounting serializes unmounts: a stop request and an operator's umount may
 	// arrive together, and a mount layer is not required to handle that.
@@ -87,13 +86,53 @@ func isBusy(err error) bool {
 	return errors.Is(err, syscall.EBUSY) || strings.Contains(strings.ToLower(err.Error()), "busy")
 }
 
-// mountSet is the mounts of a run. The slice does not change after it is built.
+// mountSet is the mounts of a run. It changes while the run goes on: a reload adds and
+// removes mounts, and the watcher of a mount that ended removes it. The mutex guards the
+// slice only; the mounts themselves guard their own unmounts.
 type mountSet struct {
+	mu     sync.Mutex
 	mounts []*liveMount
+
+	// release and log belong to the watchers; the set built by newMountSet has them.
+	release func(core.FS)
+	log     *slog.Logger
+	// watchers ends with stop, and endWatchers waits for it.
+	watchers sync.WaitGroup
+	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+func newMountSet(release func(core.FS), log *slog.Logger) *mountSet {
+	return &mountSet{release: release, log: log, stop: make(chan struct{})}
+}
+
+// add puts a mount in the set and starts its watcher.
+func (s *mountSet) add(m *liveMount) {
+	s.mu.Lock()
+	s.mounts = append(s.mounts, m)
+	s.mu.Unlock()
+	s.watchers.Go(func() { s.watch(m) })
+}
+
+// remove takes m out of the set if it is there. It compares pointers, because a reload
+// may already have mounted something new at the same target.
+func (s *mountSet) remove(m *liveMount) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if i := slices.Index(s.mounts, m); i >= 0 {
+		s.mounts = slices.Delete(s.mounts, i, i+1)
+	}
+}
+
+// list returns a copy of the mounts, so that the caller can use it without the mutex.
+func (s *mountSet) list() []*liveMount {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.mounts)
 }
 
 func (s *mountSet) find(target string) (*liveMount, bool) {
-	for _, m := range s.mounts {
+	for _, m := range s.list() {
 		if m.target == target {
 			return m, true
 		}
@@ -101,10 +140,37 @@ func (s *mountSet) find(target string) (*liveMount, bool) {
 	return nil, false
 }
 
-// pending returns the mounts that have not ended.
-func (s *mountSet) pending() []*liveMount {
+// watch waits for m to end, whatever the cause: an unmount through the control socket,
+// an unmount by the administrator or a reload. It then drops m from the set if it is
+// still there and gives its view back to the core, which closes what a reload replaced
+// once nothing uses it. A mount that ended by itself stays unmounted until the next
+// reload or start.
+func (s *mountSet) watch(m *liveMount) {
+	select {
+	case <-m.mounted.Done():
+	case <-s.stop:
+		return
+	}
+	s.remove(m)
+	s.release(m.fs)
+	if err := m.mounted.Err(); err != nil {
+		s.log.Warn("mount ended with an error", "target", m.target, "err", err)
+		return
+	}
+	s.log.Info("mount ended", "target", m.target)
+}
+
+// endWatchers stops the watchers and waits for them. The core is closed after that, which
+// also gives back the views of mounts whose watcher did not get to it.
+func (s *mountSet) endWatchers() {
+	s.stopOnce.Do(func() { close(s.stop) })
+	s.watchers.Wait()
+}
+
+// notEnded returns the mounts that have not ended.
+func notEnded(mounts []*liveMount) []*liveMount {
 	var open []*liveMount
-	for _, m := range s.mounts {
+	for _, m := range mounts {
 		if !m.ended() {
 			open = append(open, m)
 		}
@@ -112,35 +178,11 @@ func (s *mountSet) pending() []*liveMount {
 	return open
 }
 
-// watchEnd returns a channel that is closed once every mount has ended, and a function
-// that waits for the goroutines doing the watching. They stop when stop is closed.
-func (s *mountSet) watchEnd(stop <-chan struct{}) (<-chan struct{}, func()) {
-	all := make(chan struct{})
-	var mu sync.Mutex
-	remaining := len(s.mounts)
-	var wg sync.WaitGroup
-	for _, m := range s.mounts {
-		wg.Go(func() {
-			select {
-			case <-m.mounted.Done():
-				mu.Lock()
-				remaining--
-				last := remaining == 0
-				mu.Unlock()
-				if last {
-					close(all)
-				}
-			case <-stop:
-			}
-		})
-	}
-	return all, wg.Wait
-}
-
-// unmountPending unmounts every mount that has not ended and returns the failures.
-func (s *mountSet) unmountPending(ctx context.Context, force bool) []error {
+// unmountPending unmounts every one of mounts that has not ended and returns the
+// failures.
+func unmountPending(ctx context.Context, mounts []*liveMount, force bool) []error {
 	var errs []error
-	for _, m := range s.pending() {
+	for _, m := range notEnded(mounts) {
 		if err := m.unmount(ctx, force); err != nil {
 			errs = append(errs, fmt.Errorf("unmount %s: %w", m.target, err))
 		}
@@ -150,29 +192,37 @@ func (s *mountSet) unmountPending(ctx context.Context, force bool) []error {
 
 // stopAll takes every mount down. A stop request must always succeed, and a mount left
 // behind blocks the next start, so a mount that refuses a polite unmount is forced. It
-// returns why any mount could not be removed or ended with an error.
+// returns why any mount could not be removed or ended with an error. The mounts are
+// listed once, before any of them ends, because the watchers remove the ended ones.
 func (s *mountSet) stopAll(log *slog.Logger, limits stopLimits) error {
+	all := s.list()
 	gentle, cancelGentle := context.WithTimeout(context.Background(), limits.graceful)
 	defer cancelGentle()
-	for _, err := range s.unmountPending(gentle, false) {
+	for _, err := range unmountPending(gentle, all, false) {
 		log.Warn("unmount refused, forcing it", "err", err)
 	}
-	return s.forceAll(limits.force)
+	return s.forceMounts(all, limits.force)
 }
 
 // forceAll unmounts what is left with force and waits for every mount to end.
 func (s *mountSet) forceAll(limit time.Duration) error {
+	return s.forceMounts(s.list(), limit)
+}
+
+func (s *mountSet) forceMounts(mounts []*liveMount, limit time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
-	errs := s.unmountPending(ctx, true)
-	return errors.Join(append(errs, s.endErrors(ctx)...)...)
+	errs := unmountPending(ctx, mounts, true)
+	errs = append(errs, endErrors(ctx, mounts)...)
+	s.endWatchers()
+	return errors.Join(errs...)
 }
 
 // endErrors waits for each mount to end and reports the ones that ended with an error
 // or did not end before ctx expired.
-func (s *mountSet) endErrors(ctx context.Context) []error {
+func endErrors(ctx context.Context, mounts []*liveMount) []error {
 	var errs []error
-	for _, m := range s.mounts {
+	for _, m := range mounts {
 		select {
 		case <-m.mounted.Done():
 			if err := m.mounted.Err(); err != nil {
@@ -202,8 +252,9 @@ func (s *mountSet) unmountTarget(ctx context.Context, target string, force bool)
 }
 
 func (s *mountSet) report() []MountReport {
-	reports := make([]MountReport, 0, len(s.mounts))
-	for _, m := range s.mounts {
+	mounts := s.list()
+	reports := make([]MountReport, 0, len(mounts))
+	for _, m := range mounts {
 		state := StateMounted
 		if m.ended() {
 			state = StateEnded
