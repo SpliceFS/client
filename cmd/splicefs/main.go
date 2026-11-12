@@ -30,6 +30,8 @@ const (
 	usage   = `usage: splicefs [--config DIR] [--log-level debug|info|warn|error] mount [TARGET...]
        splicefs [--config DIR] umount [--force] [TARGET...]
        splicefs [--config DIR] status [--json]
+       splicefs [--config DIR] config check
+       splicefs [--config DIR] config show
        splicefs --version
 `
 )
@@ -51,21 +53,24 @@ func run(ctx context.Context, args []string, _ io.Reader, stdout, stderr io.Writ
 // system. Tests replace it so that no real mount happens.
 type backend struct {
 	loadConfig func(dir string) (*config.Config, error)
-	run        func(ctx context.Context, cfg *config.Config, targets []string, opts app.Options) error
-	unmount    func(ctx context.Context, socketPath string, targets []string, force bool) error
-	status     func(ctx context.Context, socketPath string) (app.Report, error)
-	mounter    app.Mounter
-	notify     func(state string) error
+	// defaultConfigDir finds the configuration directory used when --config is not given.
+	defaultConfigDir func() (string, error)
+	run              func(ctx context.Context, cfg *config.Config, targets []string, opts app.Options) error
+	unmount          func(ctx context.Context, socketPath string, targets []string, force bool) error
+	status           func(ctx context.Context, socketPath string) (app.Report, error)
+	mounter          app.Mounter
+	notify           func(state string) error
 }
 
 func systemBackend() backend {
 	return backend{
-		loadConfig: config.Load,
-		run:        app.Run,
-		unmount:    app.Unmount,
-		status:     app.Status,
-		mounter:    platformMounter(),
-		notify:     app.NotifyFunc(os.Getenv("NOTIFY_SOCKET")),
+		loadConfig:       config.LoadDir,
+		defaultConfigDir: config.DefaultConfigDir,
+		run:              app.Run,
+		unmount:          app.Unmount,
+		status:           app.Status,
+		mounter:          platformMounter(),
+		notify:           app.NotifyFunc(os.Getenv("NOTIFY_SOCKET")),
 	}
 }
 
@@ -83,6 +88,11 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer, b bac
 		_, _ = fmt.Fprintf(stdout, "%s %s\n", program, version.String())
 		return exitOK
 	}
+	if inv.configDir == "" {
+		if inv.configDir, err = b.defaultConfigDir(); err != nil {
+			return fail(stderr, err)
+		}
+	}
 	// A stop signal ends the command that is running: it unmounts for mount and
 	// abandons the wait for the other two.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
@@ -99,8 +109,24 @@ func (b backend) runCommand(ctx context.Context, inv invocation, stdout, stderr 
 		return b.mount(ctx, inv, stderr)
 	case commandUmount:
 		return b.unmount(ctx, app.SocketPath(inv.configDir), inv.targets, inv.force)
+	case commandConfig:
+		return b.runConfig(inv, stdout)
 	}
 	return b.printStatus(ctx, inv, stdout)
+}
+
+// runConfig implements config check and config show. A configuration with problems is an
+// error that lists all of them.
+func (b backend) runConfig(inv invocation, stdout io.Writer) error {
+	cfg, err := b.loadConfig(inv.configDir)
+	if err != nil {
+		return err
+	}
+	if inv.configCommand == configCheck {
+		_, err = fmt.Fprintf(stdout, "ok: %d clusters, %d mounts\n", len(cfg.Clusters), len(cfg.Mounts))
+		return err
+	}
+	return showConfig(stdout, cfg)
 }
 
 // mount loads the configuration and keeps the mounts up until ctx ends.

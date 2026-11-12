@@ -68,7 +68,8 @@ type Options struct {
 	// Notify tells the service manager "READY=1" and "STOPPING=1". Nil does nothing.
 	Notify func(state string) error
 	// ConfigDir is the directory the configuration was loaded from. It names the
-	// control socket when SocketPath is empty. Empty means config.DefaultDir.
+	// control socket when SocketPath is empty. Empty means the default configuration
+	// directory, config.DefaultConfigDir.
 	ConfigDir string
 	// SocketPath is the control socket. Empty derives it from ConfigDir with
 	// SocketPath.
@@ -108,14 +109,24 @@ func (o Options) withDefaults() Options {
 	if o.limits == (stopLimits{}) {
 		o.limits = stopLimits{graceful: gracefulStopTimeout, force: forceStopTimeout}
 	}
-	if o.SocketPath == "" {
-		dir := o.ConfigDir
-		if dir == "" {
-			dir = config.DefaultDir
-		}
-		o.SocketPath = o.sys.socketPath(dir)
-	}
 	return o
+}
+
+// controlSocket returns SocketPath, or the socket of ConfigDir when that is empty. The
+// default configuration directory is looked up only here, because finding it can fail and
+// withDefaults has no way to report that.
+func (o Options) controlSocket() (string, error) {
+	if o.SocketPath != "" {
+		return o.SocketPath, nil
+	}
+	dir := o.ConfigDir
+	if dir == "" {
+		var err error
+		if dir, err = o.sys.configDir(); err != nil {
+			return "", err
+		}
+	}
+	return o.sys.socketPath(dir), nil
 }
 
 // Run mounts the directories of cfg named by targets, or all of them when targets is
@@ -128,6 +139,11 @@ func (o Options) withDefaults() Options {
 // it returns, everything it started has stopped.
 func Run(ctx context.Context, cfg *config.Config, targets []string, opts Options) (err error) {
 	opts = opts.withDefaults()
+	var socketPath string
+	if socketPath, err = opts.controlSocket(); err != nil {
+		return err
+	}
+	opts.SocketPath = socketPath
 	selected, err := opts.sys.selectMounts(cfg, targets)
 	if err != nil {
 		return err

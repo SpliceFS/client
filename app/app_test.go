@@ -478,15 +478,60 @@ func TestOptionsDefaults(t *testing.T) {
 	if o.limits.graceful != gracefulStopTimeout || o.limits.force != forceStopTimeout {
 		t.Errorf("limits = %+v", o.limits)
 	}
-	if want := o.sys.socketPath("/etc/example"); o.SocketPath != want {
-		t.Errorf("SocketPath = %q, want %q", o.SocketPath, want)
-	}
-	if want, got := o.sys.socketPath(config.DefaultDir), (Options{}).withDefaults().SocketPath; got != want {
-		t.Errorf("an empty ConfigDir gave %q, want the socket of the default directory %q", got, want)
-	}
-	kept := Options{SocketPath: "/x.sock", ConnectTimeout: time.Second}.withDefaults()
-	if kept.SocketPath != "/x.sock" || kept.ConnectTimeout != time.Second {
+	kept := Options{ConnectTimeout: time.Second}.withDefaults()
+	if kept.ConnectTimeout != time.Second {
 		t.Errorf("explicit settings were replaced: %+v", kept)
+	}
+}
+
+func TestControlSocket(t *testing.T) {
+	t.Parallel()
+	sys := fakeSystem(nil, 1000)
+	sys.configDir = func() (string, error) { return "/etc/example", nil }
+	failing := fakeSystem(nil, 1000)
+	boom := errors.New("home directory unknown")
+	failing.configDir = func() (string, error) { return "", boom }
+	tests := []struct {
+		name    string
+		opts    Options
+		want    string
+		wantErr error
+	}{
+		{"explicit socket", Options{SocketPath: "/x.sock", sys: &failing}, "/x.sock", nil},
+		{"configuration directory", Options{ConfigDir: "/etc/other", sys: &failing},
+			sys.socketPath("/etc/other"), nil},
+		{"default directory", Options{sys: &sys}, sys.socketPath("/etc/example"), nil},
+		{"default directory unknown", Options{sys: &failing}, "", boom},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := tt.opts.controlSocket()
+			if got != tt.want || !errors.Is(err, tt.wantErr) {
+				t.Errorf("controlSocket() = %q, %v, want %q, %v", got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSystemHostFindsTheDefaultConfigDir(t *testing.T) {
+	t.Parallel()
+	want, wantErr := config.DefaultConfigDir()
+	if got, err := systemHost().configDir(); got != want || (err == nil) != (wantErr == nil) {
+		t.Errorf("configDir() = %q, %v, want %q, %v", got, err, want, wantErr)
+	}
+}
+
+func TestRunReportsAnUnknownDefaultConfigDir(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	boom := errors.New("home directory unknown")
+	sys := fakeSystem(nil, 1000)
+	sys.configDir = func() (string, error) { return "", boom }
+	h.opts.SocketPath, h.opts.sys = "", &sys
+	errIs(t, h.runSync(), boom)
+	if got := h.mounter.targets(); len(got) != 0 {
+		t.Errorf("mounted %v without a control socket", got)
 	}
 }
 

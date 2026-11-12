@@ -33,6 +33,9 @@ func TestMainRunsTheProgram(t *testing.T) {
 	}
 }
 
+// defaultDir is what the fake backend gives as the default configuration directory.
+const defaultDir = "/etc/default"
+
 // calls records what the commands asked of the client library.
 type calls struct {
 	loadDir     string
@@ -54,6 +57,7 @@ func fakeBackend(cfg *config.Config, loadErr, runErr, umountErr, statusErr error
 			c.loadDir = dir
 			return cfg, loadErr
 		},
+		defaultConfigDir: func() (string, error) { return defaultDir, nil },
 		run: func(_ context.Context, cfg *config.Config, targets []string, opts app.Options) error {
 			c.runCfg, c.runTargets, c.runOpts = cfg, targets, opts
 			opts.Logger.Debug("debug-line")
@@ -98,7 +102,8 @@ func TestRunUsesTheSystemBackend(t *testing.T) {
 func TestSystemBackend(t *testing.T) {
 	t.Parallel()
 	b := systemBackend()
-	if b.loadConfig == nil || b.run == nil || b.unmount == nil || b.status == nil || b.mounter == nil || b.notify == nil {
+	if b.loadConfig == nil || b.defaultConfigDir == nil || b.run == nil || b.unmount == nil ||
+		b.status == nil || b.mounter == nil || b.notify == nil {
 		t.Errorf("incomplete backend: %+v", b)
 	}
 }
@@ -131,6 +136,10 @@ func TestBadUsage(t *testing.T) {
 		{"unknown umount flag", []string{"umount", "--json"}, "flag provided but not defined: -json"},
 		{"unknown status flag", []string{"status", "--force"}, "flag provided but not defined: -force"},
 		{"status takes no targets", []string{"status", "/mnt/a"}, `unexpected argument "/mnt/a"`},
+		{"config without a word", []string{"config"}, "config needs one of: check, show"},
+		{"config with an unknown word", []string{"config", "fix"}, "config needs one of: check, show"},
+		{"config with two words", []string{"config", "check", "show"}, "config needs one of"},
+		{"unknown config flag", []string{"config", "--json", "check"}, "not defined: -json"},
 		{"global flag after the command", []string{"mount", "--config", "/x"}, "flag provided but not defined: -config"},
 	}
 	for _, tt := range tests {
@@ -165,9 +174,9 @@ func TestMount(t *testing.T) {
 		wantTargs []string
 		wantDebug bool
 	}{
-		{"defaults", []string{"mount"}, config.DefaultDir, nil, false},
+		{"defaults", []string{"mount"}, defaultDir, nil, false},
 		{"targets and options", []string{"--config", "/etc/example", "--log-level", "debug", "mount", "/mnt/a", "/mnt/b"}, "/etc/example", []string{"/mnt/a", "/mnt/b"}, true},
-		{"warn hides info", []string{"--log-level", "warn", "mount"}, config.DefaultDir, nil, false},
+		{"warn hides info", []string{"--log-level", "warn", "mount"}, defaultDir, nil, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,9 +254,9 @@ func TestUmount(t *testing.T) {
 		wantTargs []string
 		wantForce bool
 	}{
-		{"everything", []string{"umount"}, config.DefaultDir, nil, false},
+		{"everything", []string{"umount"}, defaultDir, nil, false},
 		{"targets", []string{"--config", "/etc/example", "umount", "/mnt/a", "/mnt/b"}, "/etc/example", []string{"/mnt/a", "/mnt/b"}, false},
-		{"force", []string{"umount", "--force", "/mnt/a"}, config.DefaultDir, []string{"/mnt/a"}, true},
+		{"force", []string{"umount", "--force", "/mnt/a"}, defaultDir, []string{"/mnt/a"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

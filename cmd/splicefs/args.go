@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-
-	"github.com/SpliceFS/client/config"
 )
 
 // The commands.
@@ -15,6 +13,13 @@ const (
 	commandMount  = "mount"
 	commandUmount = "umount"
 	commandStatus = "status"
+	commandConfig = "config"
+)
+
+// The commands after "config".
+const (
+	configCheck = "check"
+	configShow  = "show"
 )
 
 // invocation is a parsed command line.
@@ -29,14 +34,18 @@ type invocation struct {
 	force bool
 	// asJSON is the --json flag of status.
 	asJSON bool
+	// configCommand is check or show for the config command.
+	configCommand string
 }
 
 // parseArgs reads the command line. It returns flag.ErrHelp when help was asked for.
 func parseArgs(args []string) (invocation, error) {
-	inv := invocation{configDir: config.DefaultDir, logLevel: slog.LevelInfo}
+	// An empty configDir means the default, which execute looks up only when a command needs
+	// it, because finding it can fail.
+	inv := invocation{logLevel: slog.LevelInfo}
 	var level string
 	fs := newFlagSet(program)
-	fs.StringVar(&inv.configDir, "config", config.DefaultDir, "")
+	fs.StringVar(&inv.configDir, "config", "", "")
 	fs.StringVar(&level, "log-level", "info", "")
 	fs.BoolVar(&inv.showVersion, "version", false, "")
 	if err := fs.Parse(args); err != nil {
@@ -87,6 +96,7 @@ func (inv *invocation) parseCommand(args []string) error {
 		fs.BoolVar(&inv.force, "force", false, "")
 	case commandStatus:
 		fs.BoolVar(&inv.asJSON, "json", false, "")
+	case commandConfig:
 	default:
 		return fmt.Errorf("unknown command %q", inv.command)
 	}
@@ -97,5 +107,18 @@ func (inv *invocation) parseCommand(args []string) error {
 	if inv.command == commandStatus && len(inv.targets) > 0 {
 		return fmt.Errorf("unexpected argument %q", inv.targets[0])
 	}
+	if inv.command == commandConfig {
+		return inv.parseConfigCommand()
+	}
+	return nil
+}
+
+// parseConfigCommand reads the word after "config", which is held in targets.
+func (inv *invocation) parseConfigCommand() error {
+	if len(inv.targets) != 1 || (inv.targets[0] != configCheck && inv.targets[0] != configShow) {
+		return errors.New("config needs one of: check, show")
+	}
+	inv.configCommand = inv.targets[0]
+	inv.targets = nil
 	return nil
 }

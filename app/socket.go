@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/SpliceFS/client/config"
 )
 
 // ErrAlreadyRunning means another client already answers on the control socket of this
@@ -30,21 +32,24 @@ const probeTimeout = 2 * time.Second
 type system struct {
 	getenv  func(string) string
 	geteuid func() int
-	tempDir func() string
-	abs     func(string) (string, error)
-	lstat   func(string) (fs.FileInfo, error)
-	chmod   func(string, fs.FileMode) error
-	dial    func(ctx context.Context, path string) (net.Conn, error)
+	// configDir finds the default configuration directory.
+	configDir func() (string, error)
+	tempDir   func() string
+	abs       func(string) (string, error)
+	lstat     func(string) (fs.FileInfo, error)
+	chmod     func(string, fs.FileMode) error
+	dial      func(ctx context.Context, path string) (net.Conn, error)
 }
 
 func systemHost() system {
 	return system{
-		getenv:  os.Getenv,
-		geteuid: os.Geteuid,
-		tempDir: os.TempDir,
-		abs:     filepath.Abs,
-		lstat:   os.Lstat,
-		chmod:   os.Chmod,
+		getenv:    os.Getenv,
+		geteuid:   os.Geteuid,
+		configDir: config.DefaultConfigDir,
+		tempDir:   os.TempDir,
+		abs:       filepath.Abs,
+		lstat:     os.Lstat,
+		chmod:     os.Chmod,
 		dial: func(ctx context.Context, path string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", path)
