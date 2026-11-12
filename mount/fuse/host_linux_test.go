@@ -42,6 +42,97 @@ func TestKernelHostStat(t *testing.T) {
 	}
 }
 
+func TestKernelHostConnectionIDReadsTheMountTable(t *testing.T) {
+	t.Parallel()
+	table := filepath.Join(t.TempDir(), "mountinfo")
+	content := "36 25 0:44 / /mnt/data rw,nosuid - fuse.splicefs splicefs rw\n" +
+		"37 25 8:1 / /mnt/disk rw - ext4 /dev/sda1 rw\n"
+	if err := os.WriteFile(table, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := kernelHost{mountinfo: table}
+	if id, err := h.ConnectionID("/mnt/data/"); err != nil || id != 44 {
+		t.Fatalf("ConnectionID = %d, %v; want 44", id, err)
+	}
+	if _, err := h.ConnectionID("/mnt/disk"); !errors.Is(err, errNotListed) {
+		t.Fatalf("ConnectionID of a mount that is not FUSE = %v, want errNotListed", err)
+	}
+	if _, err := h.ConnectionID("/mnt/other"); !errors.Is(err, errNotListed) {
+		t.Fatalf("ConnectionID of a point that is not mounted = %v, want errNotListed", err)
+	}
+}
+
+func TestKernelHostConnectionIDWithoutAMountTable(t *testing.T) {
+	t.Parallel()
+	h := kernelHost{mountinfo: filepath.Join(t.TempDir(), "missing")}
+	if _, err := h.ConnectionID("/mnt/data"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ConnectionID without a table = %v, want ErrNotExist", err)
+	}
+}
+
+func TestKernelHostConnectionIDDoesNotTouchTheMountPoint(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// A point that does not exist: reading the table must not need it to.
+	missing := filepath.Join(dir, "missing")
+	table := filepath.Join(dir, "mountinfo")
+	line := "36 25 0:7 / " + missing + " rw - fuse x rw\n"
+	if err := os.WriteFile(table, []byte(line), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := (kernelHost{mountinfo: table}).ConnectionID(missing); err != nil || id != 7 {
+		t.Fatalf("ConnectionID = %d, %v; want 7", id, err)
+	}
+}
+
+func TestKernelHostAbortConnectionWritesOneToTheControlFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "42"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "42", "abort")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := (kernelHost{dir: dir}).AbortConnection(42); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(file); err != nil || string(got) != "1" {
+		t.Fatalf("control file = %q, %v; want %q", got, err, "1")
+	}
+}
+
+func TestKernelHostAbortConnectionFailures(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := (kernelHost{dir: dir}).AbortConnection(42); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("abort of a connection that is gone = %v, want ErrNotExist", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "42")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("abort created %s; it must only write an existing file", dir)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "43"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/dev/full", filepath.Join(dir, "43", "abort")); err != nil {
+		t.Fatal(err)
+	}
+	if err := (kernelHost{dir: dir}).AbortConnection(43); !errors.Is(err, syscall.ENOSPC) {
+		t.Fatalf("abort onto a file that refuses the write = %v, want ENOSPC", err)
+	}
+}
+
+func TestNewKernelHostUsesTheFuseControlDirectory(t *testing.T) {
+	t.Parallel()
+	if got := newKernelHost().dir; got != "/sys/fs/fuse/connections" {
+		t.Fatalf("control directory = %q", got)
+	}
+	if got := newKernelHost().mountinfo; got != "/proc/self/mountinfo" {
+		t.Fatalf("mount table = %q", got)
+	}
+}
+
 func TestKernelHostUnmountPassesFlags(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

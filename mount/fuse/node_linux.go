@@ -13,6 +13,7 @@ import (
 	"github.com/hanwen/go-fuse/v2/fuse"
 
 	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 // nameMax is the longest file name reported by statfs.
@@ -117,8 +118,13 @@ var (
 )
 
 // Lookup implements fs.NodeLookuper. A missing name is answered with ENOENT, which the
-// bridge turns into a cached negative entry.
+// bridge turns into a cached negative entry. The probe name is answered before anything
+// else so that no lock and no call into the core can delay it; it only counts directly
+// below the root, whose path is empty.
 func (d *dirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	if name == mount.ProbeName && d.path() == "" {
+		return nil, syscall.ENOENT
+	}
 	a, err := d.env.fsys.Stat(ctx, join(d.path(), name))
 	if err != nil {
 		return nil, d.env.mapper.errno(err)

@@ -9,6 +9,14 @@ import (
 	"log/slog"
 )
 
+// ProbeName is a name directly inside the root of every mount that never exists. Both
+// mount layers answer a lookup of it with "not found" at once, without asking the
+// core.FS, so that a lookup travels from the kernel to the client and back without
+// depending on the network, a cache or a lock a slow read could hold. The program uses
+// it to tell a mount whose connection has stopped answering from one that is only slow.
+// In a subdirectory the name is an ordinary name.
+const ProbeName = ".splicefs-probe"
+
 // Options describes one mount.
 type Options struct {
 	// Target is the directory to mount on. It must exist.
@@ -33,4 +41,11 @@ type Mounted interface {
 	// Unmount ends the mount. A mount that is still in use is refused unless force is
 	// set, because cutting off a program in the middle of a read should be a decision.
 	Unmount(ctx context.Context, force bool) error
+}
+
+// Aborter is implemented by a mount whose kernel connection can be cut. Abort makes every
+// request that waits on the connection fail at once. It is for a mount that has stopped
+// answering; a healthy mount is ended with Unmount, which lets open files finish.
+type Aborter interface {
+	Abort() error
 }

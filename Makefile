@@ -4,7 +4,9 @@ LDFLAGS := -s -w -X github.com/SpliceFS/client/internal/version.version=$(VERSIO
 # Image and flags for running the Linux checks from another system. The FUSE device
 # and the SYS_ADMIN capability are what a container needs to mount inside itself.
 LINUX_IMAGE ?= golang:1.27
-LINUX_RUN := docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
+# Privileged, so that the tests see what a real machine and the CI runners see: /sys is
+# writable, which the abort of a FUSE connection needs.
+LINUX_RUN := docker run --rm --privileged --device /dev/fuse \
 	-v "$(CURDIR)":/src:ro -v splicefs-gomod:/go/pkg/mod $(LINUX_IMAGE)
 
 # Every package format is built by its own distribution's tool inside that distribution's

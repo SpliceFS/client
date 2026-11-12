@@ -42,14 +42,18 @@ type reloader struct {
 	requests chan mountRequest
 }
 
-// wait applies the configuration for each value on signals, and each mount request, until
-// ctx ends. A closed channel is dropped, because receiving from it would never block
-// again.
+// wait applies the configuration for each value on signals, and each mount request, and
+// checks the health of the mounts on each tick, until ctx ends. A closed channel is
+// dropped, because receiving from it would never block again.
 func (r *reloader) wait(ctx context.Context, signals <-chan os.Signal) {
+	ticks, stopTicks := r.opts.newTicker(probeInterval)
+	defer stopTicks()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ticks:
+			r.healthRound(ctx)
 		case req := <-r.requests:
 			req.reply <- r.request(ctx, req.mount)
 		case _, ok := <-signals:

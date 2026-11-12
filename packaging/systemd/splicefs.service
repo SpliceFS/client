@@ -13,6 +13,10 @@ ExecStart=/usr/local/bin/splicefs mount
 # ones are detached, changed ones are mounted again, and a configuration with an error is
 # refused and only logged.
 ExecReload=/bin/kill -HUP $MAINPID
+# The client sends a heartbeat every ten seconds from the loop that owns the mounts. If
+# that loop is stuck for five minutes, systemd kills the client and Restart= starts it
+# again. A mount that stops answering is handled by the client itself, without a restart.
+WatchdogSec=300
 Restart=on-failure
 RestartSec=5
 # Creates /var/cache/splicefs, the default cache directory, owned by the service user.
