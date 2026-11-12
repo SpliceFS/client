@@ -1,0 +1,98 @@
+name: Release
+
+# A version tag builds the packages, signs the repositories and the release files, tests
+# everything, and only then publishes to packages.splicefs.org/client and creates the GitHub
+# release. Only version tags can use the publish environment, which holds the signing and
+# upload keys. A tag with a hyphen after the version (v1.2.0-rc.1) is a pre-release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build, sign, test, publish and release
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      # Needed to create the release.
+      contents: write
+    steps:
+      # The version comes from git describe, which needs the tags and the history.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Only the two public key files are used from this repository.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/packages
+          path: public-keys
+      - name: Write the keys and the known hosts line to files
+        env:
+          UPLOAD_SSH_KEY: ${{ secrets.UPLOAD_SSH_KEY }}
+          SIGNING_OPENPGP_SUBKEY: ${{ secrets.SIGNING_OPENPGP_SUBKEY }}
+          SIGNING_ALPINE_KEY: ${{ secrets.SIGNING_ALPINE_KEY }}
+          UPLOAD_KNOWN_HOSTS: ${{ vars.UPLOAD_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "$UPLOAD_SSH_KEY" > "$RUNNER_TEMP/upload_key"
+          printf '%s\n' "$UPLOAD_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          mkdir "$RUNNER_TEMP/signing"
+          printf '%s\n' "$SIGNING_OPENPGP_SUBKEY" \
+            > "$RUNNER_TEMP/signing/splicefs-openpgp-signing-subkey.asc"
+          printf '%s\n' "$SIGNING_ALPINE_KEY" > "$RUNNER_TEMP/signing/splicefs.rsa"
+          cp public-keys/keys/splicefs.asc public-keys/keys/splicefs.rsa.pub "$RUNNER_TEMP/signing/"
+      # What is published now goes into dist/repo first, so every older version stays.
+      - name: Download the published repositories
+        env:
+          UPLOAD_KEY_FILE: ${{ runner.temp }}/upload_key
+          UPLOAD_KNOWN_HOSTS_FILE: ${{ runner.temp }}/known_hosts
+        run: make publish-fetch
+      - name: Build the packages
+        env:
+          SIGNING_DIR: ${{ runner.temp }}/signing
+        run: make package
+      - name: Build the signed package repositories
+        env:
+          SIGNING_DIR: ${{ runner.temp }}/signing
+        run: make repo
+      - name: Install and remove each package in a clean system of its kind
+        run: make package-test
+      - name: Install from the repositories with signature checks on
+        run: make repo-test
+      - name: Collect and sign the release files
+        run: make release-assets
+      # Nothing is uploaded before this step, so a failed test above publishes nothing.
+      - name: Publish the repositories
+        env:
+          UPLOAD_KEY_FILE: ${{ runner.temp }}/upload_key
+          UPLOAD_KNOWN_HOSTS_FILE: ${{ runner.temp }}/known_hosts
+        run: make publish
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # The text under the heading of this version in the changelog, up to the next one.
+          awk -v h="## [$version]" 'index($0, h) == 1 { f = 1; next } f && /^## / { exit } f' \
+            CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "CHANGELOG.md has no entries under [$version]" >&2
+            exit 1
+          fi
+          flags=""
+          case "$version" in
+            *-*) flags="--prerelease" ;;
+          esac
+          # flags is one word or empty, so it is left unquoted on purpose.
+          # shellcheck disable=SC2086
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file "$RUNNER_TEMP/notes.md" $flags dist/release/*
+      - name: Remove the secret files
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/signing"
+          rm -f "$RUNNER_TEMP/upload_key" "$RUNNER_TEMP/known_hosts"
+          rm -f dist/keys/splicefs-openpgp-signing-subkey.asc dist/keys/splicefs.rsa

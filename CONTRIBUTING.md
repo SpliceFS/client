@@ -137,6 +137,19 @@ A release is cut by a maintainer:
    from the tag at build time, and the tag starts the publish job.
 5. Merge `main` back into `develop`.
 
+Pushing the tag starts the release workflow. It builds the deb, rpm and apk packages for both
+CPU types, signs the apt, rpm and Alpine repositories, installs every package and every
+repository in clean containers of each supported system, and only when all of that passes
+publishes the repositories to `packages.splicefs.org/client` (older versions stay in them).
+It then creates the GitHub release for the tag, with the packages, `SHA256SUMS` and its
+signature `SHA256SUMS.asc`, and the changelog entries of that version as the notes.
+
+A pre-release is tagged with a hyphen after the version, for example `v1.2.0-rc.1`,
+`v1.2.0-beta.2` or `v1.2.0-alpha`. The word must be `alpha`, `beta`, `pre` or `rc`, with an
+optional number; the workflow fails on any other tag. A pre-release is published the same way,
+is marked as a pre-release on GitHub, and sorts before its release in apt, dnf and apk. Its
+changelog heading is `## [1.2.0-rc.1]`.
+
 ## License
 
 By contributing you agree that your contribution is licensed under the [MIT license](LICENSE).
