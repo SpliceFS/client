@@ -1,6 +1,10 @@
 # SpliceFS client
 
 [![CI](https://github.com/SpliceFS/client/actions/workflows/ci.yml/badge.svg)](https://github.com/SpliceFS/client/actions/workflows/ci.yml)
+[![Security](https://github.com/SpliceFS/client/actions/workflows/security.yml/badge.svg)](https://github.com/SpliceFS/client/actions/workflows/security.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/SpliceFS/client/badge)](https://scorecard.dev/viewer/?uri=github.com/SpliceFS/client)
+[![Go Report Card](https://goreportcard.com/badge/github.com/SpliceFS/client)](https://goreportcard.com/report/github.com/SpliceFS/client)
+[![Go Reference](https://pkg.go.dev/badge/github.com/SpliceFS/client.svg)](https://pkg.go.dev/github.com/SpliceFS/client)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 SpliceFS mounts a read-only folder whose files are streamed from several servers at once.

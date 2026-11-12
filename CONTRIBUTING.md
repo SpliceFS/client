@@ -90,6 +90,11 @@ One-time SonarQube setup, by a maintainer: import the repository on
 organization and project keys match `sonar-project.properties`, and add a token as the
 repository secret `SONAR_TOKEN`.
 
+One-time Codecov setup, by the organization owner: sign in at [codecov.io](https://codecov.io)
+with GitHub and enable the repository. No secret is needed, because the upload uses OIDC.
+
+The Scorecard workflow needs no setup.
+
 ## Versioning and releases
 
 SpliceFS follows [Semantic Versioning](https://semver.org).

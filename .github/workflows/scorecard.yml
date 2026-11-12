@@ -1,0 +1,42 @@
+name: Scorecard
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, so the public score tracks changes outside the code (settings, new releases).
+    # Not on the hour, when scheduled runs are most likely to be delayed or dropped.
+    - cron: "37 5 * * 2"
+  # Branch protection is one of the things scored, so re-score when it changes.
+  branch_protection_rule:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Upload to code scanning.
+      security-events: write
+      # Publishing the score signs the request with the workflow's OIDC token.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Published results are only accepted from a job that has nothing but these
+      # actions in it, so no other steps, environment variables or containers here.
+      - uses: ossf/scorecard-action@v2
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - uses: actions/upload-artifact@v7
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: results.sarif
