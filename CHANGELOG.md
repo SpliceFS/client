@@ -18,6 +18,7 @@ All notable changes to this project are recorded here. The format follows
 - Mount layers: FUSE on Linux, a local NFS server with the built-in NFS client on macOS.
 - `core`, the client as an importable library (`github.com/SpliceFS/client/core`).
 - A systemd unit for the program.
-- A Debian package, `splicefs-client`, for amd64 and arm64. It installs the program and the
-  systemd unit, depends on `fuse3` and creates an empty `/etc/splicefs/client`. The service
-  is enabled and starts once a configuration exists.
+- Packages named `splicefs-client` for amd64 and arm64: deb (Debian, Ubuntu), rpm (Red Hat
+  family) and apk (Alpine). Each installs the program and the service for its system
+  (systemd, or OpenRC on Alpine), depends on `fuse3` and creates an empty
+  `/etc/splicefs/client`. The service is enabled and starts once a configuration exists.

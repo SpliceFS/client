@@ -1,25 +1,14 @@
 #!/bin/sh
-# Installs the newest Debian package for this CPU type from the directory given as the
-# first argument, checks what the package promises, then removes and purges it and checks
-# what is left. It runs inside a throwaway container (make package-test).
+# Installs the Debian package for this CPU type, checks what the package promises, then
+# removes and purges it and checks what is left. It runs inside a throwaway Debian or
+# Ubuntu container (make package-test).
 set -eu
 
-dir="${1:?usage: package-test.sh PACKAGE_DIR}"
-: "${VERSION:?VERSION is not set}"
-
-name="$(sed -n 's/^Package: //p' packaging/deb/control)"
-program="$(basename cmd/*)"
-confdir="/etc/splicefs/${name#splicefs-}"
+dir="${1:?usage: package-test-deb.sh PACKAGE_DIR}"
+. scripts/package-lib.sh
 unit="/usr/lib/systemd/system/$program.service"
-deb="$(ls -t "$dir/${name}"_*_"$(dpkg --print-architecture)".deb | head -n 1)"
-
-fail() {
-    echo "FAIL: $*" >&2
-    exit 1
-}
-
-dpkg-deb --info "$deb"
-dpkg-deb --contents "$deb"
+deb="$dir/${name}_${debver}_$(dpkg --print-architecture).deb"
+[ -f "$deb" ] || fail "$deb does not exist; run make package first"
 
 # dpkg alone cannot fetch dependencies; apt finishes the install when one is missing.
 if ! dpkg -i "$deb" >/dev/null 2>&1; then
@@ -47,4 +36,5 @@ dpkg -r "$name" >/dev/null 2>&1 || fail "remove failed"
 dpkg -P "$name" >/dev/null 2>&1 || fail "purge failed"
 [ ! -e "$confdir" ] || fail "purge must delete the configuration"
 
-echo "package test passed: $(basename "$deb")"
+. /etc/os-release
+echo "package test passed on $PRETTY_NAME: $(basename "$deb")"

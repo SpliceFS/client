@@ -7,10 +7,15 @@ LINUX_IMAGE ?= golang:1.27
 LINUX_RUN := docker run --rm --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
 	-v "$(CURDIR)":/src:ro -v splicefs-gomod:/go/pkg/mod $(LINUX_IMAGE)
 
-# The package steps run in a plain container of the same image on every system, so a
-# package built here is the package CI builds.
-PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out \
-	-v splicefs-gomod:/go/pkg/mod $(LINUX_IMAGE)
+# Every package format is built by its own distribution's tool inside that distribution's
+# container, on every system, so a package built here is the package CI builds.
+RPM_IMAGE ?= rockylinux/rockylinux:9
+APK_IMAGE ?= alpine:3.22
+UBUNTU_IMAGE ?= ubuntu:24.04
+# Alpine versions cannot carry a commit, so builds between releases carry its date.
+PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
+PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
+	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
 .PHONY: all build check check-linux fmt fmt-check vet test cover lint package package-test clean
 
@@ -47,14 +52,21 @@ check-linux:
 lint:
 	golangci-lint run
 
-# Installable packages in ./dist.
+# Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
+# for amd64 and arm64. The program is compiled once and every format wraps that binary.
 package:
 	mkdir -p dist
-	$(PACKAGE_RUN) sh -c 'cp -r /src /tmp/w && cd /tmp/w && scripts/package.sh /out'
+	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cp -r /src /tmp/w && cd /tmp/w && \
+		scripts/package-binaries.sh /out && scripts/package-deb.sh /out'
+	$(PACKAGE_RUN) $(RPM_IMAGE) sh -c 'cd /src && scripts/package-rpm.sh /out'
+	$(PACKAGE_RUN) $(APK_IMAGE) sh -c 'cd /src && scripts/package-apk.sh /out'
 
-# Installs, removes and purges the package in a clean system.
+# Installs and removes each package in a clean system of its kind.
 package-test:
-	$(PACKAGE_RUN) sh -c 'cd /src && scripts/package-test.sh /out'
+	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cd /src && scripts/package-test-deb.sh /out'
+	$(PACKAGE_RUN) $(UBUNTU_IMAGE) sh -c 'cd /src && scripts/package-test-deb.sh /out'
+	$(PACKAGE_RUN) $(RPM_IMAGE) sh -c 'cd /src && scripts/package-test-rpm.sh /out'
+	$(PACKAGE_RUN) $(APK_IMAGE) sh -c 'cd /src && scripts/package-test-apk.sh /out'
 
 clean:
 	rm -rf bin dist coverage.out coverage.html
