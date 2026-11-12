@@ -4,6 +4,7 @@ package app
 //
 //	{"op":"status"}                                  -> {"report":{...}}
 //	{"op":"unmount","targets":["/mnt/a"],"force":false} -> {"results":[{"target":"/mnt/a","result":"unmounted"}]}
+//	{"op":"mount","mount":{"cluster":"east","path":"/media","target":"/mnt/media"}} -> {}
 //	any request that cannot be served                -> {"error":"..."}
 
 // Operations a Request can ask for.
@@ -12,6 +13,8 @@ const (
 	OpStatus = "status"
 	// OpUnmount asks for mounts to be unmounted.
 	OpUnmount = "unmount"
+	// OpMount asks for one more mount, as the mount helper does for mount(8) and fstab.
+	OpMount = "mount"
 )
 
 // Outcomes of unmounting one target.
@@ -38,15 +41,33 @@ const (
 
 // Request is what a control client sends.
 type Request struct {
-	// Op is OpStatus or OpUnmount.
+	// Op is OpStatus, OpUnmount or OpMount.
 	Op string `json:"op"`
 	// Targets are the absolute mount targets to unmount. Empty means every mount.
 	Targets []string `json:"targets,omitempty"`
 	// Force unmounts a mount that is in use.
 	Force bool `json:"force,omitempty"`
+	// Mount is the mount to make, for OpMount.
+	Mount *MountRequest `json:"mount,omitempty"`
 }
 
-// Reply is what the client answers. Exactly one of its fields is set.
+// MountRequest asks the running client for one mount that no file configures. The mount
+// is only kept while the client runs, so the helper asks again after a reboot.
+type MountRequest struct {
+	// Cluster is a cluster defined in the configuration.
+	Cluster string `json:"cluster"`
+	// Path is the directory in the cluster. Empty means "/".
+	Path string `json:"path,omitempty"`
+	// Target is the absolute local directory to mount at.
+	Target string `json:"target"`
+	// AllowOther lets users other than the client's own use the mount.
+	AllowOther bool `json:"allow_other,omitempty"`
+	// Offline overrides the default of a mount file when it is not nil.
+	Offline *bool `json:"offline,omitempty"`
+}
+
+// Reply is what the client answers. At most one of its fields is set: a successful mount
+// answers an empty Reply.
 type Reply struct {
 	// Error is why the request could not be served.
 	Error string `json:"error,omitempty"`
