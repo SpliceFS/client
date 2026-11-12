@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SpliceFS/client/internal/units"
+	"github.com/SpliceFS/common/units"
 )
 
 const validYAML = `clusters:

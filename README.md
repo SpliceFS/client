@@ -133,12 +133,15 @@ config/        loads and validates config.yaml
 core/          the client as an importable library (github.com/SpliceFS/client/core)
 mount/         the contract every mount layer offers; mount/fuse is Linux, mount/nfs is macOS
 internal/      node HTTP client, cluster session, merged tree, block cache, block reader, and
-               units, version and wire (the JSON types of the HTTP API), which also exist in
-               the server repository
+               the version number set at build time
 docs/          design and configuration reference
 packaging/     systemd unit
 scripts/       development helpers used by make and CI
 ```
+
+The JSON types of the HTTP API (`wire`) and the size and duration types of the configuration
+(`units`) come from the [common](https://github.com/SpliceFS/common) module, which the server
+uses too.
 
 ## Versioning
 

@@ -4,7 +4,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/SpliceFS/client/internal/units"
+	"github.com/SpliceFS/common/units"
 )
 
 // Sizes used by the defaults.

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // Sentinel errors for the ways a node can answer. They are wrapped with the node name and

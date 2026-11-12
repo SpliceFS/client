@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // Meta describes one file on one node, as answered to a HEAD request.

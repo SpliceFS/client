@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // Errors that callers branch on, checked with errors.Is.

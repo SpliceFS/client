@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // flight is one fetch of a directory, shared by every caller that asks for it while

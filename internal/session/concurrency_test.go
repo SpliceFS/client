@@ -7,7 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 func TestConcurrentCallersShareOneLoginWhenTheTokenExpires(t *testing.T) {

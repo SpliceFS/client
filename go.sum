@@ -1,3 +1,5 @@
+github.com/SpliceFS/common v0.1.0 h1:iSMmFQDwzGO8YB+sYaFTeFL0X0Znnq0F6bplq13eTsU=
+github.com/SpliceFS/common v0.1.0/go.mod h1:s0uJCePRQcNNX+4MLaSV4XrtTJJtl4Q72VOl6Hcdx+0=
 github.com/go-git/go-billy/v5 v5.9.2 h1:OXFSRyz4g20upsGDJgQG9Bak1l/ZEv8GHVYB52O71sE=
 github.com/go-git/go-billy/v5 v5.9.2/go.mod h1:ExsU+jcGwXTBOnyilvAnEM1wug1IxHr4yP2ZXsNRtV0=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

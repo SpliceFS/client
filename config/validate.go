@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/SpliceFS/client/internal/units"
+	"github.com/SpliceFS/common/units"
 )
 
 // Limits for values that have them.

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/SpliceFS/client/internal/remote"
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // spaceTTL is how long the capacity of a view is reused. Tools such as df and file

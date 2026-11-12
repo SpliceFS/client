@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // ensureConnected connects on first use, and again after a failed attempt once its

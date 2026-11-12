@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 func TestNewDoesNotUseTheNetwork(t *testing.T) {

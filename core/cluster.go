@@ -15,7 +15,7 @@ import (
 	"github.com/SpliceFS/client/internal/remote"
 	"github.com/SpliceFS/client/internal/session"
 	"github.com/SpliceFS/client/internal/tree"
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/wire"
 )
 
 // cluster is everything the client keeps per configured cluster: the session that

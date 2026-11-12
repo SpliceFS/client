@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/SpliceFS/client/config"
-	"github.com/SpliceFS/client/internal/units"
-	"github.com/SpliceFS/client/internal/wire"
+	"github.com/SpliceFS/common/units"
+	"github.com/SpliceFS/common/wire"
 )
 
 func TestNewWithDefaultOptions(t *testing.T) {

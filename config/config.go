@@ -13,7 +13,7 @@ import (
 
 	"go.yaml.in/yaml/v3"
 
-	"github.com/SpliceFS/client/internal/units"
+	"github.com/SpliceFS/common/units"
 )
 
 const (

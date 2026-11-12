@@ -53,9 +53,9 @@ make fmt          # rewrite files with gofmt
 - Dependencies are added sparingly. A new module in `go.mod` needs a sentence of
   justification in the pull request.
 - The server lives in its [own repository](https://github.com/SpliceFS/server). Neither program
-  imports the other. `internal/wire` (the JSON types of the HTTP API), `internal/units` and
-  `internal/version` exist in both repositories and must stay identical, so a change to one
-  of them is made in both.
+  imports the other. What both need (the JSON types of the HTTP API and the size and duration
+  types) lives in the [common](https://github.com/SpliceFS/common) module. A change there is
+  released first, and then the version in `go.mod` is raised here.
 
 ### Tests
 

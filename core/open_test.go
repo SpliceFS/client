@@ -14,7 +14,7 @@ import (
 	"github.com/SpliceFS/client/internal/cache"
 	"github.com/SpliceFS/client/internal/fetch"
 	"github.com/SpliceFS/client/internal/remote"
-	"github.com/SpliceFS/client/internal/units"
+	"github.com/SpliceFS/common/units"
 )
 
 // testSize spans several blocks and ends in a short one.
