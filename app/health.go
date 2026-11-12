@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/SpliceFS/client/mount"
@@ -76,9 +77,27 @@ func (r *reloader) checkMounts(ctx context.Context) (hung bool) {
 			r.opts.Logger.Error("mount does not answer, mounting it again", "target", m.target)
 			// detach marks the mount, so that a requested mount stays on the requested list.
 			r.detach(ctx, m)
+			r.abortHung(m)
 		}
 	}
 	return hung
+}
+
+// abortHung cuts the kernel connection of a hung mount that detach has taken out of the
+// set, if its mount layer can. The detach alone leaves the requests that already wait on
+// a mount that does not answer waiting for good. Only a hung mount is aborted: a reload
+// or a stop detaches working mounts too, and their open files must be able to finish. A
+// mount still in the set was not detached, so it is left as it is. A failed abort changes
+// nothing else, because the mount is detached and is made again either way.
+func (r *reloader) abortHung(m *liveMount) {
+	aborter, ok := m.mounted.(mount.Aborter)
+	if !ok || slices.Contains(r.set.list(), m) {
+		return
+	}
+	if err := aborter.Abort(); err != nil {
+		r.opts.Logger.Warn("could not abort the connection of a hung mount",
+			"target", m.target, "err", err)
+	}
 }
 
 // check reports whether m answered "does not exist" for the probe name in time. Any

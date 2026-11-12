@@ -250,7 +250,7 @@ func TestForcedUnmountDetachesWithoutWaitingForTheLoop(t *testing.T) {
 	}
 }
 
-func TestForcedUnmountAbortsTheRememberedConnectionAfterTheDetach(t *testing.T) {
+func TestForcedUnmountOnlyDetaches(t *testing.T) {
 	t.Parallel()
 	loop := newFakeLoop(t)
 	h := &fakeHost{statResults: okStat(), connID: 42, unmount: func(context.Context, string, bool) error { return nil }}
@@ -258,13 +258,10 @@ func TestForcedUnmountAbortsTheRememberedConnectionAfterTheDetach(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := h.eventLog(); len(got) != 0 {
-		t.Fatalf("events before the unmount = %v, want none", got)
-	}
 	if err := m.Unmount(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := h.eventLog(), []string{"unmount", "abort 42"}; !slices.Equal(got, want) {
+	if got, want := h.eventLog(), []string{"unmount"}; !slices.Equal(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 }
@@ -285,61 +282,67 @@ func TestPlainUnmountDoesNotAbortTheConnection(t *testing.T) {
 	}
 }
 
-func TestForcedUnmountIgnoresAFailedAbort(t *testing.T) {
+func TestAbortCutsTheRememberedConnection(t *testing.T) {
 	t.Parallel()
 	loop := newFakeLoop(t)
-	h := &fakeHost{
-		statResults: okStat(),
-		connID:      7,
-		abortErr:    fs.ErrNotExist,
-		unmount:     func(context.Context, string, bool) error { return nil },
-	}
+	h := &fakeHost{statResults: okStat(), connID: 42, unmount: func(context.Context, string, bool) error { return nil }}
 	m, err := start(loop, h, "/x")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Unmount(context.Background(), true); err != nil {
-		t.Fatalf("Unmount = %v, want the failed abort to be ignored", err)
+	if got := h.eventLog(); len(got) != 0 {
+		t.Fatalf("events before the abort = %v, want none", got)
 	}
-	if got, want := h.eventLog(), []string{"unmount", "abort 7"}; !slices.Equal(got, want) {
+	if err := m.(mount.Aborter).Abort(); err != nil {
+		t.Fatalf("Abort = %v, want nil", err)
+	}
+	if got, want := h.eventLog(), []string{"abort 42"}; !slices.Equal(got, want) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 }
 
-func TestForcedUnmountWithoutARememberedConnectionDoesNotAbort(t *testing.T) {
+func TestAbortOfAConnectionThatIsGoneIsNotAnError(t *testing.T) {
 	t.Parallel()
 	loop := newFakeLoop(t)
-	h := &fakeHost{
-		statResults: okStat(),
-		connErr:     syscall.EIO,
-		unmount:     func(context.Context, string, bool) error { return nil },
+	h := &fakeHost{statResults: okStat(), connID: 7, abortErr: fs.ErrNotExist}
+	m, err := start(loop, h, "/x")
+	if err != nil {
+		t.Fatal(err)
 	}
+	if err := m.(mount.Aborter).Abort(); err != nil {
+		t.Fatalf("Abort = %v, want a missing control file to be no error", err)
+	}
+	if got, want := h.eventLog(), []string{"abort 7"}; !slices.Equal(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+}
+
+func TestAbortReturnsAFailedWrite(t *testing.T) {
+	t.Parallel()
+	loop := newFakeLoop(t)
+	h := &fakeHost{statResults: okStat(), connID: 7, abortErr: syscall.EACCES}
+	m, err := start(loop, h, "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.(mount.Aborter).Abort(); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("Abort = %v, want %v", err, syscall.EACCES)
+	}
+}
+
+func TestAbortWithoutARememberedConnectionDoesNothing(t *testing.T) {
+	t.Parallel()
+	loop := newFakeLoop(t)
+	h := &fakeHost{statResults: okStat(), connErr: syscall.EIO}
 	m, err := start(loop, h, "/x")
 	if err != nil {
 		t.Fatalf("start = %v, want a mount whose connection is unknown to still work", err)
 	}
-	if err := m.Unmount(context.Background(), true); err != nil {
-		t.Fatal(err)
+	if err := m.(mount.Aborter).Abort(); err != nil {
+		t.Fatalf("Abort = %v, want nil", err)
 	}
-	if got, want := h.eventLog(), []string{"unmount"}; !slices.Equal(got, want) {
-		t.Fatalf("events = %v, want %v", got, want)
-	}
-}
-
-func TestFailedForcedUnmountDoesNotAbortTheConnection(t *testing.T) {
-	t.Parallel()
-	loop := newFakeLoop(t)
-	failure := errors.New("cannot unmount")
-	h := &fakeHost{statResults: okStat(), connID: 9, unmount: func(context.Context, string, bool) error { return failure }}
-	m, err := start(loop, h, "/x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := m.Unmount(context.Background(), true); !errors.Is(err, failure) {
-		t.Fatalf("Unmount = %v, want %v", err, failure)
-	}
-	if got, want := h.eventLog(), []string{"unmount"}; !slices.Equal(got, want) {
-		t.Fatalf("events = %v, want %v", got, want)
+	if got := h.eventLog(); len(got) != 0 {
+		t.Fatalf("events = %v, want none", got)
 	}
 }
 

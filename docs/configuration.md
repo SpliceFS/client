@@ -293,8 +293,9 @@ configuration it has. A check fails when there is no answer within 5 seconds or 
 wrong. The log has the line `mount does not answer, mounting it again`.
 
 - Programs that have files open in the old mount get errors. They must open the files again.
-- On Linux the forced unmount also aborts the kernel connection of the mount, so programs
-  that are waiting on it get an error and do not wait forever.
+- On Linux the client then cuts the kernel connection of the hung mount, so programs that
+  are waiting on it get an error and do not wait forever. Only a hung mount is cut. A mount
+  that a reload detaches keeps its open files working.
 - A mount that you asked for with `mount -t splicefs` or fstab is mounted again too.
 
 **A client that is stuck.** After every round of checks the client tells systemd that it is

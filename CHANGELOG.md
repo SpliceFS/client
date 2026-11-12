@@ -58,8 +58,9 @@ All notable changes to this project are recorded here. The format follows
   the root of every mount. The client answers it itself and asks no server. A mount that fails
   three checks in a row (no answer within 5 seconds, or a wrong answer) is force unmounted
   and mounted again, and the log has `mount does not answer, mounting it again`. On Linux the
-  forced unmount also aborts the kernel connection, so programs waiting on the mount get an
-  error and do not wait forever.
+  client then cuts the kernel connection of the hung mount, so programs waiting on it get an
+  error and do not wait forever. A mount that a reload detaches is not cut: its open files
+  keep working.
 - Heartbeat: after every round of checks the client sends `WATCHDOG=1` to systemd, and the
   packaged unit has `WatchdogSec=300`. A client whose run loop is stuck for five minutes is
   killed and started again. On Alpine (OpenRC) there is no heartbeat.

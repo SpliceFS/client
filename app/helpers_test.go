@@ -52,6 +52,8 @@ type fakeMounted struct {
 	calls    []bool // the force argument of every Unmount call
 	behavior func(force bool) error
 	endsOnOK bool
+	abortErr error // what Abort answers, for a mount made abortable
+	aborts   []int // how many Unmount calls had been made at each Abort call
 }
 
 func newFakeMounted() *fakeMounted {
@@ -104,6 +106,23 @@ func (f *fakeMounted) unmountCalls() []bool {
 	return append([]bool(nil), f.calls...)
 }
 
+// abortableMounted is a fakeMounted that also implements mount.Aborter, like the FUSE mount.
+type abortableMounted struct{ *fakeMounted }
+
+func (a abortableMounted) Abort() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.aborts = append(a.aborts, len(a.calls))
+	return a.abortErr
+}
+
+// abortCalls returns, for every Abort call, how many Unmount calls came before it.
+func (f *fakeMounted) abortCalls() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.aborts...)
+}
+
 // busyUnlessForced refuses a polite unmount the way a mount in use does.
 func busyUnlessForced(force bool) error {
 	if force {
@@ -121,6 +140,8 @@ type fakeMounter struct {
 	fail    map[string]error
 	// configure, if set, is called on every new mount before it is returned.
 	configure func(*fakeMounted)
+	// abortable makes every new mount implement mount.Aborter.
+	abortable bool
 }
 
 func newFakeMounter() *fakeMounter {
@@ -140,6 +161,9 @@ func (m *fakeMounter) Mount(fsys core.FS, opts mount.Options) (mount.Mounted, er
 		m.configure(f)
 	}
 	m.mounted[opts.Target] = f
+	if m.abortable {
+		return abortableMounted{f}, nil
+	}
 	return f, nil
 }
 

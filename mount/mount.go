@@ -42,3 +42,10 @@ type Mounted interface {
 	// set, because cutting off a program in the middle of a read should be a decision.
 	Unmount(ctx context.Context, force bool) error
 }
+
+// Aborter is implemented by a mount whose kernel connection can be cut. Abort makes every
+// request that waits on the connection fail at once. It is for a mount that has stopped
+// answering; a healthy mount is ended with Unmount, which lets open files finish.
+type Aborter interface {
+	Abort() error
+}

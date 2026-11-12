@@ -288,8 +288,102 @@ func TestHealthFailingMountIsMountedAgain(t *testing.T) {
 				t.Error("the mount at /mnt/a is still the one that did not answer")
 			}
 			g.wantUntouched("/mnt/b", "/mnt/c")
+			g.wantNotLogged("could not abort")
 			g.wantBeats()
 		})
+	}
+}
+
+func TestHealthHungMountThatCanBeAbortedIsAbortedOnceAfterItsUnmount(t *testing.T) {
+	t.Parallel()
+	g := newHealthRig(t, 2, hungTimeout)
+	g.h.mounter.abortable = true
+	g.start()
+	old := g.h.mounter.get("/mnt/a")
+	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+
+	g.round()
+	if got := old.abortCalls(); len(got) != 0 {
+		t.Errorf("abort calls after one failure = %v, want none", got)
+	}
+	g.round()
+
+	g.wantUnmounts(old, true)
+	// One Abort, made when the one forced unmount had been made.
+	if got, want := old.abortCalls(), []int{1}; !slices.Equal(got, want) {
+		t.Errorf("abort calls = %v, want %v", got, want)
+	}
+	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
+	g.wantNotLogged("could not abort")
+	for _, target := range []string{"/mnt/b", "/mnt/c"} {
+		if got := g.h.mounter.get(target).abortCalls(); len(got) != 0 {
+			t.Errorf("%s was aborted: %v", target, got)
+		}
+	}
+	g.wantBeats()
+}
+
+func TestHealthFailedAbortIsLoggedAndTheMountIsMadeAgain(t *testing.T) {
+	t.Parallel()
+	g := newHealthRig(t, 1, hungTimeout)
+	g.h.mounter.abortable = true
+	g.h.mounter.configure = func(f *fakeMounted) { f.abortErr = errors.New("permission denied") }
+	g.start()
+	old := g.h.mounter.get("/mnt/a")
+	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+
+	g.round()
+
+	g.wantUnmounts(old, true)
+	if got, want := old.abortCalls(), []int{1}; !slices.Equal(got, want) {
+		t.Errorf("abort calls = %v, want %v", got, want)
+	}
+	g.wantLogged(`level=WARN msg="could not abort the connection of a hung mount" ` +
+		`target=/mnt/a err="permission denied"`)
+	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
+	g.wantBeats()
+}
+
+func TestHealthMountThatWasNotDetachedIsNotAborted(t *testing.T) {
+	t.Parallel()
+	g := newHealthRig(t, 1, hungTimeout)
+	g.h.mounter.abortable = true
+	g.start()
+	old := g.h.mounter.get("/mnt/a")
+	old.setBehavior(func(bool) error { return errors.New("device is busy") })
+	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+
+	g.round()
+
+	g.wantUnmounts(old, true)
+	if got := old.abortCalls(); len(got) != 0 {
+		t.Errorf("abort calls = %v, want none for a mount that is still attached", got)
+	}
+	// Let the mount go at the end, or the stop of the run waits out its whole force limit.
+	old.setBehavior(func(bool) error { return nil })
+}
+
+func TestReloadAndStopDetachMountsWithoutAbortingThem(t *testing.T) {
+	t.Parallel()
+	g := &reloadRig{h: newHarness(t), signals: make(chan os.Signal)}
+	g.h.mounter.abortable = true
+	g.h.cfg = &config.Config{Mounts: []config.Mount{reloadA, reloadB}}
+	g.h.opts.Reload = g.signals
+	g.h.opts.Load = g.load
+	g.run = g.h.start()
+	a, b := g.h.mounter.get("/mnt/a"), g.h.mounter.get("/mnt/b")
+
+	// The reload detaches /mnt/a with a forced unmount, which open files must survive.
+	g.reload(reloadB)
+	if got, want := a.unmountCalls(), []bool{true}; !slices.Equal(got, want) {
+		t.Fatalf("/mnt/a unmount calls (force) = %v, want %v", got, want)
+	}
+	g.stop()
+
+	for target, m := range map[string]*fakeMounted{"/mnt/a": a, "/mnt/b": b} {
+		if got := m.abortCalls(); len(got) != 0 {
+			t.Errorf("%s was aborted: %v", target, got)
+		}
 	}
 }
 

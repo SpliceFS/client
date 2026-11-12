@@ -130,8 +130,10 @@ never overlaps a reload or a mount request.
   it out of its set. It then mounts what is missing, the same step a reload ends with, from
   the configuration applied last and the requested mounts. The files are not read again. A
   requested mount stays on the requested list.
-- **Kernel connection (Linux).** A forced unmount also aborts the kernel connection of the
-  mount, after the detach. The connection number is read from `/proc/self/mountinfo` when
+- **Kernel connection (Linux).** After the forced unmount of a hung mount the run loop
+  aborts the kernel connection of that mount. This is its own operation (`mount.Aborter`),
+  never part of an unmount: a reload detaches mounts with a forced unmount too, and their
+  open files must keep working. The connection number is read from `/proc/self/mountinfo` when
   the mount is made and kept, because after the detach the mount point no longer leads to
   the mount. The mount table is read and the mount point is not looked at with `stat`,
   because a `stat` fills the attribute cache and a dead mount would then answer from it.
