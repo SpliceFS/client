@@ -1,26 +1,13 @@
-// Package config loads and validates the configuration of the SpliceFS client,
-// the file config.yaml described in docs/configuration.md.
+// Package config loads and validates the configuration of the SpliceFS client: the
+// directories conf.d, clusters.d and mounts.d of the configuration directory.
 package config
 
 import (
-	"bytes"
-	"errors"
-	"fmt"
-	"io"
-	"os"
+	"maps"
 	"path/filepath"
-	"sort"
-
-	"go.yaml.in/yaml/v3"
+	"slices"
 
 	"github.com/SpliceFS/common/units"
-)
-
-const (
-	// DefaultDir is the configuration directory used when none is given.
-	DefaultDir = "/etc/splicefs/client"
-	// FileName is the name of the main file inside the configuration directory.
-	FileName = "config.yaml"
 )
 
 // Config is the client configuration.
@@ -29,8 +16,12 @@ type Config struct {
 	Cache Cache `yaml:"cache"`
 	// Clusters maps a cluster name to its settings.
 	Clusters map[string]Cluster `yaml:"clusters"`
-	// Mounts lists the directories to mount.
+	// Mounts lists the directories to mount, ordered by name.
 	Mounts []Mount `yaml:"mounts"`
+	// Sources maps the key path of every value that a file set, such as cache.max_size or
+	// clusters.east.url, to that file relative to the configuration directory. Values left
+	// at their defaults are not listed.
+	Sources map[string]string `yaml:"-"`
 }
 
 // Cache says where and how file contents are cached and when they are evicted.
@@ -73,6 +64,8 @@ type Cluster struct {
 
 // Mount is one cluster directory mounted at a local directory.
 type Mount struct {
+	// Name is the name of the file the mount is read from, without .yaml.
+	Name string `yaml:"-"`
 	// Cluster names an entry of Config.Clusters.
 	Cluster string `yaml:"cluster"`
 	// Path is the directory of the cluster that is mounted, cleaned and starting
@@ -102,54 +95,5 @@ func (c *Config) Mount(target string) (Mount, bool) {
 
 // clusterNames returns the names of the clusters in sorted order.
 func (c *Config) clusterNames() []string {
-	names := make([]string, 0, len(c.Clusters))
-	for name := range c.Clusters {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-// Load reads <dir>/config.yaml, applies defaults, resolves relative paths
-// against dir and validates the result. It does not read the password files or
-// check that the files and directories the configuration names exist. When the
-// configuration is invalid the error lists every problem found.
-func Load(dir string) (*Config, error) {
-	file := filepath.Join(dir, FileName)
-	data, err := os.ReadFile(file)
-	if err != nil {
-		return nil, fmt.Errorf("read client config: %w", err)
-	}
-	raw, err := decode(data)
-	if err != nil {
-		return nil, fmt.Errorf("parse %s: %w", file, err)
-	}
-	cfg := raw.build(dir)
-	if problems := validate(cfg); len(problems) > 0 {
-		return nil, fmt.Errorf("invalid client config %s: %w", file, errors.Join(problems...))
-	}
-	normalize(cfg)
-	return cfg, nil
-}
-
-// decode parses exactly one YAML document and rejects unknown keys.
-func decode(data []byte) (*rawConfig, error) {
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	var raw rawConfig
-	if err := dec.Decode(&raw); err != nil {
-		if errors.Is(err, io.EOF) {
-			return nil, errors.New("file is empty")
-		}
-		return nil, err
-	}
-	var next yaml.Node
-	err := dec.Decode(&next)
-	switch {
-	case err == nil:
-		return nil, errors.New("more than one YAML document")
-	case !errors.Is(err, io.EOF):
-		return nil, err
-	}
-	return &raw, nil
+	return slices.Sorted(maps.Keys(c.Clusters))
 }

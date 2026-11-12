@@ -1,7 +1,9 @@
 package config
 
 import (
+	"maps"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/SpliceFS/common/units"
@@ -15,7 +17,6 @@ const (
 
 // Defaults applied to keys that are absent.
 const (
-	defaultCacheDir     = "/var/cache/splicefs"
 	defaultCacheMaxSize = 10 * gib
 	defaultCacheMinFree = gib
 	defaultRevalidate   = units.Duration(time.Hour)
@@ -27,15 +28,9 @@ const (
 	defaultOffline      = true
 )
 
-// rawConfig is the shape of the file. Every key whose absence must be told
-// apart from an explicit zero or false is a pointer: a zero max_age is an error
-// where an absent one means unlimited, and a mount's cache section must only
-// override the keys it names.
-type rawConfig struct {
-	Cache    rawCache              `yaml:"cache"`
-	Clusters map[string]rawCluster `yaml:"clusters"`
-	Mounts   []rawMount            `yaml:"mounts"`
-}
+// The raw types are the shape of the files. Every key whose absence must be told apart
+// from an explicit zero or false is a pointer: a zero max_age is an error where an absent
+// one means unlimited, and a mount's cache section must only override the keys it names.
 
 type rawCache struct {
 	Dir         *string         `yaml:"dir"`
@@ -73,22 +68,26 @@ func orDefault[T any](p *T, def T) T {
 	return *p
 }
 
-// build applies the defaults and resolves relative paths against dir.
-func (r *rawConfig) build(dir string) *Config {
-	cache := r.Cache.over(defaultCache(), dir)
-	cfg := &Config{Cache: cache, Clusters: make(map[string]Cluster, len(r.Clusters))}
-	for name, c := range r.Clusters {
+// build applies the defaults and resolves relative paths against dir. The mounts are
+// ordered by name.
+func build(
+	dir string, base Cache, settings rawSettings, clusters map[string]rawCluster,
+	mounts map[string]rawMount,
+) *Config {
+	cache := settings.Cache.over(base, dir)
+	cfg := &Config{Cache: cache, Clusters: make(map[string]Cluster, len(clusters))}
+	for name, c := range clusters {
 		cfg.Clusters[name] = c.build(dir)
 	}
-	for _, m := range r.Mounts {
-		cfg.Mounts = append(cfg.Mounts, m.build(cache, dir))
+	for _, name := range slices.Sorted(maps.Keys(mounts)) {
+		cfg.Mounts = append(cfg.Mounts, mounts[name].build(name, cache, dir))
 	}
 	return cfg
 }
 
-func defaultCache() Cache {
+// baseCache returns the cache defaults except the directory, which depends on the system.
+func baseCache() Cache {
 	return Cache{
-		Dir:        defaultCacheDir,
 		MaxSize:    defaultCacheMaxSize,
 		MaxAge:     units.UnlimitedDuration,
 		MinFree:    defaultCacheMinFree,
@@ -121,8 +120,9 @@ func (r rawCluster) build(dir string) Cluster {
 	}
 }
 
-func (r rawMount) build(cache Cache, dir string) Mount {
+func (r rawMount) build(name string, cache Cache, dir string) Mount {
 	return Mount{
+		Name:       name,
 		Cluster:    r.Cluster,
 		Path:       orDefault(r.Path, defaultMountPath),
 		Target:     resolve(dir, r.Target),
