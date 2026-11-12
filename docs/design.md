@@ -88,6 +88,27 @@ Mounts share clusters and cache folders, and a reload changes them while mounts 
 Stopping unmounts every mount that is live, with force if needed, and then closes everything,
 including what detached mounts still held.
 
+### Requested mounts
+
+On Linux, `mount -t splicefs` and fstab lines of type `splicefs` ask the running client for a
+mount. The mount helper is the `splicefs` program started under the name `mount.splicefs`. It
+only sends one request on the control socket. The client makes the mount.
+
+- All mount changes happen in the goroutine of the run loop: reloads, requests from the
+  control socket, and the restore at start. The control socket hands a request to the run loop
+  and waits for the answer, so changes never overlap.
+- A requested mount is part of the effective configuration, which is the files plus the
+  requested mounts. It is checked by the same rules as the files, so it cannot overlap a mount
+  file or another requested mount, and its cluster must be defined. A request that breaks a
+  rule is refused and changes nothing.
+- A reload reads the files and adds the requested mounts that are still mounted. If the result
+  is invalid only because of a requested mount, that mount is dropped with a warning and the
+  rest is applied.
+- The list is a file next to the control socket, in the runtime directory, with the extension
+  `.mounts.json`. It is gone after a reboot, when fstab asks again. A mount that ends because
+  of `umount` leaves the list. A mount that ends because the client stops stays on it, so a
+  restart of the service brings it back.
+
 ## Discovery
 
 Each cluster is configured with one entry URL. The client logs in there, fetches the node
@@ -222,4 +243,3 @@ The limitations of the server are listed in its
   [Consistency](https://github.com/SpliceFS/server/blob/main/docs/design.md#consistency)
   in the server design document).
 - Keeping directory listings on disk for offline starts.
-- A mount helper for `/etc/fstab`.

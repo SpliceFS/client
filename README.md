@@ -63,6 +63,8 @@ each node, `splicefsd`, is in the [server repository](https://github.com/SpliceF
   the file each value came from
 - Applies a changed configuration on `SIGHUP` without a restart: new mounts appear, removed
   ones are detached at once, files that are open keep working until they are closed
+- On Linux, `mount -t splicefs` and `/etc/fstab` lines of type `splicefs` work too: the helper
+  asks the running client to make the mount
 - Several clusters and several mounts in one client
 - Multi-source block reads with per-node speed tracking and re-request of late blocks
 - Local block cache with size, age and free-space limits, kept across restarts; files that
@@ -114,6 +116,14 @@ splicefs status                  # mounts, node speeds, cache use
 The files of the cluster appear in `/mnt/files`. To stop a mount, delete its file and reload,
 or run `splicefs umount /mnt/files`; a mount unmounted by hand stays unmounted until the next
 reload or restart.
+
+On Linux you can also mount with `mount` or fstab instead of a mount file. The client must be
+running, and the cluster must be defined in `clusters.d`:
+
+```
+mount -t splicefs example:/ /mnt/files
+echo 'example:/ /mnt/files splicefs _netdev,nofail,x-systemd.requires=splicefs.service 0 0' >> /etc/fstab
+```
 
 The cache is in `/var/cache/splicefs` unless a file in `conf.d/` says otherwise. On a macOS
 build the folders are `~/.splicefs/client` and `~/Library/Caches/splicefs`, and there is no

@@ -172,6 +172,71 @@ together:
   `min_free`, because a folder has one eviction policy. The client checks this when it starts
   and when it reloads, and `splicefs config check` does not.
 
+## Mounting with mount and fstab
+
+On Linux, `mount -t splicefs` and `/etc/fstab` lines of type `splicefs` work too. A mount file
+in `mounts.d/` is the normal way to define a mount and is what to use first. Use `mount` and
+fstab if you keep all your mounts in fstab, or for a one-off mount.
+
+The helper is `/usr/sbin/mount.splicefs`, a link to `/usr/bin/splicefs` that the packages
+install. `mount` runs it, and it only asks the running client for the mount. The client makes
+the mount, as it does for a mount file. So the client must be running, and the target folder
+must exist.
+
+The source is `<cluster>:<path>`. The cluster is the name of a file in `clusters.d/`, and the
+path is a folder of that cluster. `east:/` is the whole cluster.
+
+```
+mount -t splicefs east:/media /mnt/media
+mount -t splicefs east:/media /mnt/media -o allow_other
+umount /mnt/media
+```
+
+A cluster that is not defined is refused. `mount` exits with status 32 and the helper prints
+the reason, for example that the cluster is not defined. If the client is not running, the
+message says to start the service. Bad arguments exit with status 1.
+
+An fstab line:
+
+```
+east:/media  /mnt/media  splicefs  _netdev,nofail,x-systemd.requires=splicefs.service  0 0
+```
+
+`x-systemd.requires=splicefs.service` makes systemd start the service before it runs the
+helper for this line. The helper does not start the client, it only asks it. Without this
+option, at boot the helper can run before the client is up, and the mount fails. systemd reads
+the `x-` option and the helper ignores it.
+
+Options:
+
+| Option                 | Effect |
+|------------------------|--------|
+| `allow_other`          | Same as the mount file key, see "Mounts" |
+| `offline`, `nooffline` | Same as the mount file key `offline`. The last one given wins |
+| `rw`, `async`, `ro`, `defaults`, `auto`, `noauto`, `nofail`, `_netdev`, `user`, `nouser`, `users`, `owner`, `exec`, `noexec`, `suid`, `nosuid`, `dev`, `nodev`, `atime`, `noatime`, `relatime` | Accepted and ignored, so that a usual fstab line works as written |
+| `x-...`, `comment=...` | Accepted and ignored. Other programs read them |
+
+Any other option is an error that names it. `rw` is accepted and ignored because `mount`
+passes it to the helper by default. The mount is always read-only, whatever is asked. The
+flags `-s`, `-f`, `-n` and `-v` are accepted and ignored. A mount made this way uses the cache
+settings from `conf.d/` and has no `cache` section of its own.
+
+A mount made this way is a requested mount. The client keeps a list of them:
+
+- On a restart of the service, the requested mounts come back. A mount that cannot be made
+  again is logged and dropped.
+- On a reboot, the list is cleared, because it is kept in the runtime directory next to the
+  control socket. fstab asks again.
+- On `umount`, the mount is taken off the list.
+- On a reload, a requested mount stays. It is dropped, with a warning in the log, if its
+  cluster is gone or if its target now overlaps a mount file. The rules in "Mounts" apply to
+  requested mounts too.
+
+The control socket is readable only by the user the client runs as. So the service must run
+as root, which the packages do, and `mount` must be run by root, or by that user. By default
+the helper finds the client of `/etc/splicefs/client`. To use another configuration folder,
+set `SPLICEFS_CONFIG` to it in the environment of `mount`.
+
 ## Applying changes
 
 The client applies changes to `conf.d/`, `clusters.d/` and `mounts.d/` without a restart. Send
