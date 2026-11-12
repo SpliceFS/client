@@ -49,6 +49,11 @@ All notable changes to this project are recorded here. The format follows
   still applied. A configuration with an error is refused and only logged.
 - Default folders for a macOS build: `~/.splicefs/client` for the configuration and
   `~/Library/Caches/splicefs` for the cache.
+- Mount helper for Linux: `mount -t splicefs CLUSTER:PATH TARGET` and `/etc/fstab` lines of
+  type `splicefs` ask the running client to make the mount. The packages install it as
+  `/usr/sbin/mount.splicefs`, a link to the program. Mounts made this way come back when the
+  service restarts, and are cleared on a reboot. See "Mounting with mount and fstab" in the
+  configuration reference.
 
 ### Changed
 

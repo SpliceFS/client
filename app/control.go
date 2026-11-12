@@ -38,6 +38,9 @@ type control struct {
 	set      *mountSet
 	status   statusSource
 	log      *slog.Logger
+	// requests carries mount requests to the run loop, which makes every mount change.
+	// Nil when this server cannot mount.
+	requests chan<- mountRequest
 
 	// ctx ends when the server is told to stop; it only interrupts connections that
 	// have not yet sent a request.
@@ -47,9 +50,13 @@ type control struct {
 }
 
 // startControl serves ln until stop is called.
-func startControl(ln net.Listener, set *mountSet, status statusSource, log *slog.Logger) *control {
+func startControl(ln net.Listener, set *mountSet, status statusSource, log *slog.Logger,
+	requests chan<- mountRequest) *control {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &control{listener: ln, set: set, status: status, log: log, ctx: ctx, cancel: cancel}
+	c := &control{
+		listener: ln, set: set, status: status, log: log, requests: requests,
+		ctx: ctx, cancel: cancel,
+	}
 	c.wg.Go(c.accept)
 	return c
 }
@@ -109,8 +116,36 @@ func (c *control) serve(conn net.Conn) (Reply, bool) {
 		return Reply{Report: &report}, true
 	case OpUnmount:
 		return Reply{Results: c.unmount(req)}, true
+	case OpMount:
+		return c.mount(req.Mount), true
 	}
 	return Reply{Error: fmt.Sprintf("unknown op %q", req.Op)}, true
+}
+
+// mount hands the request to the run loop and waits for its answer, or for the server to be
+// told to stop.
+func (c *control) mount(m *MountRequest) Reply {
+	if m == nil {
+		return Reply{Error: "mount request has no mount"}
+	}
+	if c.requests == nil {
+		return Reply{Error: "this client cannot mount on request"}
+	}
+	req := mountRequest{mount: m.requested(), reply: make(chan error, 1)}
+	select {
+	case c.requests <- req:
+	case <-c.ctx.Done():
+		return Reply{Error: errStopping.Error()}
+	}
+	select {
+	case err := <-req.reply:
+		if err != nil {
+			return Reply{Error: err.Error()}
+		}
+		return Reply{}
+	case <-c.ctx.Done():
+		return Reply{Error: errStopping.Error()}
+	}
 }
 
 func (c *control) unmount(req Request) []UnmountResult {

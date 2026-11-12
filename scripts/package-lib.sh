@@ -8,6 +8,9 @@ program="$(basename cmd/*)"
 confdir="/etc/splicefs/${name#splicefs-}"
 # One folder name per line; see the file for why the package ships them empty.
 confsubdirs="$(grep -v -e '^#' -e '^$' packaging/config-folders)"
+# Links the package installs, "<link> <target>" per line; a package without the file has none.
+links=""
+if [ -f packaging/links ]; then links="$(grep -v -e '^#' -e '^$' packaging/links)"; fi
 
 fail() {
     echo "FAIL: $*" >&2

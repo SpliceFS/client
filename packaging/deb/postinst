@@ -5,6 +5,11 @@ set -e
 
 case "$1" in
     configure)
+        # mount(8) looks for its helpers in /sbin. Where /sbin is a folder of its own and not a link
+        # to /usr/sbin, the helper needs a link there as well.
+        if [ ! -L /sbin ] && [ ! -e /sbin/mount.splicefs ]; then
+            ln -s /usr/bin/splicefs /sbin/mount.splicefs
+        fi
         # A container or a chroot has no running systemd. The files are installed and
         # there is nothing to start.
         if [ -d /run/systemd/system ]; then

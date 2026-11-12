@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -60,6 +61,10 @@ type liveMount struct {
 	// fs is the view the mount serves, which the core releases when the mount has ended.
 	fs core.FS
 
+	// detached is set before a reload unmounts the mount, so that its watcher can tell a
+	// mount the client ended from one that ended by itself.
+	detached atomic.Bool
+
 	// unmounting serializes unmounts: a stop request and an operator's umount may
 	// arrive together, and a mount layer is not required to handle that.
 	unmounting sync.Mutex
@@ -96,6 +101,12 @@ type mountSet struct {
 	// release and log belong to the watchers; the set built by newMountSet has them.
 	release func(core.FS)
 	log     *slog.Logger
+	// requested is the list of requested mounts. A watcher takes the mount that ended
+	// off it. Nil when the run keeps no such list.
+	requested *requestedStore
+	// stopping is set before a stop begins to unmount, so that the mounts it ends stay
+	// on the requested list whatever order their watchers run in.
+	stopping atomic.Bool
 	// watchers ends with stop, and endWatchers waits for it.
 	watchers sync.WaitGroup
 	stop     chan struct{}
@@ -153,11 +164,22 @@ func (s *mountSet) watch(m *liveMount) {
 	}
 	s.remove(m)
 	s.release(m.fs)
+	s.dropRequested(m)
 	if err := m.mounted.Err(); err != nil {
 		s.log.Warn("mount ended with an error", "target", m.target, "err", err)
 		return
 	}
 	s.log.Info("mount ended", "target", m.target)
+}
+
+// dropRequested takes a requested mount that ended on its own off the requested list, so
+// that it is not brought back. A mount ended by a stop stays on it, for the next start.
+// One that a reload detached was already dealt with, and its target may be in use again.
+func (s *mountSet) dropRequested(m *liveMount) {
+	if s.stopping.Load() || m.detached.Load() {
+		return
+	}
+	s.requested.remove(m.target)
 }
 
 // endWatchers stops the watchers and waits for them. The core is closed after that, which
@@ -195,6 +217,7 @@ func unmountPending(ctx context.Context, mounts []*liveMount, force bool) []erro
 // returns why any mount could not be removed or ended with an error. The mounts are
 // listed once, before any of them ends, because the watchers remove the ended ones.
 func (s *mountSet) stopAll(log *slog.Logger, limits stopLimits) error {
+	s.stopping.Store(true)
 	all := s.list()
 	gentle, cancelGentle := context.WithTimeout(context.Background(), limits.graceful)
 	defer cancelGentle()
@@ -206,6 +229,7 @@ func (s *mountSet) stopAll(log *slog.Logger, limits stopLimits) error {
 
 // forceAll unmounts what is left with force and waits for every mount to end.
 func (s *mountSet) forceAll(limit time.Duration) error {
+	s.stopping.Store(true)
 	return s.forceMounts(s.list(), limit)
 }
 

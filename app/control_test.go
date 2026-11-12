@@ -243,7 +243,7 @@ func TestControlLogsAnAcceptFailure(t *testing.T) {
 	logs := &logBuffer{}
 	boom := errors.New("too many open files")
 	ln := listenerFunc{accept: func() (net.Conn, error) { return nil, boom }}
-	startControl(ln, &mountSet{}, newFakeCore(), logs.logger()).stop()
+	startControl(ln, &mountSet{}, newFakeCore(), logs.logger(), nil).stop()
 	if !strings.Contains(logs.String(), "control socket stopped accepting") || !strings.Contains(logs.String(), "too many open files") {
 		t.Errorf("log:\n%s", logs.String())
 	}
@@ -253,7 +253,7 @@ func TestControlIgnoresAClosedListener(t *testing.T) {
 	t.Parallel()
 	logs := &logBuffer{}
 	ln := listenerFunc{accept: func() (net.Conn, error) { return nil, net.ErrClosed }}
-	startControl(ln, &mountSet{}, newFakeCore(), logs.logger()).stop()
+	startControl(ln, &mountSet{}, newFakeCore(), logs.logger(), nil).stop()
 	if logs.String() != "" {
 		t.Errorf("a normal stop was logged:\n%s", logs.String())
 	}

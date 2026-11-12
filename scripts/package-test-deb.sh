@@ -30,6 +30,12 @@ done
 [ "$(ls -A "$confdir" | sort | tr '\n' ' ')" = "$(echo "$confsubdirs" | sort | tr '\n' ' ')" ] ||
     fail "$confdir holds something other than its empty folders"
 kept="$confdir/$(echo "$confsubdirs" | head -n 1)/local.yaml"
+echo "$links" | while read -r link target; do
+    [ -n "$link" ] || continue
+    [ -x "$link" ] || fail "$link does not lead to a program"
+done
+# Checks that only this package needs.
+if [ -f packaging/package-test-extra.sh ]; then . packaging/package-test-extra.sh; fi
 user="$(sed -n 's/^User=//p' "$unit")"
 if [ -n "$user" ]; then
     getent passwd "$user" >/dev/null || fail "user $user was not created"

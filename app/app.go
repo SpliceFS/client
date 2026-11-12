@@ -147,7 +147,9 @@ func (o Options) controlSocket() (string, error) {
 // empty, and keeps going until ctx is cancelled. It then unmounts whatever is live, with
 // force if it has to, and returns nil. A mount that ends earlier, because it was
 // unmounted through the control socket or by the administrator, stays unmounted until
-// the next reload, and the run goes on, with no mounts at all if need be. Each value on
+// the next reload, and the run goes on, with no mounts at all if need be. A mount asked
+// for over the control socket (OpMount) is kept in a list next to the socket, mounted
+// again at the next start, and dropped when it ends while the run goes on. Each value on
 // opts.Reload reads the configuration again with opts.Load, applies it to the core and
 // then unmounts the mounts that were removed or changed and mounts the ones that are
 // missing; a failure there is logged and the mounts stay as they are. It returns an
@@ -194,17 +196,26 @@ func Run(ctx context.Context, cfg *config.Config, targets []string, opts Options
 		}
 		return err
 	}
-	set, err := mountAll(cc, selected, opts)
+	store := newRequestedStore(requestedPath(opts.SocketPath), opts.Logger)
+	store.load()
+	set, err := mountAll(cc, selected, store, opts)
 	if err != nil {
 		return err
 	}
-	return supervise(ctx, &reloader{cc: cc, set: set, opts: opts, targets: abs}, sock)
+	r := &reloader{
+		cc: cc, set: set, opts: opts, targets: abs, store: store, last: cfg,
+		requests: make(chan mountRequest),
+	}
+	return supervise(ctx, r, sock)
 }
 
 // mountAll mounts every selected mount. If one fails, the ones already mounted are
 // unmounted with force, because a mount left behind would block the next start.
-func mountAll(cc Core, selected []config.Mount, opts Options) (*mountSet, error) {
+func mountAll(cc Core, selected []config.Mount, store *requestedStore,
+	opts Options) (*mountSet, error) {
 	set := newMountSet(cc.Release, opts.Logger)
+	// Set before the first watcher starts, which reads it.
+	set.requested = store
 	for _, m := range selected {
 		live, err := mountOne(cc, m, opts)
 		if err != nil {
@@ -239,7 +250,8 @@ func mountOne(cc Core, m config.Mount, opts Options) (*liveMount, error) {
 // the context ends, then stops everything.
 func supervise(ctx context.Context, r *reloader, sock *socket) error {
 	opts := r.opts
-	ctl := startControl(sock, r.set, r.cc, opts.Logger)
+	ctl := startControl(sock, r.set, r.cc, opts.Logger, r.requests)
+	r.restoreRequested(ctx)
 	if err := opts.Notify("READY=1"); err != nil {
 		ctl.stop()
 		return errors.Join(fmt.Errorf("tell the service manager the client is ready: %w", err),
