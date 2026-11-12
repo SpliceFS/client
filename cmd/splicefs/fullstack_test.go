@@ -30,6 +30,13 @@ func (stubCore) Status() core.Status {
 	}
 }
 
+func (stubCore) Apply(*config.Config) error { return nil }
+
+func (stubCore) Release(core.FS) {}
+
+// Current is true so that a reload would leave the mounts of these tests as they are.
+func (stubCore) Current(core.FS) bool { return true }
+
 func (stubCore) Close() error { return nil }
 
 // stubMount is a mount that is gone as soon as it is unmounted.
@@ -71,6 +78,8 @@ type fullStack struct {
 	mount     *stubMount
 	ready     chan struct{}
 	backend   backend
+	// stop ends the mount command that startMount started, the way a stop signal does.
+	stop context.CancelFunc
 }
 
 func newFullStack(t *testing.T, fsys core.FS, mounter app.Mounter) *fullStack {
@@ -102,9 +111,12 @@ func newFullStack(t *testing.T, fsys core.FS, mounter app.Mounter) *fullStack {
 // and stderr when it ends.
 func (f *fullStack) startMount() <-chan result {
 	ended := make(chan result, 1)
+	ctx, stop := context.WithCancel(context.Background())
+	f.stop = stop
+	f.t.Cleanup(stop)
 	go func() {
 		var out, errOut bytes.Buffer
-		status := execute(context.Background(), []string{"--config", f.configDir, "mount"}, &out, &errOut, f.backend)
+		status := execute(ctx, []string{"--config", f.configDir, "mount"}, &out, &errOut, f.backend)
 		ended <- result{status: status, stdout: out.String(), stderr: errOut.String()}
 	}()
 	return ended
@@ -157,8 +169,13 @@ func TestStatusAndUmountAgainstARunningMount(t *testing.T) {
 	if forced := f.command("umount", "--force", f.configDir+"/mnt"); forced.status != exitOK {
 		t.Errorf("umount --force: %+v", forced)
 	}
+	// The client keeps running with no mounts, so that a reload can mount again.
+	if got := f.command("status"); got.status != exitOK || strings.Contains(got.stdout, "mounted") {
+		t.Errorf("status after the last mount was unmounted: %+v", got)
+	}
+	f.stop()
 	if end := <-ended; end.status != exitOK {
-		t.Errorf("mount ended with %+v after its last mount was unmounted", end)
+		t.Errorf("mount ended with %+v after it was stopped", end)
 	}
 	if got := f.command("status"); got.status != exitError || !strings.Contains(got.stderr, "no client is running for this configuration") {
 		t.Errorf("status after the client ended: %+v", got)
@@ -182,6 +199,7 @@ func TestMountRefusesASecondClient(t *testing.T) {
 	if got := f.command("umount", "--force"); got.status != exitOK {
 		t.Errorf("umount: %+v", got)
 	}
+	f.stop()
 	if end := <-ended; end.status != exitOK {
 		t.Errorf("first mount ended with %+v", end)
 	}

@@ -197,6 +197,13 @@ func TestMount(t *testing.T) {
 			if c.runCfg != cfg {
 				t.Error("run did not get the loaded configuration")
 			}
+			if c.runOpts.Reload == nil {
+				t.Error("run got no Reload channel")
+			}
+			c.loadDir = ""
+			if got, err := c.runOpts.Load(); err != nil || got != cfg || c.loadDir != tt.wantDir {
+				t.Errorf("Load = %v, %v from %q, want the configuration of %q", got, err, c.loadDir, tt.wantDir)
+			}
 			if !slices.Equal(c.runTargets, tt.wantTargs) {
 				t.Errorf("targets = %v, want %v", c.runTargets, tt.wantTargs)
 			}

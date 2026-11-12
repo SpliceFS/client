@@ -3,8 +3,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"syscall"
 	"testing"
+	"time"
+
+	"github.com/SpliceFS/client/app"
+	"github.com/SpliceFS/client/config"
 )
 
 // The tests in this file send a real signal to the test process. They are not parallel,
@@ -29,5 +35,37 @@ func TestMountStopsOnSignal(t *testing.T) {
 				t.Errorf("unmount calls (force) = %v, want one polite unmount", calls)
 			}
 		})
+	}
+}
+
+// TestMountReceivesSIGHUP sends SIGHUP while the run is active, which is the only time the
+// command has asked for it. A SIGHUP outside a mount would end the test process.
+func TestMountReceivesSIGHUP(t *testing.T) {
+	cfg := &config.Config{}
+	b, c := fakeBackend(cfg, nil, nil, nil, nil, app.Report{})
+	b.run = func(_ context.Context, _ *config.Config, _ []string, opts app.Options) error {
+		if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
+			return err
+		}
+		select {
+		case sig := <-opts.Reload:
+			if sig != syscall.SIGHUP {
+				return errors.New("Reload received " + sig.String())
+			}
+		case <-time.After(5 * time.Second):
+			return errors.New("SIGHUP did not reach Reload")
+		}
+		c.loadDir = ""
+		if got, err := opts.Load(); err != nil || got != cfg {
+			return errors.New("Load did not return the configuration")
+		}
+		return nil
+	}
+	status, _, stderr := executeWith(b, "--config", "/etc/example", "mount")
+	if status != exitOK {
+		t.Fatalf("status %d\n%s", status, stderr)
+	}
+	if c.loadDir != "/etc/example" {
+		t.Errorf("Load read %q, want the configuration directory of the command", c.loadDir)
 	}
 }

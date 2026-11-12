@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -81,12 +82,14 @@ func TestRunWithoutNotifierOrLogger(t *testing.T) {
 	h.opts.Notify, h.opts.Logger = nil, nil
 	h.cfg.Mounts = h.cfg.Mounts[:1]
 	mounter := h.opts.Mounter
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	h.opts.Mounter = func(fsys core.FS, opts mount.Options) (mount.Mounted, error) {
 		m, err := mounter(fsys, opts)
-		h.mounter.get(opts.Target).end(nil)
+		cancel()
 		return m, err
 	}
-	if err := h.runSync(); err != nil {
+	if err := Run(ctx, h.cfg, nil, h.opts); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -147,7 +150,6 @@ func TestRunRejectsBadSelection(t *testing.T) {
 		want    string
 	}{
 		{"unknown target", testConfig().Mounts, []string{"/mnt/a", "/mnt/nope"}, nil, "/mnt/nope is not a mount in the configuration"},
-		{"no mounts", nil, nil, nil, "no mounts"},
 		{"unresolvable target", testConfig().Mounts, []string{"x"}, func(string) (string, error) { return "", errors.New("no cwd") }, `resolve "x": no cwd`},
 	}
 	for _, tt := range tests {
@@ -408,15 +410,24 @@ func TestRunReportsAMountThatCannotBeRemoved(t *testing.T) {
 	}
 }
 
-func TestRunEndsWhenEveryMountEndsByItself(t *testing.T) {
+func TestRunKeepsRunningWhenEveryMountEnds(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	r := h.start()
 	for _, target := range h.mounter.targets() {
 		h.mounter.get(target).end(nil)
 	}
-	if err := r.wait(); err != nil {
-		t.Fatalf("Run = %v, want nil after outside unmounts", err)
+	waitFor(t, "every view to be released", func() bool { return h.core.releasedCount() == 3 })
+	select {
+	case err := <-r.result:
+		t.Fatalf("Run ended with %v after its mounts ended, want it to idle", err)
+	default:
+	}
+	if got := len(h.status().Mounts); got != 0 {
+		t.Errorf("report lists %d mounts, want none", got)
+	}
+	if err := r.stop(); err != nil {
+		t.Fatalf("Run = %v, want nil after a clean stop", err)
 	}
 	if got := h.notes.got(); !slices.Equal(got, []string{"READY=1", "STOPPING=1"}) {
 		t.Errorf("notifications = %v", got)
@@ -434,10 +445,10 @@ func TestRunKeepsRunningWhileOneMountRemains(t *testing.T) {
 	r := h.start()
 	h.mounter.get("/mnt/a").end(nil)
 	h.mounter.get("/mnt/b").end(nil)
+	waitFor(t, "two views to be released", func() bool { return h.core.releasedCount() == 2 })
 	report := h.status()
-	states := []string{report.Mounts[0].State, report.Mounts[1].State, report.Mounts[2].State}
-	if !slices.Equal(states, []string{StateEnded, StateEnded, StateMounted}) {
-		t.Errorf("states = %v", states)
+	if len(report.Mounts) != 1 || report.Mounts[0].Target != "/mnt/c" || report.Mounts[0].State != StateMounted {
+		t.Errorf("mounts = %+v, want only /mnt/c, mounted", report.Mounts)
 	}
 	if err := r.stop(); err != nil {
 		t.Fatal(err)
@@ -447,19 +458,20 @@ func TestRunKeepsRunningWhileOneMountRemains(t *testing.T) {
 	}
 }
 
-func TestRunReturnsMountErrors(t *testing.T) {
+func TestRunLogsAMountThatEndsWithAnError(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	h.cfg.Mounts = h.cfg.Mounts[:2]
 	r := h.start()
-	lost, gone := errors.New("connection to the kernel was lost"), errors.New("server failed")
+	lost := errors.New("connection to the kernel was lost")
 	h.mounter.get("/mnt/a").end(lost)
-	h.mounter.get("/mnt/b").end(gone)
-	err := r.wait()
-	errIs(t, err, lost)
-	errIs(t, err, gone)
-	if !strings.Contains(err.Error(), "mount /mnt/a: ") {
-		t.Errorf("error does not name the mount: %v", err)
+	waitFor(t, "the view to be released", func() bool { return h.core.releasedCount() == 1 })
+	waitFor(t, "the log line", func() bool { return strings.Contains(h.log.String(), "mount ended with an error") })
+	if !strings.Contains(h.log.String(), lost.Error()) {
+		t.Errorf("the error is not in the log:\n%s", h.log.String())
+	}
+	if err := r.stop(); err != nil {
+		t.Fatalf("Run = %v, want nil: the failure was logged when it happened", err)
 	}
 }
 

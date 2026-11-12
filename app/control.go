@@ -116,7 +116,7 @@ func (c *control) serve(conn net.Conn) (Reply, bool) {
 func (c *control) unmount(req Request) []UnmountResult {
 	targets := req.Targets
 	if len(targets) == 0 {
-		for _, m := range c.set.mounts {
+		for _, m := range c.set.list() {
 			targets = append(targets, m.target)
 		}
 	}

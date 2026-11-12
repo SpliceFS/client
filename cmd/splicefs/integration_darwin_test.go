@@ -128,9 +128,11 @@ func TestRealMount(t *testing.T) {
 		return nil
 	}
 	ended := make(chan result, 1)
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
 	go func() {
 		var out, errOut bytes.Buffer
-		status := execute(context.Background(), []string{"--config", dir, "mount"}, &out, &errOut, b)
+		status := execute(ctx, []string{"--config", dir, "mount"}, &out, &errOut, b)
 		ended <- result{status: status, stdout: out.String(), stderr: errOut.String()}
 	}()
 	select {
@@ -156,6 +158,8 @@ func TestRealMount(t *testing.T) {
 	if umount := f.command("umount"); umount.status != exitOK {
 		t.Errorf("umount: %+v", umount)
 	}
+	// The client keeps running after its last mount is gone, until it is stopped.
+	stop()
 	if end := <-ended; end.status != exitOK {
 		t.Errorf("mount ended with %+v, want a clean exit", end)
 	}

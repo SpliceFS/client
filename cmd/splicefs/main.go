@@ -33,6 +33,10 @@ const (
        splicefs [--config DIR] config check
        splicefs [--config DIR] config show
        splicefs --version
+
+mount keeps running, with or without mounts, until it is stopped. SIGHUP applies the
+configuration without a restart: mount files that were added are mounted, removed ones are
+detached, changed ones are mounted again.
 `
 )
 
@@ -129,18 +133,27 @@ func (b backend) runConfig(inv invocation, stdout io.Writer) error {
 	return showConfig(stdout, cfg)
 }
 
-// mount loads the configuration and keeps the mounts up until ctx ends.
+// mount loads the configuration and keeps the mounts up until ctx ends. SIGHUP makes the
+// run read the same configuration directory again.
 func (b backend) mount(ctx context.Context, inv invocation, stderr io.Writer) error {
 	cfg, err := b.loadConfig(inv.configDir)
 	if err != nil {
 		return err
 	}
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: inv.logLevel}))
+	// The signal package never blocks on a full channel, so the channel needs room for one
+	// signal. A second SIGHUP that arrives while one is waiting is dropped, which loses
+	// nothing: the reload that is waiting reads the files after both changes.
+	reload := make(chan os.Signal, 1)
+	signal.Notify(reload, syscall.SIGHUP)
+	defer signal.Stop(reload)
 	return b.run(ctx, cfg, inv.targets, app.Options{
 		Logger:    logger,
 		Mounter:   b.mounter,
 		Notify:    b.notify,
 		ConfigDir: inv.configDir,
+		Reload:    reload,
+		Load:      func() (*config.Config, error) { return b.loadConfig(inv.configDir) },
 	})
 }
 

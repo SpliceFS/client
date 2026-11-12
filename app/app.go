@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"slices"
 	"sync"
 	"time"
@@ -44,6 +45,14 @@ type Core interface {
 	View(m config.Mount) (core.FS, error)
 	// Status reports clusters, nodes and cache use without using the network.
 	Status() core.Status
+	// Apply makes the client follow a new configuration, or changes nothing and returns
+	// an error.
+	Apply(cfg *config.Config) error
+	// Release says that the mount that used fs has ended.
+	Release(fs core.FS)
+	// Current reports whether fs still uses the clusters and caches Apply would hand
+	// out for the same mount now.
+	Current(fs core.FS) bool
 	// Close releases the clusters and caches.
 	Close() error
 }
@@ -78,6 +87,11 @@ type Options struct {
 	ConnectTimeout time.Duration
 	// NewCore builds the core client. Nil uses core.New.
 	NewCore NewCore
+	// Reload delivers a value each time the configuration is to be applied again. Nil
+	// means it never is.
+	Reload <-chan os.Signal
+	// Load reads the configuration again for a reload. It must be set when Reload is.
+	Load func() (*config.Config, error)
 
 	sys    *system
 	limits stopLimits
@@ -130,21 +144,32 @@ func (o Options) controlSocket() (string, error) {
 }
 
 // Run mounts the directories of cfg named by targets, or all of them when targets is
-// empty, and keeps them mounted until ctx is cancelled, every mount has ended or the
-// last mount has been unmounted through the control socket. It then unmounts whatever is
-// left, with force if it has to, and returns nil. It returns an error if the selection
-// is invalid, another client already uses the control socket, a cluster rejects the
-// credentials, or a mount cannot be made (the earlier ones are unmounted again). An
-// unreachable cluster is only logged, because the mounts recover once it is back. When
-// it returns, everything it started has stopped.
+// empty, and keeps going until ctx is cancelled. It then unmounts whatever is live, with
+// force if it has to, and returns nil. A mount that ends earlier, because it was
+// unmounted through the control socket or by the administrator, stays unmounted until
+// the next reload, and the run goes on, with no mounts at all if need be. Each value on
+// opts.Reload reads the configuration again with opts.Load, applies it to the core and
+// then unmounts the mounts that were removed or changed and mounts the ones that are
+// missing; a failure there is logged and the mounts stay as they are. It returns an
+// error if the selection is invalid, another client already uses the control socket, a
+// cluster rejects the credentials, or a mount cannot be made (the earlier ones are
+// unmounted again). An unreachable cluster is only logged, because the mounts recover
+// once it is back. When it returns, everything it started has stopped.
 func Run(ctx context.Context, cfg *config.Config, targets []string, opts Options) (err error) {
 	opts = opts.withDefaults()
+	if opts.Reload != nil && opts.Load == nil {
+		return errors.New("reload needs a function that loads the configuration")
+	}
 	var socketPath string
 	if socketPath, err = opts.controlSocket(); err != nil {
 		return err
 	}
 	opts.SocketPath = socketPath
-	selected, err := opts.sys.selectMounts(cfg, targets)
+	abs, err := opts.sys.absTargets(targets)
+	if err != nil {
+		return err
+	}
+	selected, err := selectMounts(cfg, abs)
 	if err != nil {
 		return err
 	}
@@ -173,19 +198,19 @@ func Run(ctx context.Context, cfg *config.Config, targets []string, opts Options
 	if err != nil {
 		return err
 	}
-	return supervise(ctx, set, cc, sock, opts)
+	return supervise(ctx, &reloader{cc: cc, set: set, opts: opts, targets: abs}, sock)
 }
 
 // mountAll mounts every selected mount. If one fails, the ones already mounted are
 // unmounted with force, because a mount left behind would block the next start.
 func mountAll(cc Core, selected []config.Mount, opts Options) (*mountSet, error) {
-	set := &mountSet{}
+	set := newMountSet(cc.Release, opts.Logger)
 	for _, m := range selected {
 		live, err := mountOne(cc, m, opts)
 		if err != nil {
 			return nil, errors.Join(err, set.forceAll(opts.limits.force))
 		}
-		set.mounts = append(set.mounts, live)
+		set.add(live)
 	}
 	return set, nil
 }
@@ -203,34 +228,30 @@ func mountOne(cc Core, m config.Mount, opts Options) (*liveMount, error) {
 		Logger:     opts.Logger,
 	})
 	if err != nil {
+		// The mount never existed, so nothing else will give the view back.
+		cc.Release(fsys)
 		return nil, fmt.Errorf("mount %s: %w", m.Target, err)
 	}
-	return &liveMount{target: m.Target, source: source, mounted: mounted}, nil
+	return &liveMount{target: m.Target, source: source, mounted: mounted, cfg: m, fs: fsys}, nil
 }
 
-// supervise reports readiness, keeps the control socket going and waits for the end of
-// the run, then stops everything.
-func supervise(ctx context.Context, set *mountSet, cc Core, sock *socket, opts Options) error {
-	ctl := startControl(sock, set, cc, opts.Logger)
+// supervise reports readiness, keeps the control socket going and applies reloads until
+// the context ends, then stops everything.
+func supervise(ctx context.Context, r *reloader, sock *socket) error {
+	opts := r.opts
+	ctl := startControl(sock, r.set, r.cc, opts.Logger)
 	if err := opts.Notify("READY=1"); err != nil {
 		ctl.stop()
 		return errors.Join(fmt.Errorf("tell the service manager the client is ready: %w", err),
-			set.forceAll(opts.limits.force))
+			r.set.forceAll(opts.limits.force))
 	}
-	stopWatch := make(chan struct{})
-	allEnded, waitWatchers := set.watchEnd(stopWatch)
-	select {
-	case <-ctx.Done():
-	case <-allEnded:
-	}
-	close(stopWatch)
-	waitWatchers()
+	r.wait(ctx, opts.Reload)
 
 	if err := opts.Notify("STOPPING=1"); err != nil {
 		opts.Logger.Warn("could not tell the service manager the client is stopping", "err", err)
 	}
 	ctl.stop()
-	return set.stopAll(opts.Logger, opts.limits)
+	return r.set.stopAll(opts.Logger, opts.limits)
 }
 
 // connectClusters logs in to every cluster the selected mounts use, all at once, each
