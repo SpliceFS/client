@@ -68,6 +68,12 @@ type liveMount struct {
 	// unmounting serializes unmounts: a stop request and an operator's umount may
 	// arrive together, and a mount layer is not required to handle that.
 	unmounting sync.Mutex
+
+	// failures and pending are the health state, which only the run loop touches.
+	// failures counts the checks in a row that failed. pending is the answer of a check
+	// that is still waiting, or nil.
+	failures int
+	pending  chan error
 }
 
 func (l *liveMount) ended() bool {

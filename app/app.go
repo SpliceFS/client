@@ -74,7 +74,8 @@ type Options struct {
 	Logger *slog.Logger
 	// Mounter is the mount layer of this operating system. It must not be nil.
 	Mounter Mounter
-	// Notify tells the service manager "READY=1" and "STOPPING=1". Nil does nothing.
+	// Notify tells the service manager "READY=1", "WATCHDOG=1" and "STOPPING=1". Nil does
+	// nothing.
 	Notify func(state string) error
 	// ConfigDir is the directory the configuration was loaded from. It names the
 	// control socket when SocketPath is empty. Empty means the default configuration
@@ -95,6 +96,13 @@ type Options struct {
 
 	sys    *system
 	limits stopLimits
+
+	// The health round: where its ticks come from, how it asks a mount for the probe name,
+	// and how long and how often a mount may fail before it is counted as hung.
+	newTicker     func(time.Duration) (<-chan time.Time, func())
+	lstat         func(string) (os.FileInfo, error)
+	probeTimeout  time.Duration
+	probeFailures int
 }
 
 // stopLimits bound the two steps of a stop.
@@ -122,6 +130,18 @@ func (o Options) withDefaults() Options {
 	}
 	if o.limits == (stopLimits{}) {
 		o.limits = stopLimits{graceful: gracefulStopTimeout, force: forceStopTimeout}
+	}
+	if o.newTicker == nil {
+		o.newTicker = systemTicker
+	}
+	if o.lstat == nil {
+		o.lstat = os.Lstat
+	}
+	if o.probeTimeout == 0 {
+		o.probeTimeout = defaultProbeTimeout
+	}
+	if o.probeFailures == 0 {
+		o.probeFailures = defaultProbeFailures
 	}
 	return o
 }
