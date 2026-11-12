@@ -20,6 +20,11 @@ type cacheDir struct {
 	now func() time.Time
 	log *slog.Logger
 
+	// holds counts the views that use the cache and retired says that a reload removed
+	// it. Both are guarded by the Client's mu.
+	holds   int
+	retired bool
+
 	mu  sync.Mutex
 	due time.Time // the earliest time of the next pass
 }
