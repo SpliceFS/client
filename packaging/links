@@ -1,0 +1,4 @@
+# Links the package installs: "<link> <target>" per line.
+# mount(8) runs mount.<type> for "mount -t <type>" and for fstab lines of that type. The
+# client is that helper when it is started under this name.
+/usr/sbin/mount.splicefs /usr/bin/splicefs
