@@ -3,10 +3,10 @@
 [![CI](https://github.com/SpliceFS/client/actions/workflows/ci.yml/badge.svg)](https://github.com/SpliceFS/client/actions/workflows/ci.yml)
 [![Security](https://github.com/SpliceFS/client/actions/workflows/security.yml/badge.svg)](https://github.com/SpliceFS/client/actions/workflows/security.yml)
 [![Coverage](https://codecov.io/gh/SpliceFS/client/graph/badge.svg)](https://codecov.io/gh/SpliceFS/client)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/SpliceFS/client/badge)](https://scorecard.dev/viewer/?uri=github.com/SpliceFS/client)
-[![Go Reference](https://pkg.go.dev/badge/github.com/SpliceFS/client.svg)](https://pkg.go.dev/github.com/SpliceFS/client)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16606/badge)](https://www.bestpractices.dev/projects/16606)
 [![Quality gate](https://sonarcloud.io/api/project_badges/measure?project=SpliceFS_client&metric=alert_status)](https://sonarcloud.io/summary/overall?id=SpliceFS_client)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/SpliceFS/client/badge)](https://scorecard.dev/viewer/?uri=github.com/SpliceFS/client)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/16606/badge)](https://www.bestpractices.dev/projects/16606)
+[![Go Reference](https://pkg.go.dev/badge/github.com/SpliceFS/client.svg)](https://pkg.go.dev/github.com/SpliceFS/client)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 SpliceFS mounts a read-only folder whose files are streamed from several servers at once.
