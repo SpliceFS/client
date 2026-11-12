@@ -102,6 +102,17 @@ func TestSocketIsPrivate(t *testing.T) {
 	}
 }
 
+// stateOf is the state of a mount in a report. An unmounted mount is StateEnded until its
+// watcher takes it out of the set, and absent after that, which both count as StateEnded.
+func stateOf(report Report, target string) string {
+	for _, m := range report.Mounts {
+		if m.Target == target {
+			return m.State
+		}
+	}
+	return StateEnded
+}
+
 func TestUnmountOverTheSocket(t *testing.T) {
 	t.Parallel()
 	stuck := errors.New("device is stuck")
@@ -141,7 +152,7 @@ func TestUnmountOverTheSocket(t *testing.T) {
 			if got := errors.Is(err, ErrBusy); got != tt.wantBusy {
 				t.Errorf("errors.Is(ErrBusy) = %v, want %v", got, tt.wantBusy)
 			}
-			if got := h.status().Mounts[0].State; got != tt.wantState {
+			if got := stateOf(h.status(), "/mnt/a"); got != tt.wantState {
 				t.Errorf("state of /mnt/a = %s, want %s", got, tt.wantState)
 			}
 			if calls := a.unmountCalls(); !reflect.DeepEqual(calls, tt.wantCalls) {
@@ -155,39 +166,24 @@ func TestUnmountOverTheSocket(t *testing.T) {
 	}
 }
 
-func TestUnmountEverythingEndsTheRun(t *testing.T) {
+func TestUnmountEverythingKeepsTheRunGoing(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	r := h.start()
 	if err := Unmount(context.Background(), h.socket, nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.wait(); err != nil {
-		t.Fatalf("Run = %v, want nil after the last unmount", err)
+	waitFor(t, "every view to be released", func() bool { return h.core.releasedCount() == 3 })
+	select {
+	case err := <-r.result:
+		t.Fatalf("Run ended with %v after the last unmount, want it to idle", err)
+	default:
+	}
+	if err := r.stop(); err != nil {
+		t.Fatalf("Run = %v, want nil after a clean stop", err)
 	}
 	if got := h.notes.got(); len(got) != 2 || got[1] != "STOPPING=1" {
 		t.Errorf("notifications = %v", got)
-	}
-}
-
-func TestUnmountTheLastMountEndsTheRun(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t)
-	h.cfg.Mounts = h.cfg.Mounts[:2]
-	r := h.start()
-	if err := Unmount(context.Background(), h.socket, []string{"/mnt/a"}, false); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-r.result:
-		t.Fatalf("Run ended with a mount left: %v", err)
-	default:
-	}
-	if err := Unmount(context.Background(), h.socket, []string{"/mnt/b"}, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.wait(); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -247,7 +243,7 @@ func TestControlLogsAnAcceptFailure(t *testing.T) {
 	logs := &logBuffer{}
 	boom := errors.New("too many open files")
 	ln := listenerFunc{accept: func() (net.Conn, error) { return nil, boom }}
-	startControl(ln, &mountSet{}, newFakeCore(), logs.logger()).stop()
+	startControl(ln, &mountSet{}, newFakeCore(), logs.logger(), nil).stop()
 	if !strings.Contains(logs.String(), "control socket stopped accepting") || !strings.Contains(logs.String(), "too many open files") {
 		t.Errorf("log:\n%s", logs.String())
 	}
@@ -257,7 +253,7 @@ func TestControlIgnoresAClosedListener(t *testing.T) {
 	t.Parallel()
 	logs := &logBuffer{}
 	ln := listenerFunc{accept: func() (net.Conn, error) { return nil, net.ErrClosed }}
-	startControl(ln, &mountSet{}, newFakeCore(), logs.logger()).stop()
+	startControl(ln, &mountSet{}, newFakeCore(), logs.logger(), nil).stop()
 	if logs.String() != "" {
 		t.Errorf("a normal stop was logged:\n%s", logs.String())
 	}

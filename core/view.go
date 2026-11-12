@@ -20,6 +20,8 @@ type view struct {
 	mount  config.Mount
 	cache  *cacheDir
 	space  spaceMemo
+
+	released bool // Release was called; guarded by the Client's mu
 }
 
 // Stat describes the file or directory at name.

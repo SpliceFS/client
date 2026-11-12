@@ -17,16 +17,30 @@ apk info -e "$name" >/dev/null || fail "package is not installed"
 "$program" --version | grep -qF "$VERSION" || fail "$program --version does not report $VERSION"
 [ -x "$init" ] || fail "service script is missing or not executable"
 [ -d "$confdir" ] || fail "$confdir is missing"
-[ -z "$(ls -A "$confdir")" ] || fail "$confdir must be empty after an install"
+for folder in $confsubdirs; do
+    [ -d "$confdir/$folder" ] || fail "$confdir/$folder is missing"
+    [ -z "$(ls -A "$confdir/$folder")" ] || fail "$confdir/$folder must be empty after an install"
+done
+# The package ships the folders and nothing else: any file there would be one an
+# upgrade could overwrite.
+[ "$(ls -A "$confdir" | sort | tr '\n' ' ')" = "$(echo "$confsubdirs" | sort | tr '\n' ' ')" ] ||
+    fail "$confdir holds something other than its empty folders"
+kept="$confdir/$(echo "$confsubdirs" | head -n 1)/local.yaml"
+echo "$links" | while read -r link target; do
+    [ -n "$link" ] || continue
+    [ -x "$link" ] || fail "$link does not lead to a program"
+done
+# Checks that only this package needs.
+if [ -f packaging/package-test-extra.sh ]; then . packaging/package-test-extra.sh; fi
 user="$(sed -n 's/^command_user="\([^:"]*\).*/\1/p' "$init")"
 if [ -n "$user" ]; then
     grep -q "^$user:" /etc/passwd || fail "user $user was not created"
 fi
 
-touch "$confdir/local.yaml"
+touch "$kept"
 apk del -q "$name" || fail "remove failed"
 [ ! -e "/usr/bin/$program" ] || fail "remove left the program behind"
-[ -f "$confdir/local.yaml" ] || fail "remove must keep the configuration"
+[ -f "$kept" ] || fail "remove must keep the configuration"
 
 . /etc/os-release
 echo "package test passed on $PRETTY_NAME: $(basename "$apk")"

@@ -67,6 +67,19 @@ jobs:
       - name: Build
         run: make build
 
+  fuzz:
+    name: Fuzz (short)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Fuzz every target briefly
+        run: make fuzz
+
   package:
     name: Packages (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
@@ -88,6 +101,8 @@ jobs:
         run: make repo
       - name: Install from the repositories with signature checks on
         run: make repo-test
+      - name: Publish and release-file checks against local folders, no server
+        run: make publish-test
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: matrix.arch == 'amd64'
         with:

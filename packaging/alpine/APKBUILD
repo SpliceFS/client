@@ -16,7 +16,12 @@ install="$pkgname.post-install $pkgname.post-upgrade $pkgname.pre-deinstall"
 package() {
 	install -D -m 755 "$STAGE/splicefs" "$pkgdir/usr/bin/splicefs"
 	install -D -m 755 "$SRC/packaging/openrc/splicefs.initd" "$pkgdir/etc/init.d/splicefs"
-	install -d "$pkgdir/etc/splicefs/client"
+	# mount runs this for "mount -t splicefs" and for fstab lines of that type.
+	install -d "$pkgdir/usr/sbin"
+	ln -s /usr/bin/splicefs "$pkgdir/usr/sbin/mount.splicefs"
+	# Empty on purpose: the administrator's files go here and no package file ever does.
+	install -d "$pkgdir/etc/splicefs/client/conf.d" "$pkgdir/etc/splicefs/client/clusters.d" \
+		"$pkgdir/etc/splicefs/client/mounts.d"
 	install -D -m 644 "$SRC/LICENSE" "$pkgdir/usr/share/doc/$pkgname/LICENSE"
 	install -m 644 "$SRC/README.md" "$SRC/CHANGELOG.md" "$SRC/docs/configuration.md" \
 		"$pkgdir/usr/share/doc/$pkgname/"

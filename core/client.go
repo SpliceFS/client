@@ -10,6 +10,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/SpliceFS/client/config"
@@ -34,12 +35,9 @@ type Options struct {
 	ReadPassword func(path string) (string, error)
 }
 
-func (o Options) withDefaults(cfg *config.Config) Options {
+func (o Options) withDefaults() Options {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
-	}
-	if o.HTTPClient == nil {
-		o.HTTPClient = newHTTPClient(largestStreams(cfg), systemDialer())
 	}
 	if o.Now == nil {
 		o.Now = time.Now
@@ -54,14 +52,27 @@ func (o Options) withDefaults(cfg *config.Config) Options {
 type readerFunc func(fetch.Options, []fetch.Source, fetch.Store, fetch.Meter) (*fetch.Reader, error)
 
 // Client is the SpliceFS client for one configuration: a connection to every
-// configured cluster and the caches the mounts use. It hands out one FS per mount.
-// It is safe for concurrent use.
+// configured cluster and the caches the mounts use. It hands out one FS per mount and
+// can be given a new configuration while mounts use it (Apply). It is safe for
+// concurrent use.
 type Client struct {
 	opts      Options
 	clock     fetch.Clock // the time source of block reads
-	clusters  map[string]*cluster
-	caches    map[string]*cacheDir
 	newReader readerFunc
+
+	// applyMu makes Apply and Close run one at a time. Apply works without mu while it
+	// reads password files and opens caches, and must not be overtaken meanwhile.
+	applyMu sync.Mutex
+
+	// mu guards everything below and the hold counts and retired flags of the clusters
+	// and caches. The two maps are replaced as a whole and never edited, so a map that
+	// was read under mu can be walked after it is released.
+	mu              sync.Mutex
+	clusters        map[string]*cluster
+	caches          map[string]*cacheDir
+	retiredClusters []*cluster // replaced or removed, but a view still uses them
+	retiredCaches   []*cacheDir
+	closed          bool
 }
 
 // New prepares a Client for cfg. It reads each cluster's password file once and opens
@@ -75,12 +86,8 @@ func New(cfg *config.Config, opts Options) (*Client, error) {
 
 // newClient is New with the time source of block reads, which tests replace.
 func newClient(cfg *config.Config, opts Options, clock fetch.Clock) (*Client, error) {
-	opts = opts.withDefaults(cfg)
-	clusters, err := newClusters(cfg, opts)
-	if err != nil {
-		return nil, err
-	}
-	caches, err := openCaches(cfg.Mounts, opts)
+	opts = opts.withDefaults()
+	clusters, caches, err := build(cfg, opts, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -90,10 +97,34 @@ func newClient(cfg *config.Config, opts Options, clock fetch.Clock) (*Client, er
 	return &Client{opts: opts, clock: clock, clusters: clusters, caches: caches, newReader: fetch.New}, nil
 }
 
+// build makes the clusters and caches that cfg asks for. A cluster or cache of old that
+// still matches is reused, so New and Apply share this path. It changes nothing in old,
+// and when it fails it closes whatever it opened itself.
+func build(cfg *config.Config, opts Options, oldClusters map[string]*cluster,
+	oldCaches map[string]*cacheDir) (map[string]*cluster, map[string]*cacheDir, error) {
+	clusters, err := newClusters(cfg, opts, oldClusters)
+	if err != nil {
+		return nil, nil, err
+	}
+	caches, err := openCaches(cfg.Mounts, opts, oldCaches)
+	if err != nil {
+		for name, cl := range clusters {
+			if oldClusters[name] != cl {
+				cl.close()
+			}
+		}
+		return nil, nil, err
+	}
+	return clusters, caches, nil
+}
+
 // View returns the filesystem of one configured mount: the mount's directory of its
 // cluster, read with the mount's cache settings. All mounts of a cluster share one
-// merged tree, so its listings are reused for the shortest listing_ttl among them.
+// merged tree, so its listings are reused for the shortest listing_ttl among them. The
+// view keeps its cluster and cache open until Release, even if Apply replaces them.
 func (c *Client) View(m config.Mount) (FS, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	cl, ok := c.clusters[m.Cluster]
 	if !ok {
 		return nil, fmt.Errorf("mount %s: cluster %q is not configured", m.Target, m.Cluster)
@@ -102,6 +133,8 @@ func (c *Client) View(m config.Mount) (FS, error) {
 	if !ok {
 		return nil, fmt.Errorf("mount %s: cache directory %s is not one of the configured mounts", m.Target, m.Cache.Dir)
 	}
+	cl.holds++
+	store.holds++
 	return &view{
 		client: c,
 		c:      cl,
@@ -111,20 +144,39 @@ func (c *Client) View(m config.Mount) (FS, error) {
 	}, nil
 }
 
-// Close ends every cluster session, closes every cache and drops the idle connections
-// of the HTTP client. Files that are still open stop working.
+// Close ends every cluster session, closes every cache, replaced ones included, and
+// drops the idle connections of the HTTP clients. Files that are still open stop working.
 func (c *Client) Close() error {
-	for _, cl := range c.clusters {
-		cl.session.Close()
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
+	c.mu.Lock()
+	c.closed = true
+	clusters := slices.Concat(sortedValues(c.clusters), c.retiredClusters)
+	caches := slices.Concat(sortedValues(c.caches), c.retiredCaches)
+	c.retiredClusters, c.retiredCaches = nil, nil
+	c.mu.Unlock()
+
+	for _, cl := range clusters {
+		cl.close()
 	}
-	c.opts.HTTPClient.CloseIdleConnections()
+	if c.opts.HTTPClient != nil {
+		c.opts.HTTPClient.CloseIdleConnections()
+	}
 	var errs []error
-	for _, dir := range slices.Sorted(maps.Keys(c.caches)) {
-		if err := c.caches[dir].Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close cache %s: %w", dir, err))
+	for _, d := range caches {
+		if err := d.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close cache %s: %w", d.dir, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func sortedValues[V any](m map[string]V) []V {
+	out := make([]V, 0, len(m))
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		out = append(out, m[k])
+	}
+	return out
 }
 
 func readPasswordFile(path string) (string, error) {
@@ -135,23 +187,29 @@ func readPasswordFile(path string) (string, error) {
 	return strings.TrimSuffix(string(data), "\n"), nil
 }
 
-func largestStreams(cfg *config.Config) int {
-	largest := 0
-	for _, cl := range cfg.Clusters {
-		largest = max(largest, cl.StreamsPerNode)
-	}
-	return largest
-}
-
-func newClusters(cfg *config.Config, opts Options) (map[string]*cluster, error) {
-	clusters := make(map[string]*cluster, len(cfg.Clusters))
-	for _, name := range slices.Sorted(maps.Keys(cfg.Clusters)) {
-		cc := cfg.Clusters[name]
-		password, err := opts.ReadPassword(cc.PasswordFile)
+// newClusters makes the clusters of cfg. A cluster of old whose settings, password and
+// listing TTL are all unchanged is reused as it is, because its session and measured
+// node speeds are worth keeping. Every password file is read before anything is built,
+// so a failure leaves nothing to clean up.
+func newClusters(cfg *config.Config, opts Options,
+	old map[string]*cluster) (map[string]*cluster, error) {
+	names := slices.Sorted(maps.Keys(cfg.Clusters))
+	passwords := make(map[string]string, len(names))
+	for _, name := range names {
+		password, err := opts.ReadPassword(cfg.Clusters[name].PasswordFile)
 		if err != nil {
 			return nil, fmt.Errorf("cluster %q: read password file: %w", name, err)
 		}
-		clusters[name] = newCluster(name, cc, password, listingTTL(cfg, name), opts)
+		passwords[name] = password
+	}
+	clusters := make(map[string]*cluster, len(names))
+	for _, name := range names {
+		cc, ttl := cfg.Clusters[name], listingTTL(cfg, name)
+		if kept, ok := old[name]; ok && kept.matches(cc, passwords[name], ttl) {
+			clusters[name] = kept
+			continue
+		}
+		clusters[name] = newCluster(name, cc, passwords[name], ttl, opts)
 	}
 	return clusters, nil
 }
@@ -200,17 +258,27 @@ func checkSharedCaches(mounts []config.Mount) error {
 	return nil
 }
 
-func openCaches(mounts []config.Mount, opts Options) (map[string]*cacheDir, error) {
+// openCaches opens one cache per distinct cache directory of the mounts. A directory
+// that old has open is reused, and its limits are applied by Apply once the swap is
+// certain, not here.
+func openCaches(mounts []config.Mount, opts Options,
+	old map[string]*cacheDir) (map[string]*cacheDir, error) {
 	if err := checkSharedCaches(mounts); err != nil {
 		return nil, err
 	}
 	caches := make(map[string]*cacheDir)
+	var opened []*cacheDir
 	for _, m := range mounts {
-		if _, ok := caches[m.Cache.Dir]; ok {
+		dir := m.Cache.Dir
+		if _, ok := caches[dir]; ok {
+			continue
+		}
+		if kept, ok := old[dir]; ok {
+			caches[dir] = kept
 			continue
 		}
 		c, err := cache.Open(cache.Options{
-			Dir:     m.Cache.Dir,
+			Dir:     dir,
 			MaxSize: int64(m.Cache.MaxSize),
 			MaxAge:  m.Cache.MaxAge.Std(),
 			MinFree: int64(m.Cache.MinFree),
@@ -218,13 +286,15 @@ func openCaches(mounts []config.Mount, opts Options) (map[string]*cacheDir, erro
 			Logger:  opts.Logger,
 		})
 		if err != nil {
-			err = fmt.Errorf("mount %s: open cache %s: %w", m.Target, m.Cache.Dir, err)
-			for _, open := range caches {
-				err = errors.Join(err, open.Close())
+			err = fmt.Errorf("mount %s: open cache %s: %w", m.Target, dir, err)
+			for _, d := range opened {
+				err = errors.Join(err, d.Close())
 			}
 			return nil, err
 		}
-		caches[m.Cache.Dir] = &cacheDir{Cache: c, dir: m.Cache.Dir, now: opts.Now, log: opts.Logger}
+		d := &cacheDir{Cache: c, dir: dir, now: opts.Now, log: opts.Logger}
+		caches[dir] = d
+		opened = append(opened, d)
 	}
 	return caches, nil
 }

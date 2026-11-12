@@ -19,8 +19,9 @@ PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null
 PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
-.PHONY: all build check check-linux fmt fmt-check vet test cover lint package package-test \
-	repo repo-test clean
+.PHONY: all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test \
+	package package-order-test package-test repo repo-test publish-fetch publish publish-check \
+	publish-test release-assets clean
 
 all: check build
 
@@ -28,7 +29,7 @@ build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefs ./cmd/splicefs
 
 # Everything CI runs except the linter.
-check: fmt-check vet cover
+check: fmt-check vet cover package-lib-test
 
 fmt:
 	gofmt -w .
@@ -45,6 +46,19 @@ test:
 # Tests with the race detector; fails below 100% statement coverage.
 cover:
 	scripts/coverage.sh coverage.out
+
+# Go runs one fuzz target per invocation, so each target is found with go test -list and run
+# by itself. Only directories that contain a Fuzz function are visited: the mount packages
+# need root and FUSE (or the NFS client) to test, and none of their code is fuzzed, so this
+# target needs neither. A new Fuzz function is picked up without editing this file.
+FUZZTIME ?= 10s
+fuzz:
+	@set -e; for dir in $$(grep -rl --include='*_test.go' '^func Fuzz' . | xargs -n1 dirname | sort -u); do \
+		for target in $$(go test -list '^Fuzz' $$dir | grep '^Fuzz'); do \
+			echo "fuzz $$dir $$target ($(FUZZTIME))"; \
+			go test -run '^$$' -fuzz "^$$target\$$" -fuzztime $(FUZZTIME) $$dir; \
+		done; \
+	done
 
 # The same checks on Linux, with real FUSE mounts, from any system that has Docker.
 # The source is copied inside the container so nothing is written to the working tree.
@@ -67,9 +81,21 @@ package:
 	$(PACKAGE_RUN) -v "$(CURDIR)/dist/keys":/keys:ro $(APK_IMAGE) \
 		sh -c 'cd /src && scripts/package-apk.sh /out'
 
+# The table of how a git tag becomes each package version. It needs no Docker, so it is part
+# of check and runs on every system.
+package-lib-test:
+	scripts/package-lib-test.sh
+
+# Checks in a Debian, a Rocky Linux and an Alpine container that those versions sort the way
+# a release needs (a pre-release before its release) and that apk accepts them. It is a
+# prerequisite of package-test, not of check, because it needs Docker; package-test is what CI
+# and the release job already run before anything is published.
+package-order-test:
+	scripts/package-order-test.sh
+
 # Installs and removes each package in a clean container of every system listed in
 # packaging/test-systems (CI reads the same list) and reports each system's result.
-package-test:
+package-test: package-order-test
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh
 
 # Signed package repositories in ./dist/repo, made from the packages make package left in
@@ -90,6 +116,35 @@ repo:
 # checks on, and checks that a damaged repository is refused.
 repo-test:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh repo
+
+# Publishing to packages.splicefs.org/client. UPLOAD_KEY_FILE and UPLOAD_KNOWN_HOSTS_FILE
+# (see scripts/publish.sh) come from the environment, so no secret is ever in this file.
+# Downloads what is published into dist/repo first, so the repositories built next keep every
+# older version.
+publish-fetch:
+	scripts/publish.sh fetch
+
+# Uploads dist/repo. It refuses an incomplete repository and any upload that would delete a
+# published package.
+publish:
+	scripts/publish.sh send
+
+# Lists the remote root and changes nothing: proves that the key and host key work.
+publish-check:
+	scripts/publish.sh check
+
+# Proves publish.sh and release-assets.sh against local folders and throwaway keys, with no
+# server. Needs dist/repo and dist/keys from make package repo, and changes neither.
+publish-test:
+	scripts/publish-test.sh
+
+# The files of this version for the GitHub release, in dist/release: the packages, SHA256SUMS
+# and its signature. SIGNING_KEY_FILE is the OpenPGP signing key; the default is the key
+# signing-keys.sh put in dist/keys.
+SIGNING_KEY_FILE ?= $(CURDIR)/dist/keys/splicefs-openpgp-signing-subkey.asc
+release-assets:
+	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) SIGNING_KEY_FILE=$(SIGNING_KEY_FILE) \
+		scripts/release-assets.sh
 
 clean:
 	rm -rf bin dist coverage.out coverage.html

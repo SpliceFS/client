@@ -90,6 +90,15 @@ type Cache struct {
 	total   int64
 }
 
+// SetLimits replaces the three eviction limits. The next eviction pass uses them, so a
+// configuration that is applied to a running client takes effect without closing the cache
+// and the files that are open in it.
+func (c *Cache) SetLimits(maxSize int64, maxAge time.Duration, minFree int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.opts.MaxSize, c.opts.MaxAge, c.opts.MinFree = maxSize, maxAge, minFree
+}
+
 // Open opens the cache in opts.Dir, creating the directory if needed, and loads the
 // entries found there. Corrupt, orphaned and temporary files that the cache would have
 // created are removed; other files are left alone. A damaged entry is dropped and logged;

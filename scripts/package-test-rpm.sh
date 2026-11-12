@@ -28,7 +28,21 @@ rpm -q "$name" >/dev/null || fail "package is not installed"
 [ -f "$unit" ] || fail "service unit is missing"
 if grep -q /usr/local/bin "$unit"; then fail "service unit points at /usr/local/bin"; fi
 [ -d "$confdir" ] || fail "$confdir is missing"
-[ -z "$(ls -A "$confdir")" ] || fail "$confdir must be empty after an install"
+for folder in $confsubdirs; do
+    [ -d "$confdir/$folder" ] || fail "$confdir/$folder is missing"
+    [ -z "$(ls -A "$confdir/$folder")" ] || fail "$confdir/$folder must be empty after an install"
+done
+# The package ships the folders and nothing else: any file there would be one an
+# upgrade could overwrite.
+[ "$(ls -A "$confdir" | sort | tr '\n' ' ')" = "$(echo "$confsubdirs" | sort | tr '\n' ' ')" ] ||
+    fail "$confdir holds something other than its empty folders"
+kept="$confdir/$(echo "$confsubdirs" | head -n 1)/local.yaml"
+echo "$links" | while read -r link target; do
+    [ -n "$link" ] || continue
+    [ -x "$link" ] || fail "$link does not lead to a program"
+done
+# Checks that only this package needs.
+if [ -f packaging/package-test-extra.sh ]; then . packaging/package-test-extra.sh; fi
 user="$(sed -n 's/^User=//p' "$unit")"
 if [ -n "$user" ]; then
     getent passwd "$user" >/dev/null || fail "user $user was not created"
@@ -36,10 +50,10 @@ fi
 
 rpm -U --replacepkgs "$rpm" >/dev/null || fail "installing over itself failed"
 
-touch "$confdir/local.yaml"
+touch "$kept"
 rpm -e "$name" >/dev/null 2>&1 || fail "remove failed"
 [ ! -e "/usr/bin/$program" ] || fail "remove left the program behind"
-[ -f "$confdir/local.yaml" ] || fail "remove must keep the configuration"
+[ -f "$kept" ] || fail "remove must keep the configuration"
 
 . /etc/os-release
 echo "package test passed on $PRETTY_NAME: $(basename "$rpm")"

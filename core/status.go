@@ -7,9 +7,9 @@ import (
 
 // Status is a snapshot of the client for display, as "splicefs status" prints it.
 type Status struct {
-	// Clusters is every configured cluster, sorted by name.
+	// Clusters is every current cluster, sorted by name.
 	Clusters []ClusterStatus
-	// Caches is every cache directory in use, sorted by directory.
+	// Caches is every current cache directory, sorted by directory.
 	Caches []CacheStatus
 }
 
@@ -43,12 +43,16 @@ type CacheStatus struct {
 	Bytes int64
 }
 
-// Status reports the clusters with their known nodes and measured speeds, and the use
-// of every cache. It does not use the network.
+// Status reports the current clusters with their known nodes and measured speeds, and the
+// use of every current cache. Clusters and caches that a reload replaced are left out. It
+// does not use the network.
 func (c *Client) Status() Status {
+	c.mu.Lock()
+	clusters, caches := c.clusters, c.caches
+	c.mu.Unlock()
 	var s Status
-	for _, name := range slices.Sorted(maps.Keys(c.clusters)) {
-		cl := c.clusters[name]
+	for _, name := range slices.Sorted(maps.Keys(clusters)) {
+		cl := clusters[name]
 		cs := ClusterStatus{Name: name}
 		for _, node := range cl.knownNodes() {
 			rate, known := cl.meter.Rate(node)
@@ -56,8 +60,8 @@ func (c *Client) Status() Status {
 		}
 		s.Clusters = append(s.Clusters, cs)
 	}
-	for _, dir := range slices.Sorted(maps.Keys(c.caches)) {
-		u := c.caches[dir].Usage()
+	for _, dir := range slices.Sorted(maps.Keys(caches)) {
+		u := caches[dir].Usage()
 		s.Caches = append(s.Caches, CacheStatus{Dir: dir, Entries: u.Entries, Bytes: u.Bytes})
 	}
 	return s

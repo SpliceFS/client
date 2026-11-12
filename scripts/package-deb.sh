@@ -10,6 +10,12 @@ for arch in amd64 arm64; do
     root="$(mktemp -d)"
     chmod 755 "$root"
     install -d "$root/DEBIAN" "$root$confdir"
+    for folder in $confsubdirs; do install -d "$root$confdir/$folder"; done
+    echo "$links" | while read -r link target; do
+        [ -n "$link" ] || continue
+        install -d "$root$(dirname "$link")"
+        ln -s "$target" "$root$link"
+    done
     install -D -m 755 "$out/stage/$arch/$program" "$root/usr/bin/$program"
     install -D -m 644 "$out/stage/$program.service" "$root/usr/lib/systemd/system/$program.service"
     install -D -m 644 LICENSE "$root/usr/share/doc/$name/copyright"

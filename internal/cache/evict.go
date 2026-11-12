@@ -56,7 +56,7 @@ func (c *Cache) overLimitLocked(need int64) bool {
 	if c.opts.MinFree <= 0 {
 		return false
 	}
-	room, err := c.roomFor(need)
+	room, err := c.roomFor(need, c.opts.MinFree)
 	if err != nil {
 		c.log.Warn("read free space", "dir", c.opts.Dir, "error", err)
 		return false
@@ -64,27 +64,31 @@ func (c *Cache) overLimitLocked(need int64) bool {
 	return !room
 }
 
-// roomFor reports whether need more bytes fit while leaving MinFree bytes free.
-func (c *Cache) roomFor(need int64) (bool, error) {
+// roomFor reports whether need more bytes fit while leaving minFree bytes free. The limit
+// is passed in because SetLimits may change it, and only some callers hold the lock.
+func (c *Cache) roomFor(need, minFree int64) (bool, error) {
 	free, err := c.opts.FreeSpace(c.opts.Dir)
 	if err != nil {
 		return false, err
 	}
 	avail := int64(min(free, math.MaxInt64))
-	return avail-need >= c.opts.MinFree, nil
+	return avail-need >= minFree, nil
 }
 
 // reserve makes room for a block of size bytes, evicting once if the disk is short.
 func (c *Cache) reserve(size int64) error {
-	if c.opts.MinFree <= 0 {
+	c.mu.Lock()
+	minFree := c.opts.MinFree
+	c.mu.Unlock()
+	if minFree <= 0 {
 		return nil
 	}
-	room, err := c.roomFor(size)
+	room, err := c.roomFor(size, minFree)
 	if err == nil && !room {
 		c.mu.Lock()
 		c.warn("evict for free space", c.evictLocked(size))
 		c.mu.Unlock()
-		room, err = c.roomFor(size)
+		room, err = c.roomFor(size, minFree)
 	}
 	switch {
 	case err != nil:

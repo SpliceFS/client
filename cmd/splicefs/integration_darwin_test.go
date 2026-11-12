@@ -90,12 +90,18 @@ func mountTable(t *testing.T) string {
 func TestRealMount(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "mnt")
+	cluster := "url: https://files.example.com/api\nuser: alice\npassword_file: password\n"
+	cache := "cache:\n  dir: " + filepath.Join(dir, "cache") + "\n"
+	mountFile := "cluster: example\npath: /\ntarget: " + target + "\n"
 	for path, content := range map[string]string{
-		filepath.Join(dir, "password"): "secret\n",
-		filepath.Join(dir, "config.yaml"): "cache:\n  dir: " + filepath.Join(dir, "cache") + "\n" +
-			"clusters:\n  example:\n    url: https://files.example.com/api\n    user: alice\n    password_file: password\n" +
-			"mounts:\n  - cluster: example\n    path: /\n    target: " + target + "\n",
+		filepath.Join(dir, "password"):                   "secret\n",
+		filepath.Join(dir, "conf.d", "cache.yaml"):       cache,
+		filepath.Join(dir, "clusters.d", "example.yaml"): cluster,
+		filepath.Join(dir, "mounts.d", "main.yaml"):      mountFile,
 	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // a test directory
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -122,9 +128,11 @@ func TestRealMount(t *testing.T) {
 		return nil
 	}
 	ended := make(chan result, 1)
+	ctx, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
 	go func() {
 		var out, errOut bytes.Buffer
-		status := execute(context.Background(), []string{"--config", dir, "mount"}, &out, &errOut, b)
+		status := execute(ctx, []string{"--config", dir, "mount"}, &out, &errOut, b)
 		ended <- result{status: status, stdout: out.String(), stderr: errOut.String()}
 	}()
 	select {
@@ -150,6 +158,8 @@ func TestRealMount(t *testing.T) {
 	if umount := f.command("umount"); umount.status != exitOK {
 		t.Errorf("umount: %+v", umount)
 	}
+	// The client keeps running after its last mount is gone, until it is stopped.
+	stop()
 	if end := <-ended; end.status != exitOK {
 		t.Errorf("mount ended with %+v, want a clean exit", end)
 	}

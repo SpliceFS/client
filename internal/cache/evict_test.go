@@ -12,6 +12,8 @@ import (
 
 // diskOf returns a FreeSpace function for a disk of the given capacity whose only
 // contents are the cache's data files.
+//
+//nolint:unparam // the capacity belongs to each test, even while they all use the same one
 func diskOf(t *testing.T, capacity int64) func(string) (uint64, error) {
 	return func(dir string) (uint64, error) {
 		var used int64
@@ -306,7 +308,7 @@ func TestRoomForClampsHugeFreeSpace(t *testing.T) {
 	e.opts.MinFree = 1
 	e.opts.FreeSpace = func(string) (uint64, error) { return math.MaxUint64, nil }
 	c := e.open()
-	if room, err := c.roomFor(1 << 40); err != nil || !room {
+	if room, err := c.roomFor(1<<40, 1); err != nil || !room {
 		t.Errorf("roomFor = %v, %v", room, err)
 	}
 }
@@ -318,5 +320,35 @@ func TestStatfsFree(t *testing.T) {
 	}
 	if _, err := statfsFree(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("statfsFree of a missing directory succeeded")
+	}
+}
+
+func TestSetLimitsTakesEffectAtNextEvict(t *testing.T) {
+	t.Parallel()
+	names := []string{"a", "b", "c"}
+	for _, tc := range []struct {
+		name    string
+		maxSize int64
+		maxAge  time.Duration
+		minFree int64
+		want    []bool
+	}{
+		{"unchanged limits evict nothing", math.MaxInt64, math.MaxInt64, 0, []bool{true, true, true}},
+		{"max size", 16, math.MaxInt64, 0, []bool{true, false, true}},
+		{"max age", math.MaxInt64, 90 * time.Minute, 0, []bool{true, false, false}},
+		{"min free", math.MaxInt64, math.MaxInt64, 16, []bool{true, false, true}},
+	} {
+		e := newEnv(t)
+		e.opts.FreeSpace = diskOf(t, 32)
+		c := e.open()
+		threeEntries(t, e, c) // 24 bytes used; b, c and a were last read 3h, 2h and 1h ago
+		e.clock.Advance(time.Hour)
+
+		c.SetLimits(tc.maxSize, tc.maxAge, tc.minFree)
+		wantCached(t, c, names, true, true, true) // a limit is applied by a pass, not by SetLimits
+		if err := c.Evict(); err != nil {
+			t.Fatalf("%s: Evict: %v", tc.name, err)
+		}
+		wantCached(t, c, names, tc.want...)
 	}
 }

@@ -1,4 +1,8 @@
 #!/bin/sh
+# The link made at install time for systems where /sbin is its own folder.
+if [ ! -L /sbin ] && [ "$(readlink /sbin/mount.splicefs 2>/dev/null)" = /usr/bin/splicefs ]; then
+    rm -f /sbin/mount.splicefs
+fi
 if [ -e /run/openrc/softlevel ]; then
     rc-service --ifstarted splicefs stop
     rc-update del splicefs default
