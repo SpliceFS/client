@@ -132,6 +132,11 @@ make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (nee
 make package-test # installs and removes each package in a clean container of every system
 make repo         # signed apt, rpm and Alpine repositories in ./dist/repo from the packages in ./dist
 make repo-test    # installs from the repositories with signature checks on, in every system
+make publish-fetch  # downloads the published repositories into ./dist/repo
+make publish        # uploads ./dist/repo to packages.splicefs.org/client, never deleting a package
+make publish-check  # lists the remote root, changes nothing
+make publish-test   # checks publishing and release-assets against local folders, no server
+make release-assets # package files, SHA256SUMS and its signature for the GitHub release in ./dist/release
 ```
 
 `make package-test` covers every system listed in `packaging/test-systems`. From an arm64

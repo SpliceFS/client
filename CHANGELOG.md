@@ -29,6 +29,12 @@ All notable changes to this project are recorded here. The format follows
 - Signed apt, rpm and Alpine repositories built from the packages (`make repo`), with a test
   that installs from each on every supported system with signature checks on
   (`make repo-test`).
+- Release and publish: a `vX.Y.Z` tag builds, signs, tests and publishes the package
+  repositories to `packages.splicefs.org/client` (`make publish-fetch`, `make publish`,
+  `make publish-check`) and creates a GitHub release with the packages, `SHA256SUMS` and its
+  signature (`make release-assets`). Pre-release tags such as `v1.2.0-rc.1` give versions that
+  sort before the release in deb, rpm and apk; `make publish-test` checks the publishing
+  without a server.
 
 ### Security
 
