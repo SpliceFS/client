@@ -11,10 +11,12 @@ case "$1" in
             systemctl daemon-reload
             if [ -z "$2" ]; then
                 systemctl enable splicefs.service
-                systemctl start splicefs.service || echo "splicefs did not start; see: journalctl -u splicefs" >&2
+                systemctl start splicefs.service ||
+                    echo "splicefs did not start; see: journalctl -u splicefs" >&2
             else
                 # A broken configuration must not turn an upgrade into a failed install.
-                systemctl try-restart splicefs.service || echo "splicefs did not restart; see: journalctl -u splicefs" >&2
+                systemctl try-restart splicefs.service ||
+                    echo "splicefs did not restart; see: journalctl -u splicefs" >&2
             fi
         fi
         ;;

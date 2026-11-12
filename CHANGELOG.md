@@ -19,6 +19,5 @@ All notable changes to this project are recorded here. The format follows
 - `core`, the client as an importable library (`github.com/SpliceFS/client/core`).
 - A systemd unit for the program.
 - A Debian package, `splicefs-client`, for amd64 and arm64. It installs the program and the
-  systemd unit, depends on `fuse3` and creates an empty
-  `/etc/splicefs/client`. The service is enabled and starts once a
-  configuration exists.
+  systemd unit, depends on `fuse3` and creates an empty `/etc/splicefs/client`. The service
+  is enabled and starts once a configuration exists.
