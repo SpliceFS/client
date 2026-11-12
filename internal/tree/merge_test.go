@@ -29,6 +29,19 @@ func TestMergeRules(t *testing.T) {
 			},
 		},
 		{
+			// Found by FuzzListing: a node could list names that, joined to the directory,
+			// leave it.
+			name: "names that are not one path segment are dropped",
+			nodes: map[string][]wire.Entry{
+				"n1": {wfile("", 1, at(1), "e"), wfile(".", 1, at(1), "e"), wdir("..", at(1))},
+				"n2": {
+					wfile("a/b", 1, at(1), "e"), wfile("../x", 1, at(1), "e"),
+					wfile("a\x00b", 1, at(1), "e"), wfile("ok", 2, at(2), "f"),
+				},
+			},
+			want: []Entry{{Name: "ok", Size: 2, MTime: at(2), ETag: "f", Nodes: []string{"n2"}}},
+		},
+		{
 			name: "kind is what most nodes say: file",
 			nodes: map[string][]wire.Entry{
 				"n1": {wfile("x", 5, at(1), "e")},

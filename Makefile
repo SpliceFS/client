@@ -19,7 +19,7 @@ PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null
 PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
-.PHONY: all build check check-linux fmt fmt-check vet test cover lint package package-test \
+.PHONY: all build check check-linux fmt fmt-check vet test cover fuzz lint package package-test \
 	repo repo-test clean
 
 all: check build
@@ -45,6 +45,19 @@ test:
 # Tests with the race detector; fails below 100% statement coverage.
 cover:
 	scripts/coverage.sh coverage.out
+
+# Go runs one fuzz target per invocation, so each target is found with go test -list and run
+# by itself. Only directories that contain a Fuzz function are visited: the mount packages
+# need root and FUSE (or the NFS client) to test, and none of their code is fuzzed, so this
+# target needs neither. A new Fuzz function is picked up without editing this file.
+FUZZTIME ?= 10s
+fuzz:
+	@set -e; for dir in $$(grep -rl --include='*_test.go' '^func Fuzz' . | xargs -n1 dirname | sort -u); do \
+		for target in $$(go test -list '^Fuzz' $$dir | grep '^Fuzz'); do \
+			echo "fuzz $$dir $$target ($(FUZZTIME))"; \
+			go test -run '^$$' -fuzz "^$$target\$$" -fuzztime $(FUZZTIME) $$dir; \
+		done; \
+	done
 
 # The same checks on Linux, with real FUSE mounts, from any system that has Docker.
 # The source is copied inside the container so nothing is written to the working tree.
