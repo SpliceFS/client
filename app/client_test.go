@@ -191,3 +191,56 @@ func TestCallFailures(t *testing.T) {
 		errIs(t, err, context.Canceled)
 	})
 }
+
+func TestRequestMount(t *testing.T) {
+	t.Parallel()
+	yes := true
+	const minimal = `{"op":"mount","mount":{"cluster":"x","target":"/mnt/a"}}`
+	const full = `{"op":"mount","mount":{"cluster":"east","path":"/m","target":"/mnt/a",` +
+		`"allow_other":true,"offline":true}}`
+	tests := []struct {
+		name    string
+		req     MountRequest
+		reply   string
+		want    string
+		wantErr string
+	}{
+		{"minimal", MountRequest{Cluster: "x", Target: "/mnt/a"}, `{}`, minimal, ""},
+		{"every field", MountRequest{
+			Cluster: "east", Path: "/m", Target: "/mnt/a", AllowOther: true, Offline: &yes,
+		}, `{}`, full, ""},
+		{"refused", MountRequest{Cluster: "x", Target: "/mnt/a"}, `{"error":"unknown cluster \"x\""}`,
+			minimal, `the client refused the request: unknown cluster "x"`},
+		{"malformed reply", MountRequest{Cluster: "x", Target: "/mnt/a"}, `<html>`,
+			minimal, "read reply: invalid character '<'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			requests := make(chan string, 1)
+			path := serveReplies(t, func(conn net.Conn, request string) {
+				requests <- request
+				_, _ = io.WriteString(conn, tt.reply)
+			})
+			err := RequestMount(context.Background(), path, tt.req)
+			if (err == nil) != (tt.wantErr == "") ||
+				err != nil && !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("RequestMount = %v, want %q", err, tt.wantErr)
+			}
+			if got := <-requests; got != tt.want {
+				t.Errorf("request = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestMountNoClientRunning(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(shortDir(t), "none.sock")
+	err := RequestMount(context.Background(), missing, MountRequest{Cluster: "east", Target: "/mnt/a"})
+	errIs(t, err, ErrNotRunning)
+	if !strings.Contains(err.Error(), "start the splicefs service") ||
+		!strings.Contains(err.Error(), missing) {
+		t.Errorf("RequestMount = %v", err)
+	}
+}

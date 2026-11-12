@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/SpliceFS/client/app"
@@ -37,6 +38,9 @@ const (
 mount keeps running, with or without mounts, until it is stopped. SIGHUP applies the
 configuration without a restart: mount files that were added are mounted, removed ones are
 detached, changed ones are mounted again.
+
+Started as mount.splicefs, the program is the helper of mount(8) and fstab: it asks the
+running client to mount CLUSTER:PATH at TARGET.
 `
 )
 
@@ -44,13 +48,28 @@ detached, changed ones are mounted again.
 var exit = os.Exit
 
 func main() {
-	exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	exit(run(context.Background(), os.Args, os.Stdin, os.Stdout, os.Stderr))
 }
 
-// run is the whole program. It returns the exit status. A mount stays in the foreground
-// until ctx is cancelled or the process receives SIGINT or SIGTERM.
-func run(ctx context.Context, args []string, _ io.Reader, stdout, stderr io.Writer) int {
-	return execute(ctx, args, stdout, stderr, systemBackend())
+// run is the whole program. argv is the process's os.Args, program name first. It returns
+// the exit status. A mount stays in the foreground until ctx is cancelled or the process
+// receives SIGINT or SIGTERM.
+func run(ctx context.Context, argv []string, _ io.Reader, stdout, stderr io.Writer) int {
+	return dispatch(ctx, argv, stdout, stderr, systemBackend())
+}
+
+// dispatch runs the mount helper when the program was started under its name, which is a
+// link to this program, and the splicefs commands otherwise.
+func dispatch(ctx context.Context, argv []string, stdout, stderr io.Writer, b backend) int {
+	var name string
+	var args []string
+	if len(argv) > 0 {
+		name, args = filepath.Base(argv[0]), argv[1:]
+	}
+	if name == helperProgram {
+		return b.executeHelper(ctx, args, stderr)
+	}
+	return execute(ctx, args, stdout, stderr, b)
 }
 
 // backend is everything the commands take from the client library and the operating
@@ -62,8 +81,12 @@ type backend struct {
 	run              func(ctx context.Context, cfg *config.Config, targets []string, opts app.Options) error
 	unmount          func(ctx context.Context, socketPath string, targets []string, force bool) error
 	status           func(ctx context.Context, socketPath string) (app.Report, error)
-	mounter          app.Mounter
-	notify           func(state string) error
+	// requestMount, getenv and abs serve the mount helper.
+	requestMount func(ctx context.Context, socketPath string, req app.MountRequest) error
+	getenv       func(key string) string
+	abs          func(path string) (string, error)
+	mounter      app.Mounter
+	notify       func(state string) error
 }
 
 func systemBackend() backend {
@@ -73,6 +96,9 @@ func systemBackend() backend {
 		run:              app.Run,
 		unmount:          app.Unmount,
 		status:           app.Status,
+		requestMount:     app.RequestMount,
+		getenv:           os.Getenv,
+		abs:              filepath.Abs,
 		mounter:          platformMounter(),
 		notify:           app.NotifyFunc(os.Getenv("NOTIFY_SOCKET")),
 	}

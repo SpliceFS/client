@@ -34,6 +34,21 @@ func Status(ctx context.Context, socketPath string) (Report, error) {
 	return *reply.Report, nil
 }
 
+// RequestMount asks the running client that listens on socketPath for one more mount, as
+// the mount helper does for mount(8) and fstab. A missing client is ErrNotRunning, with a
+// hint to start the service because fstab runs the helper at boot, before anyone looks.
+func RequestMount(ctx context.Context, socketPath string, req MountRequest) error {
+	return systemHost().requestMount(ctx, socketPath, req)
+}
+
+func (s system) requestMount(ctx context.Context, socketPath string, req MountRequest) error {
+	_, err := s.call(ctx, socketPath, Request{Op: OpMount, Mount: &req})
+	if errors.Is(err, ErrNotRunning) {
+		return fmt.Errorf("%w: start the splicefs service first", err)
+	}
+	return err
+}
+
 func (s system) unmount(ctx context.Context, socketPath string, targets []string, force bool) error {
 	// The client resolves relative paths against its own directory, which is not the
 	// caller's.

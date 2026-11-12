@@ -93,7 +93,8 @@ func execFake(args ...string) (status int, stdout, stderr string) {
 func TestRunUsesTheSystemBackend(t *testing.T) {
 	t.Parallel()
 	var out, errOut bytes.Buffer
-	status := run(context.Background(), []string{"--version"}, strings.NewReader(""), &out, &errOut)
+	argv := []string{"splicefs", "--version"}
+	status := run(context.Background(), argv, strings.NewReader(""), &out, &errOut)
 	if want := "splicefs " + version.String() + "\n"; status != exitOK || out.String() != want || errOut.Len() != 0 {
 		t.Errorf("status %d stdout %q stderr %q, want 0 %q", status, out.String(), errOut.String(), want)
 	}
@@ -103,7 +104,8 @@ func TestSystemBackend(t *testing.T) {
 	t.Parallel()
 	b := systemBackend()
 	if b.loadConfig == nil || b.defaultConfigDir == nil || b.run == nil || b.unmount == nil ||
-		b.status == nil || b.mounter == nil || b.notify == nil {
+		b.status == nil || b.mounter == nil || b.notify == nil || b.requestMount == nil ||
+		b.getenv == nil || b.abs == nil {
 		t.Errorf("incomplete backend: %+v", b)
 	}
 }
