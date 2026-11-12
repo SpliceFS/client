@@ -26,12 +26,14 @@ var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // validate returns every problem in cfg, each naming its key and the file the value came
 // from. A cluster or mount is its file, so its problems always name that file; a problem in
 // the top-level cache names the file that set the key, and none when the default is wrong.
-func validate(cfg *Config) []error {
+// The mounts from index own on were asked for while the client runs and have no file: their
+// problems name the mount by its target, and the top-level cache is not blamed for them.
+func validate(cfg *Config, own int) []error {
 	var problems []error
 	problems = append(problems, validateClusters(cfg)...)
-	problems = append(problems, validateMounts(cfg)...)
+	problems = append(problems, validateMounts(cfg, own)...)
 	top := validateCache("cache", cfg.Cache, largestBlockSize(cfg.Clusters))
-	top = append(top, validateCacheDir("cache.dir", cfg.Cache.Dir, cfg.Mounts)...)
+	top = append(top, validateCacheDir("cache.dir", cfg.Cache.Dir, cfg.Mounts[:own])...)
 	for _, p := range top {
 		problems = append(problems, attribute(p, cfg.Sources))
 	}
@@ -48,12 +50,26 @@ func attribute(err error, sources map[string]string) error {
 	return err
 }
 
-// inFile adds the name of the file of a cluster or mount to each problem.
-func inFile(sub, name string, problems []error) []error {
+// inFile adds the origin of a cluster or mount to each problem.
+func inFile(origin string, problems []error) []error {
 	for i, p := range problems {
-		problems[i] = fmt.Errorf("%w (file %s)", p, source(sub, name+yamlExt))
+		problems[i] = fmt.Errorf("%w (%s)", p, origin)
 	}
 	return problems
+}
+
+// fileOrigin names the file of a cluster or mount.
+func fileOrigin(sub, name string) string {
+	return "file " + source(sub, name+yamlExt)
+}
+
+// mountOrigin names where a mount came from. A requested mount has no file, and its
+// generated name would mean nothing to the person who asked, so the target names it.
+func mountOrigin(m Mount, requested bool) string {
+	if requested {
+		return "requested mount " + m.Target
+	}
+	return fileOrigin(mountsDirName, m.Name)
 }
 
 // normalize puts valid values in their final form: no trailing slash on a
@@ -81,7 +97,7 @@ func validateClusters(cfg *Config) []error {
 	var problems []error
 	for _, name := range cfg.clusterNames() {
 		found := validateCluster(name, cfg.Clusters[name])
-		problems = append(problems, inFile(clustersDirName, name, found)...)
+		problems = append(problems, inFile(fileOrigin(clustersDirName, name), found)...)
 	}
 	return problems
 }
@@ -133,14 +149,21 @@ func validateURL(raw string) error {
 	return nil
 }
 
-func validateMounts(cfg *Config) []error {
+func validateMounts(cfg *Config, own int) []error {
 	var problems []error
-	for _, m := range cfg.Mounts {
+	for i, m := range cfg.Mounts {
+		requested := i >= own
 		found := validateMount(m, cfg)
 		found = append(found, validateMountCache(m, cfg)...)
-		problems = append(problems, inFile(mountsDirName, m.Name, found)...)
+		if requested {
+			// The cache directory is the same for every mount, so a conflict with a requested
+			// mount is that mount's doing and must not be blamed on the file that set the
+			// directory.
+			found = append(found, validateCacheDir("cache.dir", cfg.Cache.Dir, []Mount{m})...)
+		}
+		problems = append(problems, inFile(mountOrigin(m, requested), found)...)
 	}
-	return append(problems, validateTargets(cfg.Mounts)...)
+	return append(problems, validateTargets(cfg.Mounts, own)...)
 }
 
 func validateMount(m Mount, cfg *Config) []error {
@@ -177,14 +200,15 @@ func hasDotDot(p string) bool {
 }
 
 // validateTargets reports targets that are shared or nested. A mount over a
-// directory that holds another mount would hide it.
-func validateTargets(mounts []Mount) []error {
+// directory that holds another mount would hide it. The mounts from index own on were
+// requested.
+func validateTargets(mounts []Mount, own int) []error {
 	var problems []error
 	for j, later := range mounts {
 		for _, earlier := range mounts[:j] {
 			if err := checkTargets(earlier.Target, later.Target); err != nil {
 				found := []error{fmt.Errorf("mounts.%s.target: %w (mounts.%s)", later.Name, err, earlier.Name)}
-				problems = append(problems, inFile(mountsDirName, later.Name, found)...)
+				problems = append(problems, inFile(mountOrigin(later, j >= own), found)...)
 			}
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -105,4 +106,46 @@ func checkLoaded(t *testing.T, cfg *Config) {
 			}
 		}
 	}
+}
+
+// FuzzWithMounts feeds arbitrary values to a mount request, because they come from a
+// command line that any user may type.
+func FuzzWithMounts(f *testing.F) {
+	for _, s := range [][3]string{
+		{"example", "/media", "/mnt/media"},
+		{"example", "", "/mnt/media"},
+		{"example", "/a/../b", "/mnt/media"},
+		{"example", "media", "/mnt/media"},
+		{"example", "//a//b/", "/mnt/x/../media/"},
+		{"example", "/", "relative"},
+		{"example", "/", ""},
+		{"nope", "/", "/mnt/media"},
+		{"", "", ""},
+		{"example", "/", "/mnt/files/sub"},
+		{"example", "/", "/mnt"},
+		{"example", "/", "/var/cache/test/x"},
+		{"example", "/", "/"},
+		{"example", "/\x00", "/mnt/\xff"},
+	} {
+		f.Add(s[0], s[1], s[2])
+	}
+	f.Fuzz(func(t *testing.T, cluster, p, target string) {
+		cfg := testConfig()
+		got, err := WithMounts(cfg, Requested{Cluster: cluster, Path: p, Target: target})
+		if !reflect.DeepEqual(cfg, testConfig()) {
+			t.Fatalf("cfg was changed: %+v", cfg)
+		}
+		if err != nil {
+			if got != nil {
+				t.Fatalf("WithMounts returned a configuration and the error %v", err)
+			}
+			return
+		}
+		checkLoaded(t, got)
+		m := got.Mounts[len(got.Mounts)-1]
+		if !filepath.IsAbs(m.Target) || filepath.Clean(m.Target) != m.Target ||
+			!strings.HasPrefix(m.Path, "/") || m.Name != RequestedName(target) {
+			t.Fatalf("accepted the mount %+v", m)
+		}
+	})
 }

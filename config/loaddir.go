@@ -46,7 +46,7 @@ func loadDir(dir string, cacheDir func() (string, error)) (*Config, error) {
 	}
 	cfg := build(dir, base, settings, clusters, mounts)
 	cfg.Sources = sources
-	if problems := validate(cfg); len(problems) > 0 {
+	if problems := validate(cfg, len(cfg.Mounts)); len(problems) > 0 {
 		return nil, fmt.Errorf("invalid client config %s: %w", dir, errors.Join(problems...))
 	}
 	normalize(cfg)
