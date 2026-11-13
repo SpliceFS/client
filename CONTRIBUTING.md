@@ -122,7 +122,9 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
 - One logical change per pull request. Keep refactoring separate from behavior changes.
 - Commit subjects are imperative and at most 72 characters ("Add block scheduler", not
   "Added" or "Adds"). The body explains why, not what.
-- Update [CHANGELOG.md](CHANGELOG.md) for anything a user would notice.
+- Add a heading for the new version to [CHANGELOG.md](CHANGELOG.md), `## [X.Y.Z] - date`, with what a
+  user would notice, or one line that starts with `Internal:` when there is nothing. The version is
+  the one the release bot commits to your branch. The website shows these entries.
 - Update the documents in `docs/` in the same pull request as the behavior they describe.
 - A pull request targets `main` and needs passing CI. Approval by a second maintainer
   becomes a requirement as soon as the project has one.

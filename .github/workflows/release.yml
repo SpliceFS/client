@@ -92,3 +92,25 @@ jobs:
           rm -rf "$RUNNER_TEMP/signing"
           rm -f "$RUNNER_TEMP/upload_key" "$RUNNER_TEMP/known_hosts"
           rm -f dist/keys/splicefs-openpgp-signing-subkey.asc dist/keys/splicefs.rsa
+
+  # The change log page of splicefs.org is built from CHANGELOG.md of this repository, so the
+  # website is published again after every release. This job runs outside the publish
+  # environment and holds none of its keys. When it fails, the release is out all the same.
+  website:
+    name: Rebuild the change log page of the website
+    needs: release
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Bot token for the website repository
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: SpliceFS
+          repositories: org-site
+      - name: Ask the website to publish again
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: gh api repos/SpliceFS/org-site/dispatches -f event_type=release-published
