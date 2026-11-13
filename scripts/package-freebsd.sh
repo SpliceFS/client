@@ -31,52 +31,13 @@ done
     fail "the signing keys are missing in $out/keys; run scripts/signing-keys.sh first"
 published="$out/repo/freebsd"
 
-# Writes the input archive of one machine: the signing keys and, when they exist, the folders
-# of the packages published before for this FreeBSD major version.
-input_archive() {
-    major="$1"
-    archive="$2"
-    stage="$out/freebsd-input/$major"
-    rm -rf "$stage"
-    mkdir -p "$stage/keys" "$stage/repo"
-    cp "$out/keys/splicefs.rsa" "$out/keys/splicefs.rsa.pub" "$stage/keys/"
-    for abiarch in amd64 aarch64; do
-        if [ -d "$published/FreeBSD:$major:$abiarch" ]; then
-            cp -R "$published/FreeBSD:$major:$abiarch" "$stage/repo/"
-        fi
-    done
-    # macOS attaches attributes of its own to files, and its tar would store them; FreeBSD's tar
-    # then reports an error for each. Both tar programs know this option, and the variable
-    # stops the macOS one from adding "._" files.
-    COPYFILE_DISABLE=1 tar --no-xattrs -cf "$archive" -C "$stage" .
-}
-
-# Merges the repository folders the machine returned into the published ones. The catalog
-# files are replaced, packages are added. A published package is never replaced by a different
-# file: a package under a name that exists must be byte for byte the same one.
-merge_repo() {
-    result="$1"
-    for src in "$result"/repo/FreeBSD:*; do
-        [ -d "$src" ] || continue
-        dest="$published/$(basename "$src")"
-        mkdir -p "$dest/All"
-        for pkgfile in "$src"/All/*.pkg; do
-            target="$dest/All/$(basename "$pkgfile")"
-            if [ -f "$target" ]; then
-                cmp -s "$pkgfile" "$target" ||
-                    fail "$target is published and differs from the package just built; a published package is never replaced"
-            else
-                cp "$pkgfile" "$target"
-            fi
-        done
-        # Catalog files keep no old content: only what this run wrote stays.
-        for old in "$dest"/*; do
-            [ "$(basename "$old")" = All ] || rm -rf "$old"
-        done
-        for new in "$src"/*; do
-            [ "$(basename "$new")" = All ] || cp -R "$new" "$dest/"
-        done
-    done
+# Runs one step of scripts/freebsd-repo-files.sh as root in the Linux container, where the
+# signing key and the files a machine returned can be read and removed. On Linux the host
+# user can do neither: both belong to root.
+repo_files() {
+    source_folder="$(pwd)"
+    docker run --rm -v "$source_folder":/src:ro -v "$out":/out "$image" \
+        sh /src/scripts/freebsd-repo-files.sh "$@"
 }
 
 build_and_test() {
@@ -92,16 +53,10 @@ build_and_test() {
     echo "FreeBSD $release ($machine): building and testing $name $pkgver"
     major="${release%%.*}"
     archive="$out/freebsd-input/$release.tar"
-    mkdir -p "$out/freebsd-input"
-    input_archive "$major" "$archive"
-    # Folders left by an earlier run must not be merged again as if this run had made them.
-    rm -rf "$out"/freebsd/repo/FreeBSD:"$major":*
+    repo_files input "$major" "freebsd-input/$release.tar"
     freebsd_run "$disk" "$job" "$out/freebsd" "$archive"
     [ "$run_status" -eq 0 ] || fail "FreeBSD $release ($machine) failed"
-    merge_repo "$out/freebsd"
-    # Merged, so the copy goes: its folder names hold colons, which the file upload of a CI
-    # job refuses, and dist/freebsd is what such a job keeps.
-    rm -rf "$out/freebsd/repo"
+    repo_files merge
     echo "ok   FreeBSD $release ($machine)"
 }
 
