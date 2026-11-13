@@ -1,0 +1,16 @@
+name: Main
+
+# When main moves, the new version is tagged, which starts the release, and every open pull
+# request is rebuilt on the new tip. See https://github.com/SpliceFS/.github
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  main:
+    uses: SpliceFS/.github/.github/workflows/main-moved-v1.yml@main
+    secrets:
+      bot-private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}

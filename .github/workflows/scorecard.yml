@@ -2,7 +2,7 @@ name: Scorecard
 
 on:
   push:
-    branches: [develop]
+    branches: [main]
   schedule:
     # Weekly, so the public score tracks changes outside the code (settings, new releases).
     # Not on the hour, when scheduled runs are most likely to be delayed or dropped.
