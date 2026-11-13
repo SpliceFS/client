@@ -22,7 +22,14 @@ skip() { echo "SKIP $*"; }
 
 chmod_ok=1
 rsync --chmod=F644 --list-only "$tmp" >/dev/null 2>&1 || chmod_ok=0
-send() { REPO_DIR="$1" UPLOAD_TARGET="$2" sh scripts/publish.sh send; }
+# A refused send is a result to check, not a reason to stop. send always returns 0 and leaves
+# the exit status of publish.sh in send_status, so no call of it sits in a condition, where
+# set -e would be off inside it.
+send_status=0
+send() {
+    send_status=0
+    REPO_DIR="$1" UPLOAD_TARGET="$2" sh scripts/publish.sh send >"$tmp/out" 2>&1 || send_status=$?
+}
 
 # (a) A send to an empty folder reproduces dist/repo, with the modes the web server needs.
 if [ "$chmod_ok" -eq 0 ]; then
@@ -32,9 +39,11 @@ if [ "$chmod_ok" -eq 0 ]; then
     cp -R dist/repo "$tmp/target"
 else
     mkdir "$tmp/target"
-    if send dist/repo "$tmp/target" >"$tmp/out" 2>&1 && diff -r dist/repo "$tmp/target" &&
-        [ -z "$(find "$tmp/target" -type f ! -perm 644)" ] &&
-        [ -z "$(find "$tmp/target" -type d ! -perm 755)" ]; then
+    send dist/repo "$tmp/target"
+    wrong_file_modes="$(find "$tmp/target" -type f ! -perm 644)"
+    wrong_dir_modes="$(find "$tmp/target" -type d ! -perm 755)"
+    if [ "$send_status" -eq 0 ] && diff -r dist/repo "$tmp/target" &&
+        [ -z "$wrong_file_modes" ] && [ -z "$wrong_dir_modes" ]; then
         pass "a send to an empty folder gives the same tree, modes 644 and 755"
     else
         fail "a send to an empty folder"; sed 's/^/     /' "$tmp/out"
@@ -42,7 +51,8 @@ else
 
     # (b) Index files that a new build replaces go; that is the only thing a send removes.
     echo stale > "$tmp/target/rpm/x86_64/repodata/stale-primary.xml.gz"
-    if send dist/repo "$tmp/target" >"$tmp/out" 2>&1 &&
+    send dist/repo "$tmp/target"
+    if [ "$send_status" -eq 0 ] &&
         [ ! -e "$tmp/target/rpm/x86_64/repodata/stale-primary.xml.gz" ] &&
         diff -r dist/repo "$tmp/target"; then
         pass "b the stale repodata file is gone and nothing else changed"
@@ -55,7 +65,8 @@ else
     old="apt/pool/main/old/old-package_0.0.1_amd64.deb"
     mkdir -p "$tmp/target/$(dirname "$old")"
     echo old > "$tmp/target/$old"
-    if send dist/repo "$tmp/target" >"$tmp/out" 2>&1; then
+    send dist/repo "$tmp/target"
+    if [ "$send_status" -eq 0 ]; then
         fail "b send went ahead although a published package is missing locally"
     elif [ -f "$tmp/target/$old" ] && grep -q "$old" "$tmp/out"; then
         pass "b send refused because a published package is missing locally, and it is still there"
@@ -69,7 +80,8 @@ else
     cp -R dist/repo "$tmp/copy"
     rpm="$(cd dist/repo && find rpm/x86_64 -name "*.rpm" | head -n 1)"
     rm "$tmp/copy/$rpm"
-    if send "$tmp/copy" "$tmp/target" >"$tmp/out" 2>&1; then
+    send "$tmp/copy" "$tmp/target"
+    if [ "$send_status" -eq 0 ]; then
         fail "c send must refuse when a published package would disappear"
     elif grep -q 'would delete' "$tmp/out" && [ -f "$tmp/target/$rpm" ]; then
         pass "c send refused because $rpm would disappear, and it is still published"
@@ -142,7 +154,8 @@ fi
 # (f) An incomplete repository is refused before anything is sent.
 cp -R dist/repo "$tmp/partial"
 rm "$tmp/partial/alpine/aarch64/APKINDEX.tar.gz"
-if send "$tmp/partial" "$tmp/neverthere" >"$tmp/out" 2>&1 || [ -e "$tmp/neverthere" ]; then
+send "$tmp/partial" "$tmp/neverthere"
+if [ "$send_status" -eq 0 ] || [ -e "$tmp/neverthere" ]; then
     fail "f send must refuse an incomplete repository"
 elif grep -q 'missing .*APKINDEX.tar.gz' "$tmp/out"; then
     pass "f send refuses a repository without alpine/aarch64/APKINDEX.tar.gz"

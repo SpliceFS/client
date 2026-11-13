@@ -14,4 +14,7 @@ case "$1" in
         rm -rf /etc/splicefs/client
         rmdir /etc/splicefs 2>/dev/null || true
         ;;
+    *)
+        # upgrade, failed-upgrade, abort-* and disappear leave the configuration alone.
+        ;;
 esac

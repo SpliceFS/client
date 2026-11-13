@@ -8,14 +8,20 @@
 # With a package folder (for example mount/fuse) only that package is tested.
 set -u
 
+in="$1"
 out="$2"
 only="${3:-}"
 work=/tmp/work
 mkdir -p "$work" "$out/cover"
 
-# The mounts under test are FUSE mounts. The module may be loaded already.
-kldload fusefs 2>/dev/null || true
-kldstat -q -m fusefs || { echo "FAIL: the fusefs kernel module is not loaded"; exit 1; }
+# Kernel modules the tests need, one per line in packaging/freebsd/test-modules, which the
+# job folder holds when the program has such a file. A module may be loaded already.
+if [ -f "$in/test-modules" ]; then
+    grep -v -e '^#' -e '^$' "$in/test-modules" | while read -r module; do
+        kldload "$module" 2>/dev/null || true
+        kldstat -q -m "$module" || { echo "FAIL: the $module kernel module is not loaded"; exit 1; }
+    done || exit 1
+fi
 
 # The fourth disk is the archive itself, not a filesystem.
 tar -xf /dev/vtbd3 -C "$work" || { echo "FAIL: cannot read the test archive"; exit 1; }
@@ -36,4 +42,6 @@ if [ -n "$failed" ]; then
     echo "FAIL: tests failed in:$failed"
     exit 1
 fi
-echo "all tests passed on $(freebsd-version) ($(uname -m))"
+os_version="$(freebsd-version)"
+cpu="$(uname -m)"
+echo "all tests passed on $os_version ($cpu)"

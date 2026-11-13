@@ -32,7 +32,11 @@ grep -Eqi 'untrusted|signature' /tmp/bad.log || {
     cat /tmp/bad.log
     fail "apk failed, but not with a trust error"
 }
-echo "untrusted repository refused: $(grep -Eim1 'untrusted|signature' /tmp/bad.log)"
+refused="$(grep -Eim1 'untrusted|signature' /tmp/bad.log)"
+echo "untrusted repository refused: $refused"
 
+# shellcheck source=/dev/null
 . /etc/os-release
+# PRETTY_NAME comes from /etc/os-release, which ShellCheck cannot read here.
+# shellcheck disable=SC2154
 echo "repository test passed on $PRETTY_NAME"

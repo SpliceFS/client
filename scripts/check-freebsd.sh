@@ -3,7 +3,8 @@
 # The code that exists only for FreeBSD cannot be tested anywhere else, and the code shared
 # with Linux has to be proven on FreeBSD's own FUSE. The test programs are built for FreeBSD
 # by scripts/freebsd-tests.sh; this script runs them in a virtual machine of every FreeBSD
-# release in packaging/freebsd/images, as root and with the fusefs kernel module loaded
+# release in packaging/freebsd/images, as root, with the kernel modules listed in
+# packaging/freebsd/test-modules loaded
 # (scripts/freebsd-check-job.sh). It runs on the host (make check-freebsd) and needs
 # Docker, curl and xz.
 #
@@ -38,16 +39,17 @@ run_tests() {
     rm -rf "$results" 2>/dev/null || true
     mkdir -p "$results"
     freebsd_job_folder "$job" freebsd-check-job.sh "${FREEBSD_ONLY:-}"
+    if [ -f packaging/freebsd/test-modules ]; then cp packaging/freebsd/test-modules "$job/"; fi
     echo "FreeBSD $release ($machine): running the tests"
-    freebsd_run "$disk" "$job" "$results" "$archive" ||
-        fail "the tests failed on FreeBSD $release ($machine)"
+    freebsd_run "$disk" "$job" "$results" "$archive"
+    [ "$run_status" -eq 0 ] || fail "the tests failed on FreeBSD $release ($machine)"
     if [ -n "${FREEBSD_ONLY:-}" ]; then
         echo "ok   FreeBSD $release ($machine), $FREEBSD_ONLY only: coverage NOT checked"
         return 0
     fi
     # The profiles name source files, so the gate needs the Go tools and the source: it
     # runs in the Go container like every other build step.
-    docker run --rm -v "$(pwd)":/src:ro -v "$out":/out -v splicefs-gomod:/go/pkg/mod "$image" \
+    docker run --rm -v "$source_dir":/src:ro -v "$out":/out -v splicefs-gomod:/go/pkg/mod "$image" \
         sh -c "cd /src && sh scripts/freebsd-coverage.sh '/out/${results#"$out"/}/cover'" ||
         fail "coverage on FreeBSD $release ($machine) is not 100%"
     echo "ok   FreeBSD $release ($machine)"

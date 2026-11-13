@@ -27,8 +27,11 @@ wait_ready() {
     waited=0
     while :; do
         state="$(docker exec "$1" systemctl is-system-running 2>/dev/null || true)"
-        case "$state" in running | degraded) return 0 ;; esac
-        if [ "$(docker inspect -f '{{.State.Running}}' "$1")" != true ]; then
+        # Any other state means systemd is not up yet.
+        case "$state" in running | degraded) return 0 ;; *) ;; esac
+        # A container that cannot be inspected is counted as stopped.
+        running="$(docker inspect -f '{{.State.Running}}' "$1")" || running=""
+        if [ "$running" != true ]; then
             echo "the container stopped before systemd was up:" >&2
             docker logs --tail 30 "$1" >&2 || true
             return 1

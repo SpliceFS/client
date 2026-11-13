@@ -60,6 +60,22 @@ wait_for() {
     done
 }
 
+# Ends this system's run with the message when the command fails. The command runs through
+# "$@" because errexit is off in every check (see run_checks): each one is guarded
+# explicitly, and its status is the answer.
+must() {
+    message="$1"
+    shift
+    "$@" || fail "$message"
+}
+
+# The same for a command that has to fail: ends the run with the message when it succeeds.
+refuse() {
+    message="$1"
+    shift
+    if "$@"; then fail "$message"; fi
+}
+
 active_and_answering() {
     service_active "$1" && answers "$1"
 }
@@ -70,8 +86,7 @@ inactive() {
 
 check_starts_by_itself() {
     service_enabled "$1" || fail "the service is not enabled after the install"
-    wait_for 20 service_active "$1" ||
-        fail "the service is not active 20 seconds after the install"
+    must "the service is not active 20 seconds after the install" wait_for 20 service_active "$1"
     echo "ok: enabled and active after the install, nobody started it"
 }
 
@@ -83,29 +98,28 @@ check_user() {
 }
 
 check_answers() {
-    wait_for 10 answers "$1" ||
-        fail "the service does not do its job: expected that it $answers_text"
+    must "the service does not do its job: expected that it $answers_text" wait_for 10 answers "$1"
     echo "ok: $answers_text"
 }
 
 check_restart() {
     service_restart "$1" || fail "the restart failed"
-    wait_for 20 active_and_answering "$1" ||
-        fail "the service is not active and answering 20 seconds after a restart"
+    must "the service is not active and answering 20 seconds after a restart" \
+        wait_for 20 active_and_answering "$1"
     echo "ok: active and answering after a restart"
 }
 
 check_reboot() {
     docker restart "$1" >/dev/null || fail "docker restart failed"
-    wait_for 60 active_and_answering "$1" ||
-        fail "the service is not active and answering 60 seconds after a reboot"
+    must "the service is not active and answering 60 seconds after a reboot" \
+        wait_for 60 active_and_answering "$1"
     echo "ok: active and answering after a reboot, nobody started it"
 }
 
 check_removal() {
     remove_package "$1" || fail "removing the package failed"
-    wait_for 10 inactive "$1" || fail "the service is still active after the package was removed"
-    ! answers "$1" || fail "the service still answers after the package was removed"
+    must "the service is still active after the package was removed" wait_for 10 inactive "$1"
+    refuse "the service still answers after the package was removed" answers "$1"
     wait_ready "$1" || fail "the service manager is not healthy after the package was removed"
     echo "ok: stopped and silent after the removal, the service manager is healthy"
 }
@@ -126,10 +140,12 @@ run_checks() {
 passed=0
 failed=0
 count=0
+systems="$(cat packaging/test-systems)"
 
 # A here-document keeps the counters in this shell; a pipe would run the loop in a subshell.
 while read -r format image; do
-    case "$format" in "" | "#"*) continue ;; esac
+    # Blank lines and comments are skipped; every other line is a system to test.
+    case "$format" in "" | "#"*) continue ;; *) ;; esac
     case "$format $image" in *"${SYSTEMS:-}"*) ;; *) continue ;; esac
     if [ ! -f "scripts/service-test-$format.sh" ]; then
         echo "skipped: no service test for $format yet ($image)"
@@ -146,18 +162,30 @@ while read -r format image; do
     count=$((count + 1))
     container="splicefs-service-test-$$-$count"
     started=0
+    signal="$(stop_signal)"
+    options="$(run_options)"
+    init="$(init_command)"
     # run_options prints whole options and nothing else, so it is left unquoted on purpose.
-    # shellcheck disable=SC2046
+    # shellcheck disable=SC2086
     if docker run -d --name "$container" --platform "$platform" \
         --privileged --cgroupns=host \
         --tmpfs /run --tmpfs /run/lock --tmpfs /tmp -e container=docker \
-        --stop-signal "$(stop_signal)" \
-        -v "$root/dist":/pkg:ro $(run_options) \
-        "$image" sh -c "$(init_command)" >/dev/null 2>"$log"; then
+        --stop-signal "$signal" \
+        -v "$root/dist":/pkg:ro $options \
+        "$image" sh -c "$init" >/dev/null 2>"$log"; then
         started=1
     fi
 
-    if [ "$started" -eq 1 ] && (run_checks "$container") >>"$log" 2>&1; then
+    # Errexit is switched off here on purpose: every command of run_checks is guarded with
+    # fail, and a failing check must end only this system, not the whole run.
+    checked=1
+    if [ "$started" -eq 1 ]; then
+        set +e
+        (run_checks "$container") >>"$log" 2>&1
+        checked=$?
+        set -e
+    fi
+    if [ "$checked" -eq 0 ]; then
         echo "ok   $format $image"
         passed=$((passed + 1))
     else
@@ -172,7 +200,7 @@ while read -r format image; do
     docker rm -f "$container" >/dev/null 2>&1 || true
     container=""
 done <<LIST
-$(cat packaging/test-systems)
+$systems
 LIST
 
 echo "passed: $passed  failed: $failed"

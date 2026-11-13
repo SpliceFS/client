@@ -1,6 +1,8 @@
 #!/bin/sh
 # The link made at install time for systems where /sbin is its own folder.
-if [ ! -L /sbin ] && [ "$(readlink /sbin/mount.splicefs 2>/dev/null)" = /usr/bin/splicefs ]; then
+# readlink fails when there is no link, and then there is nothing to remove.
+helper_target="$(readlink /sbin/mount.splicefs 2>/dev/null)" || helper_target=""
+if [ ! -L /sbin ] && [ "$helper_target" = /usr/bin/splicefs ]; then
     rm -f /sbin/mount.splicefs
 fi
 if [ -e /run/openrc/softlevel ]; then

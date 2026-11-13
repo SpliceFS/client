@@ -31,7 +31,7 @@ build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefs ./cmd/splicefs
 
 # Everything CI runs except the linter.
-check: fmt-check vet cover package-lib-test script-modes
+check: fmt-check vet cover package-lib-test script-modes tracked-files
 
 # A script that lost its executable bit fails only where it is run directly, which for the
 # publishing script is the release job. This finds it in every check. Libraries (-lib.sh) are
@@ -39,6 +39,12 @@ check: fmt-check vet cover package-lib-test script-modes
 script-modes:
 	@bad="$$(git ls-files -s -- 'scripts/*.sh' 'packaging/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ {print $$4}')"; \
 	if [ -n "$$bad" ]; then echo "not executable in git:"; echo "$$bad"; exit 1; fi
+
+# A compiled program or a very large file must never be committed: a program built on a
+# developer's machine carries the folder names of that machine.
+.PHONY: tracked-files
+tracked-files:
+	scripts/tracked-files.sh
 
 fmt:
 	gofmt -w .
@@ -90,8 +96,21 @@ check-freebsd:
 		scripts/freebsd-tests.sh /out/freebsd-check'
 	LINUX_IMAGE=$(LINUX_IMAGE) FREEBSD=$(FREEBSD) FREEBSD_ONLY=$(FREEBSD_ONLY) scripts/check-freebsd.sh dist
 
-lint:
+# ShellCheck runs with every optional check on (see .shellcheckrc). The globs pick up a new
+# script in scripts/ without editing this file; the maintainer and Alpine scripts have no .sh
+# extension, so they are named. The OpenRC script (not a shell ShellCheck knows), the rpm spec
+# and the FreeBSD manifest template are not shell files and are left out.
+lint: lint-shell
 	golangci-lint run
+
+# The shell part of lint by itself, for the CI job that has no Go tools.
+.PHONY: lint-shell
+lint-shell:
+	shellcheck scripts/*.sh packaging/*.sh packaging/*/*.sh \
+		packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm \
+		packaging/alpine/*.post-install packaging/alpine/*.post-upgrade \
+		packaging/alpine/*.pre-deinstall \
+		packaging/freebsd/splicefs.rc packaging/freebsd/user-data.in
 
 # Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
 # for amd64 and arm64. The program is compiled once and every format wraps that binary. The

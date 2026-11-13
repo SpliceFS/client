@@ -47,7 +47,13 @@ REPO
     pm_clean() { zypper --non-interactive clean --all >/dev/null 2>&1; }
 fi
 
-pm_install >/tmp/install.log 2>&1 || {
+# The package manager's status is read after the call, never in a condition: a function in a
+# condition runs with set -e off.
+set +e
+pm_install >/tmp/install.log 2>&1
+status=$?
+set -e
+[ "$status" -eq 0 ] || {
     cat /tmp/install.log
     fail "install from the repository failed"
 }
@@ -63,7 +69,11 @@ for xml in /tmp/bad-repo/rpm/*/repodata/repomd.xml; do
 done
 sed -i 's#file:///repo/rpm#file:///tmp/bad-repo/rpm#' "$repofile"
 pm_clean
-if pm_install >/tmp/bad.log 2>&1; then
+set +e
+pm_install >/tmp/bad.log 2>&1
+status=$?
+set -e
+if [ "$status" -eq 0 ]; then
     cat /tmp/bad.log
     fail "the install accepted a repository with a broken signature"
 fi
@@ -72,7 +82,11 @@ grep -Eqi "$refusal" /tmp/bad.log || {
     cat /tmp/bad.log
     fail "the install failed, but not with a signature error"
 }
-echo "damaged repository refused: $(grep -Eim1 "$refusal" /tmp/bad.log)"
+refused="$(grep -Eim1 "$refusal" /tmp/bad.log)"
+echo "damaged repository refused: $refused"
 
+# shellcheck source=/dev/null
 . /etc/os-release
+# PRETTY_NAME comes from /etc/os-release, which ShellCheck cannot read here.
+# shellcheck disable=SC2154
 echo "repository test passed on $PRETTY_NAME"

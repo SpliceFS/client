@@ -160,6 +160,16 @@ jobs:
       - name: Tests on FreeBSD, as root with FUSE, 100% coverage
         run: make check-freebsd FREEBSD=${{ matrix.release }}
 
+  # The scripts build, sign, test and publish the releases. ShellCheck runs with every
+  # optional check on; .shellcheckrc says which two are off and why.
+  shell:
+    name: Shell analysis (ShellCheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ShellCheck with every optional check
+        run: make lint-shell
+
   lint:
     name: Lint (${{ matrix.goos }})
     runs-on: ubuntu-latest

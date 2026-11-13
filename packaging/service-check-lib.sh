@@ -1,3 +1,6 @@
+# shellcheck shell=sh
+# answers_text is read by scripts/service-test.sh, which sources this file.
+# shellcheck disable=SC2034
 # Sourced by scripts/service-test.sh. It says what "the service works" means for this
 # program; everything else in the service test is the same for every SpliceFS program.
 
@@ -8,6 +11,8 @@ answers_text="answers the status command, run inside the container"
 
 # The unit has no User= line on purpose: the control socket is readable only by the user
 # the client runs as, and mount(8) helpers run as root, so the service runs as root.
+# program is set by scripts/service-test.sh before it sources this file.
+# shellcheck disable=SC2154
 expected_user="$(sed -n 's/^User=//p' "packaging/systemd/$program.service")"
 expected_user="${expected_user:-root}"
 

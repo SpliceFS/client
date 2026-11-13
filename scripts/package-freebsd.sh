@@ -33,7 +33,8 @@ build_and_test() {
     cp "packaging/freebsd/$program.rc" packaging/freebsd/manifest.in packaging/freebsd/plist \
         packaging/freebsd/check-lib.sh "$job/"
     echo "FreeBSD $release ($machine): building and testing $name $pkgver"
-    freebsd_run "$disk" "$job" "$out/freebsd" || fail "FreeBSD $release ($machine) failed"
+    freebsd_run "$disk" "$job" "$out/freebsd"
+    [ "$run_status" -eq 0 ] || fail "FreeBSD $release ($machine) failed"
     echo "ok   FreeBSD $release ($machine)"
 }
 

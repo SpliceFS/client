@@ -28,6 +28,9 @@ if [ "${1:-}" = inside ]; then
                     if [ "$r" = -1 ]; then r='<'; fi ;;
                 apk)
                     r="$(apk version -t "$prev" "$v")" ;;
+                *)
+                    echo "FAIL unknown format $format" >&2
+                    exit 1 ;;
             esac
             if [ "$r" = '<' ]; then
                 echo "ok   $format $prev < $v"
@@ -56,6 +59,9 @@ for format in deb rpm apk; do
         deb) image="${DEB_IMAGE:-debian:12}" ;;
         rpm) image="${RPM_IMAGE:-rockylinux/rockylinux:9}" ;;
         apk) image="${APK_IMAGE:-alpine:3.22}" ;;
+        *)
+            echo "FAIL unknown format $format" >&2
+            exit 1 ;;
     esac
     list=""
     for v in $versions; do

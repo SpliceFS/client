@@ -27,5 +27,7 @@ for arch in amd64 arm64; do
     tar -cf "$out/$arch/in.tar" --exclude=./.git --exclude=./dist --exclude=./bin .
     tar -rf "$out/$arch/in.tar" -C "$stage" tests
     rm -rf "$stage"
-    echo "FreeBSD test programs for $arch: $(tar -tf "$out/$arch/in.tar" | grep -c '\.test$')"
+    members="$(tar -tf "$out/$arch/in.tar")"
+    programs="$(printf '%s\n' "$members" | grep -c '\.test$' || true)"
+    echo "FreeBSD test programs for $arch: $programs"
 done

@@ -29,7 +29,9 @@ wait_ready() {
     while :; do
         level="$(docker exec "$1" rc-status --runlevel 2>/dev/null || true)"
         [ "$level" != default ] || return 0
-        if [ "$(docker inspect -f '{{.State.Running}}' "$1")" != true ]; then
+        # A container that cannot be inspected is counted as stopped.
+        running="$(docker inspect -f '{{.State.Running}}' "$1")" || running=""
+        if [ "$running" != true ]; then
             echo "the container stopped before OpenRC was up:" >&2
             docker logs --tail 30 "$1" >&2 || true
             return 1

@@ -15,16 +15,17 @@ held to. Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
 ## Development setup
 
 You need Go 1.26 or newer and `make`. Linting uses
-[golangci-lint](https://golangci-lint.run) version 2.
+[golangci-lint](https://golangci-lint.run) version 2 and [ShellCheck](https://www.shellcheck.net).
 
 ```
 make build        # build splicefs into ./bin
 make check        # format check, vet, tests with the race detector, coverage gate
-make lint         # golangci-lint, the same configuration CI uses
+make lint         # golangci-lint (the configuration CI uses), then ShellCheck with every optional check on
 make fmt          # rewrite files with gofmt
 ```
 
-`make check` and `make lint` are exactly what CI runs. If both pass locally, CI will pass.
+`make check` is what CI runs, and CI runs golangci-lint the way `make lint` does. `make lint` also
+runs ShellCheck, which CI runs as its own job.
 
 ## Branches and pull requests
 

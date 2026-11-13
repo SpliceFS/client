@@ -24,6 +24,9 @@ cp /keys/splicefs.rsa.pub /etc/apk/keys/splicefs.rsa.pub
 # A published version must never change, so a file with the same name and different content
 # stops the run. That includes a rebuild of the same version, which signs the package again.
 changed=""
+# ls prints nothing when no file matches and sort fixes the order; a glob would run the loop
+# once with the pattern itself.
+# shellcheck disable=SC2012
 for apk in $(ls "$out"/alpine/*/*.apk 2>/dev/null | sort); do
     file="$(basename "$apk")"
     arch="$(basename "$(dirname "$apk")")"

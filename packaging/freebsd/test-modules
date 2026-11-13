@@ -1,0 +1,3 @@
+# Kernel modules the tests need on FreeBSD, one per line. scripts/check-freebsd.sh hands the
+# list to the machine, which loads each before the tests run.
+fusefs

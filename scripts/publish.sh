@@ -93,8 +93,14 @@ OWN_ALLOWED="$OWN_ALLOWED"'|Release(\.[a-z0-9]+)*)$'
 DRY=$(mktemp)
 trap 'rm -f "$DRY"' EXIT
 trap 'exit 1' HUP INT TERM
-if ! run_rsync -a --chmod=D755,F644 --delete --dry-run --itemize-changes "$REPO/" "$DEST" \
-  > "$DRY"; then
+# set -e is switched off around the call, not by using it as a condition, which would also
+# switch it off inside run_rsync.
+set +e
+run_rsync -a --chmod=D755,F644 --delete --dry-run --itemize-changes "$REPO/" "$DEST" \
+  > "$DRY"
+dry_status=$?
+set -e
+if [ "$dry_status" -ne 0 ]; then
   echo "the dry run failed, nothing was sent" >&2
   exit 1
 fi

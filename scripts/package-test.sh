@@ -26,6 +26,7 @@ if [ "$kind" = repo ]; then
     mounts="-v $root/dist/repo:/repo:ro -v $root/dist/keys/splicefs.asc:/keys/splicefs.asc:ro"
     mounts="$mounts -v $root/dist/keys/splicefs.rsa.pub:/keys/splicefs.rsa.pub:ro"
 fi
+systems="$(cat "$root/packaging/test-systems")"
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 passed=0
@@ -33,7 +34,8 @@ failed=0
 
 # A here-document keeps the counters in this shell; a pipe would run the loop in a subshell.
 while read -r format image; do
-    case "$format" in "" | "#"*) continue ;; esac
+    # Blank lines and comments are skipped; every other line is a system to test.
+    case "$format" in "" | "#"*) continue ;; *) ;; esac
     if [ -n "${ONLY:-}" ] && [ "$ONLY" != "$format" ] && [ "$ONLY" != "$image" ]; then
         continue
     fi
@@ -56,7 +58,7 @@ while read -r format image; do
         failed=$((failed + 1))
     fi
 done <<LIST
-$(cat "$root/packaging/test-systems")
+$systems
 LIST
 
 echo "passed: $passed  failed: $failed"

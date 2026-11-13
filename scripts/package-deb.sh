@@ -4,6 +4,7 @@
 set -eu
 
 out="${1:?usage: package-deb.sh OUTPUT_DIR}"
+# shellcheck source=package-lib.sh
 . scripts/package-lib.sh
 
 for arch in amd64 arm64; do

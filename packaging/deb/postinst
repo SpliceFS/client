@@ -25,4 +25,7 @@ case "$1" in
             fi
         fi
         ;;
+    *)
+        # abort-upgrade, abort-remove and abort-deconfigure leave nothing to set up.
+        ;;
 esac
