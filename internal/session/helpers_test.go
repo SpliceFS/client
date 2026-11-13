@@ -18,6 +18,10 @@ var (
 	errDenied = errors.New("login denied")
 )
 
+// entryHost is the host of the entry URL in options, which names the node that is made
+// from the entry URL when the cluster lists no nodes.
+const entryHost = "entry.example.com"
+
 var start = time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 
 // clock is a manual clock.
@@ -108,7 +112,10 @@ type env struct {
 	t     *testing.T
 	clk   *clock
 	entry *fakeNode
-	ttl   time.Duration
+	// byHost is what the entry URL is dialed as when the cluster lists no nodes; it is
+	// kept out of nodes, which holds the listed ones.
+	byHost *fakeNode
+	ttl    time.Duration
 
 	mu      sync.Mutex
 	nodes   map[string]*fakeNode
@@ -128,6 +135,7 @@ func newEnv(t *testing.T, names ...string) *env {
 		dialErr: make(map[string]error),
 	}
 	e.entry = e.newNode(entryName)
+	e.byHost = e.newNode(entryHost)
 	for _, name := range names {
 		e.addNode(name)
 	}
@@ -175,8 +183,11 @@ func (e *env) dial(name, baseURL string) (Node, error) {
 	if err := e.dialErr[name]; err != nil {
 		return nil, err
 	}
-	if name == entryName {
+	switch name {
+	case entryName:
 		return e.entry, nil
+	case entryHost:
+		return e.byHost, nil
 	}
 	n, ok := e.nodes[name]
 	if !ok {

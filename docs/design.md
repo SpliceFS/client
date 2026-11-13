@@ -159,7 +159,9 @@ which it publishes. The client logs in at the cluster host, including every time
 token, and asks the cluster host for the list of node hosts again every minute, because the
 call is cheap. Only requests for file contents, directory listings and statistics go to the
 node hosts. A node is addressed by one URL; split DNS decides whether that URL leads to an
-internal or a public address.
+internal or a public address. If the cluster lists no nodes, as a single server does until its
+public address is set, the cluster host is the only node. Its name is the host and port of the
+URL. A later list with nodes replaces it.
 
 The client needs the cluster host to log in and to learn the node hosts. If the cluster host
 cannot be reached, the client assumes that no node can be reached either and treats the

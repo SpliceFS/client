@@ -140,7 +140,6 @@ func TestConnectFailures(t *testing.T) {
 	}{
 		{"entry cannot be dialed", func(e *env) { e.dialErr[entryName] = errDown }},
 		{"node list cannot be fetched", func(e *env) { e.entry.setNodes(nodesFail(errDown)) }},
-		{"node list is empty", func(e *env) { e.setList() }},
 		{"no listed node can be dialed", func(e *env) { e.dialErr["a"] = errDown }},
 	}
 	for _, tt := range tests {
