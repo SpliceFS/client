@@ -9,9 +9,21 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 )
+
+// connectionsDir is the control directory of the FUSE driver; it has one directory per
+// connection, named by the connection number.
+const connectionsDir = "/sys/fs/fuse/connections"
+
+// mountTable is the list of the mounts of this process, one line per mount.
+const mountTable = "/proc/self/mountinfo"
+
+// errNotListed says that the mount table has no FUSE mount at the asked point.
+var errNotListed = errors.New("no FUSE mount listed")
 
 // kernelHost is the host backed by the running Linux kernel.
 type kernelHost struct {
@@ -19,16 +31,51 @@ type kernelHost struct {
 	unmountCall func(target string, flags int) error
 	// findHelper returns the path of the fusermount program.
 	findHelper func() (string, error)
+	// dir is the control directory of the FUSE driver.
+	dir string
+	// mountinfo is the file that lists the mounts.
+	mountinfo string
 }
 
 var _ host = kernelHost{}
 
 func newKernelHost() kernelHost {
-	return kernelHost{unmountCall: syscall.Unmount, findHelper: findFusermount}
+	return kernelHost{
+		unmountCall: syscall.Unmount,
+		findHelper:  findFusermount,
+		dir:         connectionsDir,
+		mountinfo:   mountTable,
+	}
 }
 
 // Stat implements host.
 func (kernelHost) Stat(path string) (fs.FileInfo, error) { return os.Stat(path) }
+
+// ConnectionID implements host. The number comes from the mount table and never from the
+// mount point itself, so that asking does not disturb how a dead mount answers.
+func (h kernelHost) ConnectionID(target string) (uint32, error) {
+	table, err := os.ReadFile(h.mountinfo)
+	if err != nil {
+		return 0, fmt.Errorf("read the mount table: %w", err)
+	}
+	id, ok := fuseConnectionID(string(table), target)
+	if !ok {
+		return 0, fmt.Errorf("connection of %s: %w", target, errNotListed)
+	}
+	return id, nil
+}
+
+// AbortConnection implements host. The file must already exist: opening without
+// creating keeps a connection that is gone from being mistaken for one to abort.
+func (h kernelHost) AbortConnection(id uint32) error {
+	path := filepath.Join(h.dir, strconv.FormatUint(uint64(id), 10), "abort")
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("abort connection %d: %w", id, err)
+	}
+	_, err = f.WriteString("1")
+	return errors.Join(err, f.Close())
+}
 
 // Unmount implements host. The system call needs privilege; an ordinary user gets EPERM
 // and goes through the setuid fusermount helper, the same way the mount was made.

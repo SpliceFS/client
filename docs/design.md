@@ -109,6 +109,48 @@ only sends one request on the control socket. The client makes the mount.
   of `umount` leaves the list. A mount that ends because the client stops stays on it, so a
   restart of the service brings it back.
 
+### Health check and heartbeat
+
+The run loop checks every live mount every `probeInterval` (10 seconds) and then tells the
+service manager that it is alive. Both happen in the goroutine of the run loop, so a check
+never overlaps a reload or a mount request.
+
+- **The probe name.** `mount.ProbeName` is `.splicefs-probe`. Directly in the root of every
+  mount it never exists. Both mount layers answer a lookup of it with "not found" at once,
+  before any call into `core.FS`. No network, cache or lock that a slow read could hold is
+  involved, so the answer proves only that a request travels from the kernel to the client
+  and back. It is never listed. In a subdirectory it is an ordinary name.
+- **The check.** The loop calls `os.Lstat` on `<target>/.splicefs-probe` in a goroutine of its
+  own and waits for `probeTimeout` (5 seconds). "Does not exist" passes. Any other answer, or
+  no answer in time, fails. A check that is still waiting from an earlier round fails the
+  mount without a second one being started, so a hung mount holds one goroutine and not one
+  per round. A passing check resets the count of the mount.
+- **A hung mount.** After `probeFailures` (3) failed checks in a row the client logs
+  `mount does not answer, mounting it again` as an error, force unmounts the mount and takes
+  it out of its set. It then mounts what is missing, the same step a reload ends with, from
+  the configuration applied last and the requested mounts. The files are not read again. A
+  requested mount stays on the requested list.
+- **Kernel connection (Linux).** After the forced unmount of a hung mount the run loop
+  aborts the kernel connection of that mount. This is its own operation (`mount.Aborter`),
+  never part of an unmount: a reload detaches mounts with a forced unmount too, and their
+  open files must keep working. The connection number is read from `/proc/self/mountinfo` when
+  the mount is made and kept, because after the detach the mount point no longer leads to
+  the mount. The mount table is read and the mount point is not looked at with `stat`,
+  because a `stat` fills the attribute cache and a dead mount would then answer from it.
+  Requests that wait on a dead connection fail and do not wait forever.
+- **macOS.** The root attributes and the capacity are answered without the cluster: the
+  attributes of the root wait at most one second for the core and otherwise give the last
+  answer, or a fixed read-only directory before the first one. The capacity gives the last
+  value the core reported, or zero. The kernel asks for both while it mounts, so the mount is
+  made while no server can be reached. Listings fail with an I/O error until a server
+  answers, and then the mount works without a restart.
+- **The heartbeat.** After each round, whatever it found, the client sends `WATCHDOG=1`. It
+  proves that the run loop is alive, not that every mount is healthy. The systemd unit has
+  `WatchdogSec=300`, so a client whose run loop is stuck for five minutes is killed and
+  started again by `Restart=`. The OpenRC service has no heartbeat: `supervise-daemon`
+  restarts the client only when it exits.
+- The ticker, the lstat function, the timeout and the failure count can be replaced in tests.
+
 ## Discovery
 
 Each cluster is configured with one entry URL. The client logs in there, fetches the node

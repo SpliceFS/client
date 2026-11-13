@@ -1,12 +1,16 @@
 package nfs
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"io/fs"
 	"log/slog"
 	"os"
+	"slices"
+	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -15,19 +19,14 @@ import (
 	"github.com/willscott/go-nfs/file"
 
 	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 var testOwner = owner{uid: 501, gid: 20}
 
 func newTestBilly(t *testing.T, fsys core.FS) *billyFS {
 	t.Helper()
-	return &billyFS{
-		base:    t.Context(),
-		fsys:    fsys,
-		timeout: time.Minute,
-		owner:   testOwner,
-		log:     slog.New(slog.DiscardHandler),
-	}
+	return newBillyFS(t.Context(), fsys, time.Minute, testOwner, slog.New(slog.DiscardHandler))
 }
 
 func treeFS() *fakeFS {
@@ -127,6 +126,303 @@ func TestBillyRejectsPathsOutsideTheRoot(t *testing.T) {
 	}
 }
 
+// rootStats counts the calls the core got for the attributes of the root.
+func rootStats(f *fakeFS) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c == "stat:" {
+			n++
+		}
+	}
+	return n
+}
+
+// failRoot makes every stat of the root fail with err, or work again when err is nil.
+func failRoot(f *fakeFS, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail = func(op, name string) error {
+		if op == "stat" && name == "" {
+			return err
+		}
+		return nil
+	}
+}
+
+// pendingRoot returns the channel that is closed when the running root call ends.
+func pendingRoot(t *testing.T, b *billyFS) chan struct{} {
+	t.Helper()
+	b.root.mu.Lock()
+	defer b.root.mu.Unlock()
+	if b.root.pending == nil {
+		t.Fatal("no root call is running")
+	}
+	return b.root.pending
+}
+
+func wantRootDir(t *testing.T, b *billyFS, wantMTime time.Time) {
+	t.Helper()
+	info, err := b.Stat("")
+	if err != nil {
+		t.Errorf("Stat of the root = %v, want an answer", err)
+		return
+	}
+	want := file.FileInfo{Nlink: 1, UID: 501, GID: 20, Fileid: rootInode}
+	if !info.IsDir() || info.Mode() != fs.ModeDir|0o555 || !info.ModTime().Equal(wantMTime) ||
+		info.Sys() != want {
+		t.Errorf("root = dir %v mode %v mtime %v sys %+v, want a 0555 directory, mtime %v, sys %+v",
+			info.IsDir(), info.Mode(), info.ModTime(), info.Sys(), wantMTime, want)
+	}
+}
+
+// blockRoot makes the first stat of the root wait until release is closed. started is
+// closed when it has begun.
+func blockRoot(f *fakeFS) (started <-chan struct{}, release func()) {
+	s, r := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fail = func(op, name string) error {
+		if op == "stat" && name == "" {
+			once.Do(func() { close(s) })
+			<-r
+		}
+		return nil
+	}
+	return s, sync.OnceFunc(func() { close(r) })
+}
+
+func waitFor(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+func TestBillyRootAttrFollowsAHealthyCore(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS()
+	b := newTestBilly(t, fsys)
+	wantRootDir(t, b, fakeMTime)
+	later := fakeMTime.Add(time.Hour)
+	fsys.mu.Lock()
+	fsys.nodes[""].attr.MTime = later
+	fsys.mu.Unlock()
+	wantRootDir(t, b, later)
+	if n := rootStats(fsys); n != 2 {
+		t.Errorf("the core was asked %d times, want once per request", n)
+	}
+}
+
+func TestBillyRootAttrWithAFailingCoreAndNoAnswerYetIsFixed(t *testing.T) {
+	t.Parallel()
+	for _, err := range []error{core.ErrUnavailable, errors.New("disk on fire"), core.ErrNotExist} {
+		fsys := treeFS()
+		failRoot(fsys, err)
+		b := newTestBilly(t, fsys)
+		b.created = time.Unix(1_600_000_000, 0)
+		wantRootDir(t, b, b.created)
+		wantRootDir(t, b, b.created)
+		if info, err := b.Lstat("."); err != nil || !info.ModTime().Equal(b.created) {
+			t.Errorf("Lstat of the root = %v, %v", info, err)
+		}
+	}
+}
+
+func TestBillyRootAttrAfterAFailureIsTheLastAnswer(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS()
+	b := newTestBilly(t, fsys)
+	b.created = time.Unix(1_600_000_000, 0)
+	wantRootDir(t, b, fakeMTime)
+	failRoot(fsys, core.ErrUnavailable)
+	wantRootDir(t, b, fakeMTime)
+	failRoot(fsys, nil)
+	fsys.mu.Lock()
+	fsys.nodes[""].attr.MTime = fakeMTime.Add(time.Minute)
+	fsys.mu.Unlock()
+	wantRootDir(t, b, fakeMTime.Add(time.Minute))
+}
+
+func TestBillyRootAttrOtherPathsStillFail(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS()
+	fsys.fail = func(op, _ string) error {
+		if op == "stat" || op == "readdir" {
+			return core.ErrUnavailable
+		}
+		return nil
+	}
+	b := newTestBilly(t, fsys)
+	if _, err := b.Stat("dir"); !errors.Is(err, syscall.EIO) {
+		t.Errorf("Stat of a directory = %v, want an I/O error", err)
+	}
+	if _, err := b.ReadDir(""); !errors.Is(err, syscall.EIO) {
+		t.Errorf("ReadDir of the root = %v, want an I/O error", err)
+	}
+}
+
+func TestBillyRootAttrAnswersWithinTheBudgetAndKeepsTheLateAnswer(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS()
+	started, release := blockRoot(fsys)
+	t.Cleanup(release)
+	b := newTestBilly(t, fsys)
+	b.rootBudget = 10 * time.Millisecond
+	b.created = time.Unix(1_600_000_000, 0)
+
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		wantRootDir(t, b, b.created)
+	}()
+	waitFor(t, started, "the core call to start")
+	waitFor(t, answered, "an answer while the core is blocked")
+	pending := pendingRoot(t, b)
+
+	late := fakeMTime.Add(time.Hour)
+	fsys.mu.Lock()
+	fsys.nodes[""].attr.MTime = late
+	fsys.mu.Unlock()
+	release()
+	waitFor(t, pending, "the late call to end")
+
+	// The core fails from now on, so what comes back can only be the late answer.
+	failRoot(fsys, core.ErrUnavailable)
+	wantRootDir(t, b, late)
+}
+
+func TestBillyRootAttrNeverRunsTwoCallsAtOnce(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS()
+	started, release := blockRoot(fsys)
+	t.Cleanup(release)
+	b := newTestBilly(t, fsys)
+	b.rootBudget = 10 * time.Millisecond
+	b.created = time.Unix(1_600_000_000, 0)
+
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() { wantRootDir(t, b, b.created) })
+	}
+	waitFor(t, started, "the core call to start")
+	wg.Wait()
+	wantRootDir(t, b, b.created)
+	if n := rootStats(fsys); n != 1 {
+		t.Errorf("the core got %d root calls while the first was running, want 1", n)
+	}
+
+	release()
+	waitFor(t, pendingRoot(t, b), "the call to end")
+	// With a long budget the next request waits for its own call, so the count below does
+	// not depend on how fast that call is scheduled.
+	b.rootBudget = 5 * time.Second
+	wantRootDir(t, b, fakeMTime)
+	if n := rootStats(fsys); n != 2 {
+		t.Errorf("the core got %d root calls after the first ended, want 2", n)
+	}
+}
+
+func TestBillyRootAttrLogsAFailure(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS()
+	failRoot(fsys, core.ErrUnavailable)
+	var logged bytes.Buffer
+	b := newTestBilly(t, fsys)
+	// The line is at debug level, because the kernel asks for the root many times a second.
+	debug := &slog.HandlerOptions{Level: slog.LevelDebug}
+	b.log = slog.New(slog.NewTextHandler(&logged, debug))
+	wantRootDir(t, b, b.created)
+	if !strings.Contains(logged.String(), core.ErrUnavailable.Error()) {
+		t.Errorf("the failure was not logged: %q", logged.String())
+	}
+}
+
+func TestBillyProbeNameInTheRootIsNotFoundWithoutTheCore(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS()
+	b := newTestBilly(t, fsys)
+	name := mount.ProbeName
+	if _, err := b.Stat(name); !os.IsNotExist(err) {
+		t.Errorf("Stat(%q) = %v, want not-exist", name, err)
+	}
+	if _, err := b.Lstat(name); !os.IsNotExist(err) {
+		t.Errorf("Lstat(%q) = %v, want not-exist", name, err)
+	}
+	if _, err := b.ReadDir(name); !os.IsNotExist(err) {
+		t.Errorf("ReadDir(%q) = %v, want not-exist", name, err)
+	}
+	if _, err := b.Open(name); !os.IsNotExist(err) {
+		t.Errorf("Open(%q) = %v, want not-exist", name, err)
+	}
+	if len(fsys.calls) != 0 {
+		t.Errorf("core.FS was called for the probe name: %v", fsys.calls)
+	}
+}
+
+func TestBillyProbeNameIsAnsweredWhileACoreCallIsBlocked(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS()
+	started, release := make(chan struct{}), make(chan struct{})
+	fsys.fail = func(op, name string) error {
+		if op == "stat" && name == "dir/hello.txt" {
+			close(started)
+			<-release
+		}
+		return nil
+	}
+	b := newTestBilly(t, fsys)
+	blocked := make(chan struct{})
+	go func() {
+		defer close(blocked)
+		_, _ = b.Stat("dir/hello.txt")
+	}()
+	t.Cleanup(func() { close(release); <-blocked })
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stat never reached the core")
+	}
+
+	answered := make(chan error, 1)
+	go func() {
+		_, err := b.Lstat(mount.ProbeName)
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if !os.IsNotExist(err) {
+			t.Fatalf("Lstat = %v, want not-exist", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe name waited for the blocked core call")
+	}
+	fsys.mu.Lock()
+	defer fsys.mu.Unlock()
+	if len(fsys.calls) != 1 {
+		t.Fatalf("core calls = %v, want only the blocked stat", fsys.calls)
+	}
+}
+
+func TestBillyProbeNameInASubdirectoryIsAnOrdinaryName(t *testing.T) {
+	t.Parallel()
+	fsys := treeFS().addFile("dir/"+mount.ProbeName, []byte("x"))
+	b := newTestBilly(t, fsys)
+	if _, err := b.Stat("dir/" + mount.ProbeName); err != nil {
+		t.Fatalf("Stat of an existing file named like the probe = %v", err)
+	}
+	if _, err := b.Stat("empty/" + mount.ProbeName); !os.IsNotExist(err) {
+		t.Fatalf("Stat of a missing file = %v, want not-exist", err)
+	}
+	if want := []string{"stat:dir/" + mount.ProbeName, "stat:empty/" + mount.ProbeName}; !slices.Equal(fsys.calls, want) {
+		t.Fatalf("core calls = %v, want %v", fsys.calls, want)
+	}
+}
+
 func TestBillyErrorMapping(t *testing.T) {
 	t.Parallel()
 	other := errors.New("disk on fire")
@@ -156,7 +452,6 @@ func TestBillyErrorMapping(t *testing.T) {
 				"stat":    func() error { _, err := b.Stat("dir"); return err },
 				"readdir": func() error { _, err := b.ReadDir("dir"); return err },
 				"open":    func() error { _, err := b.Open("dir/hello.txt"); return err },
-				"space":   func() error { _, err := b.space(t.Context()); return err },
 			}
 			for op, call := range calls {
 				if err := call(); err == nil || !tt.check(err) {
@@ -356,9 +651,8 @@ func TestBillyChrootAndRoot(t *testing.T) {
 func TestBillySpace(t *testing.T) {
 	t.Parallel()
 	b := newTestBilly(t, treeFS())
-	got, err := b.space(t.Context())
-	if err != nil || got != (core.Space{Total: 1000, Free: 400}) {
-		t.Errorf("space = %+v, %v", got, err)
+	if got := b.space(t.Context()); got != (core.Space{Total: 1000, Free: 400}) {
+		t.Errorf("space = %+v", got)
 	}
 }
 

@@ -143,15 +143,25 @@ func TestFSStat(t *testing.T) {
 			t.Errorf("FSStat = %+v", stat)
 		}
 	})
-	t.Run("an unreachable view is an I/O error", func(t *testing.T) {
+	t.Run("an unreachable view reports the last capacity", func(t *testing.T) {
 		t.Parallel()
 		fsys := newFakeFS()
-		fsys.fail = func(string, string) error { return core.ErrUnavailable }
 		h := newTestHandler(t, fsys, 10, 10)
-		var status *gonfs.NFSStatusError
-		err := h.FSStat(t.Context(), h.fs, &gonfs.FSStat{})
-		if !errors.As(err, &status) || status.NFSStatus != gonfs.NFSStatusIO {
-			t.Errorf("FSStat = %v, want NFS3ERR_IO", err)
+		// Before any answer the capacity is zero, and it is still not an error: the
+		// kernel asks while it mounts, and a mount must succeed with no node reachable.
+		fsys.fail = func(string, string) error { return core.ErrUnavailable }
+		var stat gonfs.FSStat
+		if err := h.FSStat(t.Context(), h.fs, &stat); err != nil || stat.TotalSize != 0 {
+			t.Fatalf("FSStat = %+v, %v, want zero capacity and no error", stat, err)
+		}
+		fsys.fail = nil
+		if err := h.FSStat(t.Context(), h.fs, &stat); err != nil || stat.TotalSize != 1000 {
+			t.Fatalf("FSStat = %+v, %v, want the real capacity", stat, err)
+		}
+		fsys.fail = func(string, string) error { return core.ErrUnavailable }
+		stat = gonfs.FSStat{}
+		if err := h.FSStat(t.Context(), h.fs, &stat); err != nil || stat.TotalSize != 1000 {
+			t.Errorf("FSStat = %+v, %v, want the last capacity", stat, err)
 		}
 	})
 }

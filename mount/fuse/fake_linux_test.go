@@ -32,6 +32,7 @@ type fakeFS struct {
 	files map[string][]byte
 	dirs  map[string]bool
 
+	calls     atomic.Int64 // every method of core.FS and core.File that answers a request
 	statCalls atomic.Int64
 	readCalls atomic.Int64
 	open      atomic.Int64 // files opened and not yet closed
@@ -146,6 +147,7 @@ func (f *fakeFS) attr(name string) (core.Attr, error) {
 }
 
 func (f *fakeFS) Stat(_ context.Context, name string) (core.Attr, error) {
+	f.calls.Add(1)
 	f.statCalls.Add(1)
 	if err := f.failure(name); err != nil {
 		return core.Attr{}, err
@@ -154,6 +156,7 @@ func (f *fakeFS) Stat(_ context.Context, name string) (core.Attr, error) {
 }
 
 func (f *fakeFS) ReadDir(_ context.Context, name string) ([]core.Attr, error) {
+	f.calls.Add(1)
 	if err := f.failure(name); err != nil {
 		return nil, err
 	}
@@ -199,6 +202,7 @@ func parentOf(p string) string {
 }
 
 func (f *fakeFS) Open(_ context.Context, name string) (core.File, error) {
+	f.calls.Add(1)
 	if err := f.failure(name); err != nil {
 		return nil, err
 	}
@@ -218,6 +222,7 @@ func (f *fakeFS) Open(_ context.Context, name string) (core.File, error) {
 }
 
 func (f *fakeFS) StatFS(context.Context) (core.Space, error) {
+	f.calls.Add(1)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failAll != nil {
@@ -236,6 +241,7 @@ type fakeFile struct {
 func (ff *fakeFile) Attr() core.Attr { return ff.attr }
 
 func (ff *fakeFile) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+	ff.fs.calls.Add(1)
 	ff.fs.readCalls.Add(1)
 	ff.fs.mu.Lock()
 	blocked, fault := ff.fs.blocked, ff.fs.readFault

@@ -9,14 +9,17 @@ import (
 	"math/rand/v2"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/willscott/go-nfs-client/nfs"
 	"github.com/willscott/go-nfs-client/nfs/rpc"
 
 	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/mount"
 )
 
 // dialClient connects to the server. The client library picks its own local port
@@ -245,6 +248,55 @@ func TestProtocolAccessDeniesEveryWrite(t *testing.T) {
 	}
 	if got&nfs.ACCESS3_READ == 0 || got&writes != 0 {
 		t.Errorf("access mask = %#x, want read without write", got)
+	}
+}
+
+func TestProtocolProbeNameIsNotFoundAndNeverReachesTheCore(t *testing.T) {
+	t.Parallel()
+	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
+	tg := dial(t, startTest(t, fsys))
+	fsys.mu.Lock()
+	fsys.calls = nil
+	fsys.mu.Unlock()
+
+	if _, _, err := tg.Lookup("/" + mount.ProbeName); !os.IsNotExist(err) {
+		t.Fatalf("lookup of the probe name = %v, want not-exist", err)
+	}
+	fsys.mu.Lock()
+	defer fsys.mu.Unlock()
+	for _, c := range fsys.calls {
+		if strings.HasSuffix(c, mount.ProbeName) {
+			t.Errorf("the probe name reached the core: %v", fsys.calls)
+		}
+	}
+}
+
+func TestProtocolProbeNameIsAnsweredWithTheCoreUnreachable(t *testing.T) {
+	t.Parallel()
+	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
+	started, release := blockRoot(fsys)
+	t.Cleanup(release)
+	ln, err := listenLoopback(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := startServer(fsys, ln, serverConfig{owner: testOwner, rootBudget: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	tg := dial(t, s)
+	waitFor(t, started, "the root call to start")
+
+	if _, _, err := tg.Lookup("/" + mount.ProbeName); !os.IsNotExist(err) {
+		t.Fatalf("lookup of the probe name = %v, want not-exist", err)
+	}
+	fsys.mu.Lock()
+	defer fsys.mu.Unlock()
+	for _, c := range fsys.calls {
+		if c != "stat:" {
+			t.Errorf("a call beyond the bounded root one reached the core: %v", fsys.calls)
+		}
 	}
 }
 

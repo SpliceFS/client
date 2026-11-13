@@ -16,6 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/willscott/go-nfs-client/nfs"
+	"github.com/willscott/go-nfs-client/nfs/rpc"
+
+	"github.com/SpliceFS/client/core"
 	"github.com/SpliceFS/client/mount"
 )
 
@@ -187,6 +191,49 @@ func TestMountRunsMountNFS(t *testing.T) {
 	}
 	if sys.tickers != 1 {
 		t.Errorf("%d tickers started, want the one that watches the mount table", sys.tickers)
+	}
+}
+
+// asMountNFS makes the fake runner behave like mount_nfs does before it accepts a mount:
+// it connects to the server named in the options, mounts and asks for the attributes of
+// the root, and fails if any of that fails.
+func asMountNFS(t *testing.T, sys *fakeSystem) {
+	t.Helper()
+	sys.handle = func(c command) ([]byte, error) {
+		_, rest, ok := strings.Cut(c.args[1], "port=")
+		port, _, _ := strings.Cut(rest, ",")
+		if !ok {
+			return nil, errors.New("no port in the options")
+		}
+		client, err := rpc.DialTCP("tcp", "127.0.0.1:"+port, false)
+		if err != nil {
+			return nil, err
+		}
+		target, err := (&nfs.Mount{Client: client}).Mount("/", rpc.AuthNull)
+		if err != nil {
+			return nil, err
+		}
+		defer target.Close()
+		if _, err := target.Getattr("/"); err != nil {
+			return []byte("root attributes: " + err.Error()), err
+		}
+		return nil, nil
+	}
+}
+
+func TestMountSucceedsWhileTheCoreCannotAnswerForTheRoot(t *testing.T) {
+	t.Parallel()
+	sys := newFakeSystem()
+	asMountNFS(t, sys)
+	fsys := newFakeFS().addFile("a.txt", []byte("hello"))
+	failRoot(fsys, core.ErrUnavailable)
+	m, err := mountWith(fsys, mount.Options{Target: t.TempDir()}, sys.environment())
+	if err != nil {
+		t.Fatalf("mount = %v, want a mount that waits for the cluster", err)
+	}
+	t.Cleanup(func() { m.(*mounted).srv.Close() })
+	if len(sys.commandsNamed("/sbin/mount_nfs")) != 1 {
+		t.Errorf("mount_nfs did not run once: %v", sys.commands)
 	}
 }
 
