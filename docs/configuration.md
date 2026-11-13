@@ -117,6 +117,10 @@ cluster host cannot be reached, the client treats the cluster as unreachable for
 things. It keeps using the node hosts it already knows until its login runs out, and it
 recovers by itself when the cluster host answers again.
 
+A single server needs no settings of its own for a client to use it, because the client uses
+the cluster host as the only node when the server lists no nodes. With several servers, each
+one sets `cluster.url`.
+
 The password file holds the password and nothing else. A newline at the end is ignored. Keep
 the file readable only by the user the client runs as:
 

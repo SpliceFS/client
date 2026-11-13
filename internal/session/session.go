@@ -91,6 +91,9 @@ type Session struct {
 	fetched      time.Time
 	connectRetry backoff
 	loginRetry   backoff
+	// fallbackNote makes the line about using the cluster host as the only node appear
+	// once per session, not at every refresh of an empty list.
+	fallbackNote sync.Once
 }
 
 // New returns a Session. It does not use the network: the cluster is contacted by
@@ -229,7 +232,7 @@ func (s *Session) refreshNodes(ctx context.Context) {
 			"cluster_host", s.opts.EntryURL, "error", err)
 		return
 	}
-	next := s.dialAll(list.Nodes, known)
+	next := s.dialAll(s.listed(list.Nodes), known)
 	if len(next) == 0 {
 		s.opts.Logger.Warn("node list refresh returned no usable node", "cluster", s.opts.Cluster)
 		return

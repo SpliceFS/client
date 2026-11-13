@@ -87,6 +87,8 @@ notable ones.
   minute instead of every 5 minutes. If the cluster host cannot be reached, the client treats
   the cluster as unreachable, keeps the node hosts it knows until its login runs out, and
   recovers by itself when the cluster host answers again.
+- A cluster that lists no nodes is used through its own address, so a single server works
+  without setting its public address.
 
 ### Fixed
 

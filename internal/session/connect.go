@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/SpliceFS/common/wire"
 )
@@ -87,12 +88,40 @@ func (s *Session) enter(ctx context.Context) (wire.LoginResponse, []*member, err
 	if err != nil {
 		return wire.LoginResponse{}, nil, s.unavailable("fetch node list", err)
 	}
-	members := s.dialAll(list.Nodes, nil)
+	members := s.dialAll(s.listed(list.Nodes), nil)
 	if len(members) == 0 {
 		return wire.LoginResponse{}, nil, s.unavailable("fetch node list",
 			fmt.Errorf("%d nodes listed, none usable", len(list.Nodes)))
 	}
 	return login, members, nil
+}
+
+// listed is the nodes to use for a node list the cluster host returned. A server lists
+// itself only when its administrator has set its public address, so a single server
+// that was just installed returns nothing although it is answering this very client:
+// the URL of the cluster host is then the only node. A list with nodes is never added
+// to, because the administrator chose it, and none of them being usable stays a failure.
+func (s *Session) listed(nodes []wire.Node) []wire.Node {
+	if len(nodes) > 0 {
+		return nodes
+	}
+	s.fallbackNote.Do(func() {
+		s.opts.Logger.Info("cluster lists no nodes, using its address as the only node",
+			"cluster", s.opts.Cluster, "url", s.opts.EntryURL)
+	})
+	return []wire.Node{s.entryAsNode()}
+}
+
+// entryAsNode is the URL of the cluster host as a node. It is named after the host and
+// port as written in the URL, so that status shows an address the user recognises. A URL
+// without a host cannot be named that way and keeps the name it was dialed with. It is
+// not called entryNode, which is the dialed cluster host that logins go to.
+func (s *Session) entryAsNode() wire.Node {
+	name := entryName
+	if u, err := url.Parse(s.opts.EntryURL); err == nil && u.Host != "" {
+		name = u.Host
+	}
+	return wire.Node{Name: name, URL: s.opts.EntryURL}
 }
 
 // dialAll returns a member for every listed node, in list order. A member in known
