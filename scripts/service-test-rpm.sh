@@ -105,9 +105,5 @@ service_report() {
 
 # Prints why an image cannot be tested, or nothing when it can.
 skip_reason() {
-    case "$1" in
-        # Its repository signing key expired in June 2026, after the release reached its end
-        # of life, so zypper refuses to install systemd from it.
-        opensuse/leap:15.6) echo "openSUSE Leap 15.6 is past its end of life: its own systemd can no longer be installed" ;;
-    esac
+    :
 }

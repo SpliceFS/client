@@ -101,3 +101,8 @@ notable ones.
 - Entry names that a node lists are checked. A name that is empty, a dot segment, or holds a
   slash or a NUL byte is dropped, so a hostile node cannot make an entry point outside the
   directory it was listed in. Found by the new fuzz tests.
+
+### Removed
+
+- openSUSE Leap 15.6 is no longer supported: its vendor ended its support on 2026-04-30. A
+  system is supported only while its own vendor supports it.
