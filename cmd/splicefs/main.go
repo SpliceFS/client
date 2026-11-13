@@ -44,8 +44,8 @@ running client to mount CLUSTER:PATH at TARGET.
 `
 )
 
-// exit is replaced in tests.
-var exit = os.Exit
+// exit is replaced in tests, so that main can run without ending the test process.
+var exit = os.Exit //nolint:gochecknoglobals // the one seam the tests replace; nothing else reads or writes it
 
 func main() {
 	exit(run(context.Background(), os.Args, os.Stdin, os.Stdout, os.Stderr))
@@ -109,14 +109,12 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer, b bac
 	inv, err := parseArgs(args)
 	switch {
 	case errors.Is(err, flag.ErrHelp):
-		_, _ = io.WriteString(stdout, usage)
-		return exitOK
+		return announcef(stdout, "%s", usage)
 	case err != nil:
-		_, _ = fmt.Fprintf(stderr, "%s: %v\n%s", program, err, usage)
+		sayf(stderr, "%s: %v\n%s", program, err, usage)
 		return exitUsage
 	case inv.showVersion:
-		_, _ = fmt.Fprintf(stdout, "%s %s\n", program, version.String())
-		return exitOK
+		return announcef(stdout, "%s %s\n", program, version.String())
 	}
 	if inv.configDir == "" {
 		if inv.configDir, err = b.defaultConfigDir(); err != nil {
@@ -154,6 +152,7 @@ func (b backend) runConfig(inv invocation, stdout io.Writer) error {
 	}
 	if inv.configCommand == configCheck {
 		_, err = fmt.Fprintf(stdout, "ok: %d clusters, %d mounts\n", len(cfg.Clusters), len(cfg.Mounts))
+		//nolint:wrapcheck // The error of the write already names the file, and the command prints it as it is.
 		return err
 	}
 	return showConfig(stdout, cfg)
@@ -185,9 +184,23 @@ func (b backend) mount(ctx context.Context, inv invocation, stderr io.Writer) er
 
 // fail prints err and returns the exit status for a runtime error.
 func fail(stderr io.Writer, err error) int {
-	_, _ = fmt.Fprintf(stderr, "%s: %v\n", program, err)
+	sayf(stderr, "%s: %v\n", program, err)
 	if errors.Is(err, app.ErrBusy) {
-		_, _ = fmt.Fprintf(stderr, "%s: a mount that is in use is left alone; use \"umount --force\" to unmount it anyway\n", program)
+		sayf(stderr, "%s: a mount that is in use is left alone; use \"umount --force\" to unmount it anyway\n", program)
 	}
 	return exitError
+}
+
+// announcef writes the answer to a help or version request to stdout and returns the exit
+// status, which is success whether or not the answer could be written.
+func announcef(stdout io.Writer, format string, args ...any) int {
+	sayf(stdout, format, args...)
+	return exitOK
+}
+
+// sayf writes a message to w and drops a failed write. For stderr there is nowhere left to
+// report it, because stderr is where failures are reported. The answer to a help or version
+// request has always ended in success, so it is dropped there as well.
+func sayf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...) //nolint:errcheck // See above, a failed write is dropped on purpose.
 }

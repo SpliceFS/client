@@ -19,25 +19,26 @@ type gated struct {
 	cancelled bool
 }
 
-func (g *gated) list(ctx context.Context, _, _ string) ([]wire.Entry, error) {
-	<-g.gate
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.cancelled = g.cancelled || ctx.Err() != nil
+func (blocked *gated) list(ctx context.Context, _, _ string) ([]wire.Entry, error) {
+	<-blocked.gate
+	blocked.mu.Lock()
+	defer blocked.mu.Unlock()
+	blocked.cancelled = blocked.cancelled || ctx.Err() != nil
 	return []wire.Entry{wfile("f", 1, at(1), "e")}, nil
 }
 
 func TestConcurrentListsShareOneFanOut(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		l := newLister("n1", "n2")
-		g := &gated{gate: make(chan struct{})}
-		l.listFn = g.list
-		tr, _ := newTree(l, Options{})
+		lister := newLister("n1", "n2")
+		blocked := &gated{gate: make(chan struct{})}
+		lister.listFn = blocked.list
+		tree, _ := newTree(lister, Options{})
 
 		results := make(chan []Entry, 2)
 		for range 2 {
 			go func() {
-				got, err := tr.List(context.Background(), "d")
+				got, err := tree.List(context.Background(), "d")
 				if err != nil {
 					t.Error(err)
 				}
@@ -45,34 +46,35 @@ func TestConcurrentListsShareOneFanOut(t *testing.T) {
 			}()
 		}
 		synctest.Wait()
-		close(g.gate)
+		close(blocked.gate)
 		checkNames(t, "first caller", <-results, "f")
 		checkNames(t, "second caller", <-results, "f")
 
-		if got := l.asked("d"); got != 2 {
+		if got := lister.asked("d"); got != 2 {
 			t.Errorf("nodes asked %d times, want once each (2)", got)
 		}
 	})
 }
 
 func TestACallerThatGivesUpDoesNotCancelTheFanOutForOthers(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		l := newLister("n1")
-		g := &gated{gate: make(chan struct{})}
-		l.listFn = g.list
-		tr, _ := newTree(l, Options{TTL: time.Hour})
+		lister := newLister("n1")
+		blocked := &gated{gate: make(chan struct{})}
+		lister.listFn = blocked.list
+		tree, _ := newTree(lister, Options{TTL: time.Hour})
 
 		ctx, cancel := context.WithCancel(context.Background())
 		quitter := make(chan error, 1)
 		go func() {
-			_, err := tr.List(ctx, "d")
+			_, err := tree.List(ctx, "d")
 			quitter <- err
 		}()
 		synctest.Wait()
 
 		stayer := make(chan []Entry, 1)
 		go func() {
-			got, err := tr.List(context.Background(), "d")
+			got, err := tree.List(context.Background(), "d")
 			if err != nil {
 				t.Error(err)
 			}
@@ -84,45 +86,47 @@ func TestACallerThatGivesUpDoesNotCancelTheFanOutForOthers(t *testing.T) {
 		if err := <-quitter; !errors.Is(err, context.Canceled) {
 			t.Errorf("cancelled caller = %v, want context.Canceled", err)
 		}
-		close(g.gate)
+		close(blocked.gate)
 		checkNames(t, "remaining caller", <-stayer, "f")
 
-		if g.cancelled {
+		if blocked.cancelled {
 			t.Error("the node's context was cancelled when one caller gave up")
 		}
-		checkNames(t, "cached result", mustList(t, tr, "d"), "f")
-		if got := l.asked("d"); got != 1 {
+		checkNames(t, "cached result", mustList(t, tree, "d"), "f")
+		if got := lister.asked("d"); got != 1 {
 			t.Errorf("asked %d times, want 1", got)
 		}
 	})
 }
 
 func TestACancelledCallerWithNothingCachedGetsItsContextError(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		l := newLister("n1")
-		l.say("n1", "", wfile("f", 1, at(1), "e"))
-		tr, _ := newTree(l, Options{TTL: time.Hour})
+		lister := newLister("n1")
+		lister.say("n1", "", wfile("f", 1, at(1), "e"))
+		tree, _ := newTree(lister, Options{TTL: time.Hour})
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if _, err := tr.List(ctx, ""); !errors.Is(err, context.Canceled) {
+		if _, err := tree.List(ctx, ""); !errors.Is(err, context.Canceled) {
 			t.Errorf("List = %v, want context.Canceled", err)
 		}
 		// The fan-out that was started still finishes and is remembered.
 		synctest.Wait()
-		checkNames(t, "List", mustList(t, tr, ""), "f")
-		if got := l.asked(""); got != 1 {
+		checkNames(t, "List", mustList(t, tree, ""), "f")
+		if got := lister.asked(""); got != 1 {
 			t.Errorf("asked %d times, want 1", got)
 		}
 	})
 }
 
 func TestAHungNodeIsGivenUpOnAfterNodeTimeout(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		l := newLister("fast", "hung")
+		lister := newLister("fast", "hung")
 		var mu sync.Mutex
 		var hungErr error
-		l.listFn = func(ctx context.Context, node, _ string) ([]wire.Entry, error) {
+		lister.listFn = func(ctx context.Context, node, _ string) ([]wire.Entry, error) {
 			if node == "fast" {
 				return []wire.Entry{wfile("f", 1, at(1), "e")}, nil
 			}
@@ -132,10 +136,10 @@ func TestAHungNodeIsGivenUpOnAfterNodeTimeout(t *testing.T) {
 			hungErr = ctx.Err()
 			return nil, ctx.Err()
 		}
-		tr, _ := newTree(l, Options{NodeTimeout: 10 * time.Second})
+		tree, _ := newTree(lister, Options{NodeTimeout: 10 * time.Second})
 
 		before := time.Now()
-		checkNames(t, "List", mustList(t, tr, ""), "f")
+		checkNames(t, "List", mustList(t, tree, ""), "f")
 		if waited := time.Since(before); waited != 10*time.Second {
 			t.Errorf("List took %v, want NodeTimeout (10s)", waited)
 		}
@@ -148,10 +152,11 @@ func TestAHungNodeIsGivenUpOnAfterNodeTimeout(t *testing.T) {
 }
 
 func TestAHungNodeListDoesNotBlockForever(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		l := &hungNodes{}
-		tr, _ := newTree(l, Options{NodeTimeout: 10 * time.Second})
-		if _, err := tr.List(context.Background(), ""); !errors.Is(err, ErrUnavailable) {
+		lister := &hungNodes{}
+		tree, _ := newTree(lister, Options{NodeTimeout: 10 * time.Second})
+		if _, err := tree.List(context.Background(), ""); !errors.Is(err, ErrUnavailable) {
 			t.Errorf("List = %v, want ErrUnavailable", err)
 		}
 	})

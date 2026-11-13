@@ -23,50 +23,56 @@ func fuseConnectionID(mountinfo, target string) (uint32, bool) {
 	var id uint32
 	var found bool
 	for line := range strings.SplitSeq(mountinfo, "\n") {
-		if point, minor, ok := parseFuseMount(line); ok && point == target {
-			id, found = minor, true
+		if mnt, ok := parseFuseMount(line); ok && mnt.point == target {
+			id, found = mnt.minor, true
 		}
 	}
 	return id, found
 }
 
+// fuseMount is the part of a mountinfo line that names a FUSE mount.
+type fuseMount struct {
+	point string
+	minor uint32
+}
+
 // parseFuseMount reads one mountinfo line. It answers with ok set only for a FUSE mount,
 // and a line it cannot make sense of is not one.
-func parseFuseMount(line string) (point string, minor uint32, ok bool) {
+func parseFuseMount(line string) (fuseMount, bool) {
 	fields := strings.Fields(line)
 	if len(fields) <= firstOptionalField {
-		return "", 0, false
+		return fuseMount{}, false
 	}
 	tail := fields[firstOptionalField:]
 	sep := slices.Index(tail, "-")
 	if sep < 0 || sep+1 >= len(tail) || !strings.HasPrefix(tail[sep+1], "fuse") {
-		return "", 0, false
+		return fuseMount{}, false
 	}
 	_, minorText, found := strings.Cut(fields[2], ":")
 	if !found {
-		return "", 0, false
+		return fuseMount{}, false
 	}
 	n, err := strconv.ParseUint(minorText, 10, 32)
 	if err != nil {
-		return "", 0, false
+		return fuseMount{}, false
 	}
-	return unescapeMountinfo(fields[4]), uint32(n), true
+	return fuseMount{point: unescapeMountinfo(fields[4]), minor: uint32(n)}, true
 }
 
 // unescapeMountinfo undoes the escaping of a mount point: the kernel writes a space, a tab,
 // a newline and a backslash as a backslash and three octal digits. Anything that does not
 // look like that stays as it is.
-func unescapeMountinfo(s string) string {
-	var out strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+3 < len(s) {
-			if b, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
-				out.WriteByte(byte(b))
+func unescapeMountinfo(escaped string) string {
+	out := make([]byte, 0, len(escaped))
+	for i := 0; i < len(escaped); i++ {
+		if escaped[i] == '\\' && i+3 < len(escaped) {
+			if b, err := strconv.ParseUint(escaped[i+1:i+4], 8, 8); err == nil {
+				out = append(out, byte(b))
 				i += 3
 				continue
 			}
 		}
-		out.WriteByte(s[i])
+		out = append(out, escaped[i])
 	}
-	return out.String()
+	return string(out)
 }

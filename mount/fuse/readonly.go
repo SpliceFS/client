@@ -42,7 +42,10 @@ var (
 
 const errReadOnly = syscall.EROFS
 
-func (readOnly) Create(context.Context, string, uint32, uint32, *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
+//nolint:revive,ireturn // fs.NodeCreater fixes this signature.
+func (readOnly) Create(
+	context.Context, string, uint32, uint32, *fuse.EntryOut,
+) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
 	return nil, nil, 0, errReadOnly
 }
 
@@ -70,7 +73,10 @@ func (readOnly) Rename(context.Context, string, fs.InodeEmbedder, string, uint32
 	return errReadOnly
 }
 
-func (readOnly) Tmpfile(context.Context, uint32, uint32, *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
+//nolint:revive,ireturn // fs.NodeTmpfiler fixes this signature.
+func (readOnly) Tmpfile(
+	context.Context, uint32, uint32, *fuse.EntryOut,
+) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
 	return nil, nil, 0, errReadOnly
 }
 
@@ -90,7 +96,9 @@ func (readOnly) Allocate(context.Context, fs.FileHandle, uint64, uint64, uint32)
 	return errReadOnly
 }
 
-func (readOnly) CopyFileRange(context.Context, fs.FileHandle, uint64, *fs.Inode, fs.FileHandle, uint64, uint64, uint64) (uint32, syscall.Errno) {
+func (readOnly) CopyFileRange(
+	context.Context, fs.FileHandle, uint64, *fs.Inode, fs.FileHandle, uint64, uint64, uint64,
+) (uint32, syscall.Errno) {
 	return 0, errReadOnly
 }
 

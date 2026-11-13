@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,11 @@ import (
 const (
 	validCluster = "url: https://files.example.com/api\nuser: alice\npassword_file: secrets/example\n"
 	validMount   = "cluster: example\ntarget: /mnt/files\n"
+
+	// The paths of the files of the valid configuration and of one more mount.
+	exampleClusterFile = "clusters.d/example.yaml"
+	filesMountFile     = "mounts.d/files.yaml"
+	otherMountFile     = "mounts.d/other.yaml"
 )
 
 var errNoHome = errors.New("no home")
@@ -43,20 +49,38 @@ func writeDir(t *testing.T, f files) string {
 
 func load(t *testing.T, f files) (*Config, error) {
 	t.Helper()
-	return loadDir(writeDir(t, f), testCacheDir)
+	return loadWithCacheDir(writeDir(t, f), testCacheDir)
+}
+
+// checkErrorContains reports each text that the message of err lacks.
+func checkErrorContains(t *testing.T, err error, texts []string) {
+	t.Helper()
+	for _, text := range texts {
+		if !strings.Contains(err.Error(), text) {
+			t.Errorf("error does not contain %q:\n%v", text, err)
+		}
+	}
+}
+
+// checkErrorOmits reports each text that the message of err contains.
+func checkErrorOmits(t *testing.T, err error, texts []string) {
+	t.Helper()
+	for _, text := range texts {
+		if strings.Contains(err.Error(), text) {
+			t.Errorf("error contains %q:\n%v", text, err)
+		}
+	}
 }
 
 // valid returns the files of a minimal configuration: cluster example and mount files.
 func valid() files {
-	return files{"clusters.d/example.yaml": validCluster, "mounts.d/files.yaml": validMount}
+	return files{exampleClusterFile: validCluster, filesMountFile: validMount}
 }
 
 // with returns valid() with the given files added or replaced.
 func with(extra files) files {
 	f := valid()
-	for k, v := range extra {
-		f[k] = v
-	}
+	maps.Copy(f, extra)
 	return f
 }
 
@@ -86,7 +110,7 @@ func expectedCache() Cache {
 func TestLoadDirDefaults(t *testing.T) {
 	t.Parallel()
 	dir := writeDir(t, valid())
-	cfg, err := loadDir(dir, testCacheDir)
+	cfg, err := loadWithCacheDir(dir, testCacheDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +118,7 @@ func TestLoadDirDefaults(t *testing.T) {
 		Cache: expectedCache(),
 		Clusters: map[string]Cluster{"example": {
 			URL: "https://files.example.com/api", User: "alice",
-			PasswordFile: filepath.Join(dir, "secrets/example"),
+			PasswordFile: filepath.Join(dir, "secrets", "example"),
 			BlockSize:    5 << 20, StreamsPerNode: 4, ReadAhead: 64 << 20,
 		}},
 		Mounts: []Mount{{
@@ -139,7 +163,7 @@ func TestLoadDirEmptyAndMissing(t *testing.T) {
 		})
 	}
 	// The path that does not exist at all.
-	cfg, err := loadDir(filepath.Join(t.TempDir(), "missing"), testCacheDir)
+	cfg, err := loadWithCacheDir(filepath.Join(t.TempDir(), "missing"), testCacheDir)
 	if err != nil || len(cfg.Mounts) != 0 {
 		t.Errorf("missing directory: %+v, %v", cfg, err)
 	}
@@ -159,7 +183,7 @@ func TestLoadDirFull(t *testing.T) {
 			"  max_size: unlimited\n  max_age: unlimited\n",
 		"mounts.d/a-other.yaml": "cluster: other.v2\npath: /\ntarget: mnt/other\n",
 	})
-	cfg, err := loadDir(dir, testCacheDir)
+	cfg, err := loadWithCacheDir(dir, testCacheDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,10 +208,14 @@ func TestLoadDirFull(t *testing.T) {
 		},
 	}
 	wantMounts := []Mount{
-		{Name: "a-other", Cluster: "other.v2", Path: "/", Target: filepath.Join(dir, "mnt/other"),
-			Offline: true, Cache: top},
-		{Name: "movies", Cluster: "example", Path: "/media/movies", Target: "/srv/movies",
-			AllowOther: true, Cache: override},
+		{
+			Name: "a-other", Cluster: "other.v2", Path: "/", Target: filepath.Join(dir, "mnt", "other"),
+			Offline: true, Cache: top,
+		},
+		{
+			Name: "movies", Cluster: "example", Path: "/media/movies", Target: "/srv/movies",
+			AllowOther: true, Cache: override,
+		},
 	}
 	if cfg.Cache != top || !reflect.DeepEqual(cfg.Clusters, wantClusters) ||
 		!reflect.DeepEqual(cfg.Mounts, wantMounts) {
@@ -246,7 +274,7 @@ func TestLoadDirByteOrder(t *testing.T) {
 
 func TestLoadDirIgnoredEntries(t *testing.T) {
 	t.Parallel()
-	f := with(files{
+	configFiles := with(files{
 		"conf.d/.hidden.yaml":      "bad: [",
 		"conf.d/a.yaml~":           "bad: [",
 		"conf.d/a.yml":             "bad: [",
@@ -258,7 +286,7 @@ func TestLoadDirIgnoredEntries(t *testing.T) {
 		"mounts.d/m.yaml~":         "bad: [",
 		"mounts.d/dir.yaml/m.yaml": "bad: [",
 	})
-	cfg, err := load(t, f)
+	cfg, err := load(t, configFiles)
 	if err != nil || len(cfg.Clusters) != 1 || len(cfg.Mounts) != 1 {
 		t.Fatalf("%+v, %v", cfg, err)
 	}
@@ -273,7 +301,7 @@ func TestLoadDirMountOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names []string
+	names := make([]string, 0, len(cfg.Mounts))
 	for _, m := range cfg.Mounts {
 		names = append(names, m.Name)
 	}
@@ -311,158 +339,323 @@ func TestLoadDirMountCacheInheritsKeyByKey(t *testing.T) {
 	}
 }
 
-func TestLoadDirNormalizes(t *testing.T) {
+func TestLoadDirNormalizesClusterURL(t *testing.T) {
 	t.Parallel()
-	tests := []struct{ name, file, old, replacement, wantURL, wantPath string }{
-		{"url trailing slash", "clusters.d/example.yaml", "/api\n", "/api/\n", "https://files.example.com/api", "/"},
-		{"url root slash", "clusters.d/example.yaml", "/api\n", "/\n", "https://files.example.com", "/"},
-		{"url without path", "clusters.d/example.yaml", "/api\n", "\n", "https://files.example.com", "/"},
-		{"path cleaned", "mounts.d/files.yaml", "cluster: example\n", "cluster: example\npath: /a//b/./c/\n", "https://files.example.com/api", "/a/b/c"},
-		{"path with dots in names", "mounts.d/files.yaml", "cluster: example\n", "cluster: example\npath: /a..b/..c\n", "https://files.example.com/api", "/a..b/..c"},
+	tests := []struct{ name, old, replacement, want string }{
+		{"url trailing slash", "/api\n", "/api/\n", "https://files.example.com/api"},
+		{"url root slash", "/api\n", "/\n", "https://files.example.com"},
+		{"url without path", "/api\n", "\n", "https://files.example.com"},
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			cfg, err := load(t, mutate(t, tc.file, tc.old, tc.replacement))
+			cfg, err := load(t, mutate(t, exampleClusterFile, tt.old, tt.replacement))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := cfg.Clusters["example"].URL; got != tc.wantURL {
-				t.Errorf("URL = %q, want %q", got, tc.wantURL)
+			if got := cfg.Clusters["example"].URL; got != tt.want {
+				t.Errorf("URL = %q, want %q", got, tt.want)
 			}
-			if got := cfg.Mounts[0].Path; got != tc.wantPath {
-				t.Errorf("Path = %q, want %q", got, tc.wantPath)
+		})
+	}
+}
+
+func TestLoadDirNormalizesMountPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, path, want string }{
+		{"path cleaned", "/a//b/./c/", "/a/b/c"},
+		{"path with dots in names", "/a..b/..c", "/a..b/..c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := mutate(t, filesMountFile, "cluster: example\n", "cluster: example\npath: "+tt.path+"\n")
+			cfg, err := load(t, f)
+			if err != nil {
+				t.Fatal(err)
 			}
+			if got := cfg.Mounts[0].Path; got != tt.want {
+				t.Errorf("Path = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// loadErrorCase is a configuration that must be refused and the texts its error must contain.
+type loadErrorCase struct {
+	name string
+	f    files
+	want []string
+}
+
+// runLoadErrorCases loads each case in parallel and checks that the error names every text.
+func runLoadErrorCases(t *testing.T, tests []loadErrorCase) {
+	t.Helper()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := load(t, tt.f)
+			if err == nil || cfg != nil {
+				t.Fatalf("got %+v, %v", cfg, err)
+			}
+			checkErrorContains(t, err, tt.want)
 		})
 	}
 }
 
 func TestLoadDirDecodeErrors(t *testing.T) {
 	t.Parallel()
-	tests := map[string]struct {
-		f    files
-		want []string
-	}{
-		"unknown cluster key": {mutate(t, "clusters.d/example.yaml", "user:", "usr:"),
-			[]string{"clusters.d/example.yaml", "usr"}},
-		"cluster name key": {with(files{"clusters.d/example.yaml": validCluster + "name: x\n"}),
-			[]string{"clusters.d/example.yaml", "name"}},
-		"mount name key": {with(files{"mounts.d/files.yaml": validMount + "name: x\n"}),
-			[]string{"mounts.d/files.yaml", "name"}},
-		"unknown setting":   {files{"conf.d/a.yaml": "log: {}\n"}, []string{"conf.d/a.yaml", "log"}},
-		"unknown cache key": {files{"conf.d/a.yaml": "cache: {size: 1GiB}\n"}, []string{"a.yaml", "size"}},
-		"unknown mount cache key": {with(files{"mounts.d/files.yaml": validMount + "cache: {size: 1}\n"}),
-			[]string{"files.yaml", "size"}},
-		"two documents":       {files{"conf.d/a.yaml": "a: 1\n---\nb: 2\n"}, []string{"a.yaml", "more than one YAML document"}},
-		"broken second doc":   {files{"conf.d/a.yaml": "cache: {}\n---\n[\n"}, []string{"a.yaml"}},
-		"syntax error":        {files{"clusters.d/c.yaml": "url: ["}, []string{"clusters.d/c.yaml"}},
-		"unparsable size":     {files{"conf.d/a.yaml": "cache:\n  max_size: big\n"}, []string{"a.yaml", "invalid size"}},
-		"unparsable duration": {files{"conf.d/a.yaml": "cache:\n  revalidate: 1h30m\n"}, []string{"invalid duration"}},
-		"problems together": {files{"conf.d/a.yaml": "x: 1\n", "clusters.d/c.yaml": "y: 1\n", "mounts.d/m.yaml": "z: 1\n"},
-			[]string{"a.yaml", "c.yaml", "m.yaml"}},
-	}
-	for name, tt := range tests {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			cfg, err := load(t, tt.f)
-			if err == nil || cfg != nil {
-				t.Fatalf("got %+v, %v", cfg, err)
-			}
-			for _, w := range tt.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("error does not contain %q:\n%v", w, err)
-				}
-			}
-		})
-	}
+	runLoadErrorCases(t, []loadErrorCase{
+		{
+			"unknown cluster key", mutate(t, exampleClusterFile, "user:", "usr:"),
+			[]string{"clusters.d/example.yaml", "usr"},
+		},
+		{
+			"cluster name key", with(files{exampleClusterFile: validCluster + "name: x\n"}),
+			[]string{"clusters.d/example.yaml", "name"},
+		},
+		{
+			"mount name key", with(files{filesMountFile: validMount + "name: x\n"}),
+			[]string{"mounts.d/files.yaml", "name"},
+		},
+		{"unknown setting", files{"conf.d/a.yaml": "log: {}\n"}, []string{"conf.d/a.yaml", "log"}},
+		{"unknown cache key", files{"conf.d/a.yaml": "cache: {size: 1GiB}\n"}, []string{"a.yaml", "size"}},
+		{
+			"unknown mount cache key", with(files{filesMountFile: validMount + "cache: {size: 1}\n"}),
+			[]string{"files.yaml", "size"},
+		},
+		{
+			"two documents",
+			files{"conf.d/a.yaml": "a: 1\n---\nb: 2\n"},
+			[]string{"a.yaml", "more than one YAML document"},
+		},
+		{"broken second doc", files{"conf.d/a.yaml": "cache: {}\n---\n[\n"}, []string{"a.yaml"}},
+		{"syntax error", files{"clusters.d/c.yaml": "url: ["}, []string{"clusters.d/c.yaml"}},
+		{
+			"unparsable size",
+			files{"conf.d/a.yaml": "cache:\n  max_size: big\n"},
+			[]string{"a.yaml", "invalid size"},
+		},
+		{
+			"unparsable duration",
+			files{"conf.d/a.yaml": "cache:\n  revalidate: 1h30m\n"},
+			[]string{"invalid duration"},
+		},
+		{
+			"problems together",
+			files{"conf.d/a.yaml": "x: 1\n", "clusters.d/c.yaml": "y: 1\n", "mounts.d/m.yaml": "z: 1\n"},
+			[]string{"a.yaml", "c.yaml", "m.yaml"},
+		},
+	})
 }
 
-func TestLoadDirValidation(t *testing.T) {
+func TestLoadDirClusterValidation(t *testing.T) {
 	t.Parallel()
 	const (
-		cl = "clusters.d/example.yaml"
-		mo = "mounts.d/files.yaml"
-		c2 = "mounts.d/other.yaml"
+		apiURL      = "https://files.example.com/api"
+		notAbsolute = "not an absolute http or https URL"
+		noQuery     = "must not have a query or fragment"
 	)
-	conf := func(s string) files { return with(files{"conf.d/a.yaml": s}) }
-	tests := []struct {
-		name string
-		f    files
-		want []string
-	}{
-		{"bad cluster name", with(files{"clusters.d/Bad Name.yaml": validCluster}),
-			[]string{"clusters.Bad Name: name must match", "(file clusters.d/Bad Name.yaml)"}},
-		{"bad mount name", with(files{"mounts.d/Bad Name.yaml": "cluster: example\ntarget: /mnt/b\n"}),
-			[]string{"mounts.Bad Name: name must match", "(file mounts.d/Bad Name.yaml)"}},
-		{"empty url", mutate(t, cl, "url: https://files.example.com/api", "url: ''"),
-			[]string{"clusters.example.url: must not be empty", "(file clusters.d/example.yaml)"}},
-		{"unparsable url", mutate(t, cl, "https://files.example.com/api", "http://[::1"), []string{"clusters.example.url"}},
-		{"relative url", mutate(t, cl, "https://files.example.com/api", "files.example.com/api"), []string{"clusters.example.url", "not an absolute http or https URL"}},
-		{"ftp url", mutate(t, cl, "https://", "ftp://"), []string{"not an absolute http or https URL"}},
-		{"url without host", mutate(t, cl, "https://files.example.com/api", "https:///api"), []string{"with a host"}},
-		{"url with query", mutate(t, cl, "/api\n", "/api?x=1\n"), []string{"must not have a query or fragment"}},
-		{"url with empty query", mutate(t, cl, "/api\n", "/api?\n"), []string{"must not have a query or fragment"}},
-		{"url with fragment", mutate(t, cl, "/api\n", "/api#top\n"), []string{"must not have a query or fragment"}},
-		{"url with empty fragment", mutate(t, cl, "/api\n", "/api/#\n"), []string{"must not have a query or fragment"}},
-		{"missing user", mutate(t, cl, "user: alice\n", ""), []string{"clusters.example.user: must not be empty"}},
-		{"missing password file", mutate(t, cl, "password_file: secrets/example\n", ""), []string{"clusters.example.password_file: must not be empty"}},
-		{"small block size", mutate(t, cl, "user: alice\n", "user: alice\nblock_size: 32KiB\n"), []string{"clusters.example.block_size: 32KiB is not allowed", "64KiB to 1GiB"}},
-		{"large block size", mutate(t, cl, "user: alice\n", "user: alice\nblock_size: 2GiB\nread_ahead: 4GiB\n"), []string{"clusters.example.block_size: 2GiB is not allowed"}},
-		{"unlimited block size", mutate(t, cl, "user: alice\n", "user: alice\nblock_size: unlimited\n"), []string{"block_size: unlimited is not allowed"}},
-		{"zero streams", mutate(t, cl, "user: alice\n", "user: alice\nstreams_per_node: 0\n"), []string{"streams_per_node: 0 is not between 1 and 64"}},
-		{"too many streams", mutate(t, cl, "user: alice\n", "user: alice\nstreams_per_node: 65\n"), []string{"streams_per_node: 65 is not between 1 and 64"}},
-		{"read ahead below a block", mutate(t, cl, "user: alice\n", "user: alice\nread_ahead: 1MiB\n"), []string{"read_ahead: 1MiB is not allowed", "(5MiB)"}},
-		{"unlimited read ahead", mutate(t, cl, "user: alice\n", "user: alice\nread_ahead: unlimited\n"), []string{"read_ahead: unlimited is not allowed"}},
-		{"unknown cluster", mutate(t, mo, "cluster: example", "cluster: nope"), []string{`mounts.files.cluster: "nope" is not a cluster`, "(file mounts.d/files.yaml)"}},
-		{"missing cluster", mutate(t, mo, "cluster: example\n", ""), []string{`mounts.files.cluster: "" is not a cluster`}},
-		{"path without slash", mutate(t, mo, "cluster: example\n", "cluster: example\npath: media\n"), []string{`mounts.files.path: "media" must start with "/"`}},
-		{"path with dot dot", mutate(t, mo, "cluster: example\n", "cluster: example\npath: /a/../b\n"), []string{`mounts.files.path: "/a/../b" must not contain ".."`}},
-		{"path escaping the root", mutate(t, mo, "cluster: example\n", "cluster: example\npath: /..\n"), []string{`must not contain ".."`}},
-		{"missing target", mutate(t, mo, "target: /mnt/files\n", ""), []string{"mounts.files.target: must not be empty"}},
-		{"duplicate target", with(files{c2: "cluster: example\ntarget: /mnt/files/\n"}),
-			[]string{"mounts.other.target: /mnt/files is already the target of another mount (mounts.files)", "(file mounts.d/other.yaml)"}},
-		{"target inside another", with(files{c2: "cluster: example\ntarget: /mnt/files/sub\n"}),
-			[]string{"mounts.other.target: /mnt/files/sub is inside the target /mnt/files of another mount (mounts.files)"}},
-		{"target contains another", with(files{"mounts.d/a.yaml": "cluster: example\ntarget: /mnt\n"}),
-			[]string{"mounts.files.target: /mnt/files is inside the target /mnt of another mount (mounts.a)"}},
-		{"target contains a later one", with(files{c2: "cluster: example\ntarget: /mnt\n"}),
-			[]string{"mounts.other.target: /mnt contains the target /mnt/files of another mount (mounts.files)"}},
-		{"unlimited min_free", conf("cache: {min_free: unlimited}\n"), []string{"cache.min_free: unlimited is not allowed", "(file conf.d/a.yaml)"}},
-		{"unlimited min_file_size", conf("cache: {min_file_size: unlimited}\n"), []string{"cache.min_file_size: unlimited is not allowed"}},
-		{"zero max_age", conf("cache: {max_age: 0}\n"), []string{"cache.max_age: 0 is not allowed", `"unlimited"`}},
-		{"zero revalidate", conf("cache: {revalidate: 0}\n"), []string{"cache.revalidate: 0 is not allowed"}},
-		{"unlimited revalidate", conf("cache: {revalidate: unlimited}\n"), []string{"cache.revalidate: unlimited is not allowed"}},
-		{"unlimited listing_ttl", conf("cache: {listing_ttl: unlimited}\n"), []string{"cache.listing_ttl: unlimited is not allowed"}},
-		{"empty cache dir", conf("cache: {dir: ''}\n"), []string{"cache.dir: must not be empty"}},
-		{"max_size below a block", conf("cache: {max_size: 4MiB}\n"), []string{"cache.max_size: 4MiB is smaller than one block of the largest cluster (5MiB)", "(file conf.d/a.yaml)"}},
-		{"cache dir is a target", conf("cache: {dir: /mnt/files}\n"), []string{"cache.dir: /mnt/files must not be, lie inside or contain the target /mnt/files of mounts.files", "(file conf.d/a.yaml)"}},
-		{"cache dir inside a target", conf("cache: {dir: /mnt/files/cache}\n"), []string{"cache.dir: /mnt/files/cache"}},
-		{"cache dir contains a target", conf("cache: {dir: /mnt}\n"), []string{"cache.dir: /mnt must not be"}},
-		{"root cache dir", conf("cache: {dir: /}\n"), []string{"cache.dir: / must not be"}},
-		{"mount cache problems",
-			with(files{mo: validMount + "cache:\n  dir: /mnt/files/cache\n  max_age: 0\n  max_size: 1MiB\n"}),
-			[]string{"mounts.files.cache.dir: /mnt/files/cache", "mounts.files.cache.max_age", "mounts.files.cache.max_size", "(file mounts.d/files.yaml)"}},
-		{"mount cache dir contains another mount",
-			with(files{c2: "cluster: example\ntarget: /srv/data\ncache:\n  dir: /srv\n"}),
-			[]string{"mounts.other.cache.dir: /srv must not be, lie inside or contain the target /srv/data of mounts.other"}},
-		{"every problem at once",
-			with(files{cl: validCluster + "streams_per_node: 0\n", "conf.d/a.yaml": "cache: {revalidate: 0}\n"}),
-			[]string{"streams_per_node", "cache.revalidate", "(file clusters.d/example.yaml)", "(file conf.d/a.yaml)"}},
+	// withKeys adds keys after the user of the valid cluster.
+	withKeys := func(keys string) files {
+		return mutate(t, exampleClusterFile, "user: alice\n", "user: alice\n"+keys)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			cfg, err := load(t, tc.f)
-			if err == nil || cfg != nil {
-				t.Fatalf("got %+v, %v", cfg, err)
-			}
-			for _, want := range tc.want {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error does not contain %q:\n%v", want, err)
-				}
-			}
-		})
+	runLoadErrorCases(t, []loadErrorCase{
+		{
+			"bad cluster name", with(files{"clusters.d/Bad Name.yaml": validCluster}),
+			[]string{"clusters.Bad Name: name must match", "(file clusters.d/Bad Name.yaml)"},
+		},
+		{
+			"empty url", mutate(t, exampleClusterFile, "url: "+apiURL, "url: ''"),
+			[]string{"clusters.example.url: must not be empty", "(file clusters.d/example.yaml)"},
+		},
+		{
+			"unparsable url", mutate(t, exampleClusterFile, apiURL, "http://[::1"),
+			[]string{"clusters.example.url"},
+		},
+		{
+			"relative url", mutate(t, exampleClusterFile, apiURL, "files.example.com/api"),
+			[]string{"clusters.example.url", notAbsolute},
+		},
+		{"ftp url", mutate(t, exampleClusterFile, "https://", "ftp://"), []string{notAbsolute}},
+		{
+			"url without host", mutate(t, exampleClusterFile, apiURL, "https:///api"),
+			[]string{"with a host"},
+		},
+		{"url with query", mutate(t, exampleClusterFile, "/api\n", "/api?x=1\n"), []string{noQuery}},
+		{"url with empty query", mutate(t, exampleClusterFile, "/api\n", "/api?\n"), []string{noQuery}},
+		{"url with fragment", mutate(t, exampleClusterFile, "/api\n", "/api#top\n"), []string{noQuery}},
+		{"url with empty fragment", mutate(t, exampleClusterFile, "/api\n", "/api/#\n"), []string{noQuery}},
+		{
+			"missing user", mutate(t, exampleClusterFile, "user: alice\n", ""),
+			[]string{"clusters.example.user: must not be empty"},
+		},
+		{
+			"missing password file", mutate(t, exampleClusterFile, "password_file: secrets/example\n", ""),
+			[]string{"clusters.example.password_file: must not be empty"},
+		},
+		{
+			"small block size", withKeys("block_size: 32KiB\n"),
+			[]string{"clusters.example.block_size: 32KiB is not allowed", "64KiB to 1GiB"},
+		},
+		{
+			"large block size", withKeys("block_size: 2GiB\nread_ahead: 4GiB\n"),
+			[]string{"clusters.example.block_size: 2GiB is not allowed"},
+		},
+		{
+			"unlimited block size", withKeys("block_size: unlimited\n"),
+			[]string{"block_size: unlimited is not allowed"},
+		},
+		{
+			"zero streams", withKeys("streams_per_node: 0\n"),
+			[]string{"streams_per_node: 0 is not between 1 and 64"},
+		},
+		{
+			"too many streams", withKeys("streams_per_node: 65\n"),
+			[]string{"streams_per_node: 65 is not between 1 and 64"},
+		},
+		{
+			"read ahead below a block", withKeys("read_ahead: 1MiB\n"),
+			[]string{"read_ahead: 1MiB is not allowed", "(5MiB)"},
+		},
+		{
+			"unlimited read ahead", withKeys("read_ahead: unlimited\n"),
+			[]string{"read_ahead: unlimited is not allowed"},
+		},
+	})
+}
+
+func TestLoadDirMountValidation(t *testing.T) {
+	t.Parallel()
+	// withKeys adds keys after the cluster of the valid mount.
+	withKeys := func(keys string) files {
+		return mutate(t, filesMountFile, "cluster: example\n", "cluster: example\n"+keys)
 	}
+	runLoadErrorCases(t, []loadErrorCase{
+		{
+			"bad mount name", with(files{"mounts.d/Bad Name.yaml": "cluster: example\ntarget: /mnt/b\n"}),
+			[]string{"mounts.Bad Name: name must match", "(file mounts.d/Bad Name.yaml)"},
+		},
+		{
+			"unknown cluster", mutate(t, filesMountFile, "cluster: example", "cluster: nope"),
+			[]string{`mounts.files.cluster: "nope" is not a cluster`, "(file mounts.d/files.yaml)"},
+		},
+		{
+			"missing cluster", mutate(t, filesMountFile, "cluster: example\n", ""),
+			[]string{`mounts.files.cluster: "" is not a cluster`},
+		},
+		{
+			"path without slash", withKeys("path: media\n"),
+			[]string{`mounts.files.path: "media" must start with "/"`},
+		},
+		{
+			"path with parent segment", withKeys("path: /a/../b\n"),
+			[]string{`mounts.files.path: "/a/../b" must not contain ".."`},
+		},
+		{"path escaping the root", withKeys("path: /..\n"), []string{`must not contain ".."`}},
+		{
+			"missing target", mutate(t, filesMountFile, "target: /mnt/files\n", ""),
+			[]string{"mounts.files.target: must not be empty"},
+		},
+		{
+			"duplicate target", with(files{otherMountFile: "cluster: example\ntarget: /mnt/files/\n"}),
+			[]string{
+				"mounts.other.target: /mnt/files is already the target of another mount (mounts.files)",
+				"(file mounts.d/other.yaml)",
+			},
+		},
+		{
+			"target inside another", with(files{otherMountFile: "cluster: example\ntarget: /mnt/files/sub\n"}),
+			[]string{
+				"mounts.other.target: /mnt/files/sub is inside the target /mnt/files of another mount (mounts.files)",
+			},
+		},
+		{
+			"target contains another", with(files{"mounts.d/a.yaml": "cluster: example\ntarget: /mnt\n"}),
+			[]string{"mounts.files.target: /mnt/files is inside the target /mnt of another mount (mounts.a)"},
+		},
+		{
+			"target contains a later one", with(files{otherMountFile: "cluster: example\ntarget: /mnt\n"}),
+			[]string{"mounts.other.target: /mnt contains the target /mnt/files of another mount (mounts.files)"},
+		},
+	})
+}
+
+func TestLoadDirCacheValidation(t *testing.T) {
+	t.Parallel()
+	settings := func(content string) files { return with(files{"conf.d/a.yaml": content}) }
+	const confFile = "(file conf.d/a.yaml)"
+	runLoadErrorCases(t, []loadErrorCase{
+		{
+			"unlimited min_free", settings("cache: {min_free: unlimited}\n"),
+			[]string{"cache.min_free: unlimited is not allowed", confFile},
+		},
+		{
+			"unlimited min_file_size", settings("cache: {min_file_size: unlimited}\n"),
+			[]string{"cache.min_file_size: unlimited is not allowed"},
+		},
+		{
+			"zero max_age", settings("cache: {max_age: 0}\n"),
+			[]string{"cache.max_age: 0 is not allowed", `"unlimited"`},
+		},
+		{
+			"zero revalidate", settings("cache: {revalidate: 0}\n"),
+			[]string{"cache.revalidate: 0 is not allowed"},
+		},
+		{
+			"unlimited revalidate", settings("cache: {revalidate: unlimited}\n"),
+			[]string{"cache.revalidate: unlimited is not allowed"},
+		},
+		{
+			"unlimited listing_ttl", settings("cache: {listing_ttl: unlimited}\n"),
+			[]string{"cache.listing_ttl: unlimited is not allowed"},
+		},
+		{"empty cache dir", settings("cache: {dir: ''}\n"), []string{"cache.dir: must not be empty"}},
+		{
+			"max_size below a block", settings("cache: {max_size: 4MiB}\n"),
+			[]string{"cache.max_size: 4MiB is smaller than one block of the largest cluster (5MiB)", confFile},
+		},
+		{
+			"cache dir is a target", settings("cache: {dir: /mnt/files}\n"),
+			[]string{
+				"cache.dir: /mnt/files must not be, lie inside or contain the target /mnt/files of mounts.files",
+				confFile,
+			},
+		},
+		{
+			"cache dir inside a target", settings("cache: {dir: /mnt/files/cache}\n"),
+			[]string{"cache.dir: /mnt/files/cache"},
+		},
+		{"cache dir contains a target", settings("cache: {dir: /mnt}\n"), []string{"cache.dir: /mnt must not be"}},
+		{"root cache dir", settings("cache: {dir: /}\n"), []string{"cache.dir: / must not be"}},
+		{
+			"mount cache problems",
+			with(files{filesMountFile: validMount + "cache:\n  dir: /mnt/files/cache\n  max_age: 0\n  max_size: 1MiB\n"}),
+			[]string{
+				"mounts.files.cache.dir: /mnt/files/cache", "mounts.files.cache.max_age",
+				"mounts.files.cache.max_size", "(file mounts.d/files.yaml)",
+			},
+		},
+		{
+			"mount cache dir contains another mount",
+			with(files{otherMountFile: "cluster: example\ntarget: /srv/data\ncache:\n  dir: /srv\n"}),
+			[]string{
+				"mounts.other.cache.dir: /srv must not be, lie inside or contain the target /srv/data of mounts.other",
+			},
+		},
+	})
+}
+
+func TestLoadDirReportsProblemsOfEveryFile(t *testing.T) {
+	t.Parallel()
+	runLoadErrorCases(t, []loadErrorCase{{
+		"every problem at once",
+		with(files{
+			exampleClusterFile: validCluster + "streams_per_node: 0\n",
+			"conf.d/a.yaml":    "cache: {revalidate: 0}\n",
+		}),
+		[]string{"streams_per_node", "cache.revalidate", "(file clusters.d/example.yaml)", "(file conf.d/a.yaml)"},
+	}})
 }
 
 func TestLoadDirReportsInheritedProblemOnce(t *testing.T) {
@@ -522,13 +715,13 @@ func TestLoadDirRelativeConfigDirectory(t *testing.T) {
 
 func TestLoadDirDefaultCacheDirUnavailable(t *testing.T) {
 	t.Parallel()
-	_, err := loadDir(writeDir(t, valid()), failingCacheDir)
+	_, err := loadWithCacheDir(writeDir(t, valid()), failingCacheDir)
 	if !errors.Is(err, errNoHome) || !strings.Contains(err.Error(), "cache.dir") {
 		t.Errorf("error = %v", err)
 	}
 	// A configured directory never asks for the default.
 	f := with(files{"conf.d/a.yaml": "cache: {dir: /var/c}\n"})
-	if _, err := loadDir(writeDir(t, f), failingCacheDir); err != nil {
+	if _, err := loadWithCacheDir(writeDir(t, f), failingCacheDir); err != nil {
 		t.Errorf("configured cache dir: %v", err)
 	}
 	// The exported function uses the real default.
@@ -550,7 +743,7 @@ func TestLoadDirUnreadable(t *testing.T) {
 			if err := os.Symlink(filepath.Join(dir, "nowhere"), file); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := loadDir(dir, testCacheDir); err == nil || !strings.Contains(err.Error(), file) {
+			if _, err := loadWithCacheDir(dir, testCacheDir); err == nil || !strings.Contains(err.Error(), file) {
 				t.Errorf("error %v does not name %s", err, file)
 			}
 		})
@@ -560,7 +753,7 @@ func TestLoadDirUnreadable(t *testing.T) {
 		t.Run("dir "+sub, func(t *testing.T) {
 			t.Parallel()
 			dir := writeDir(t, files{sub: "a file where a folder belongs"})
-			if _, err := loadDir(dir, testCacheDir); err == nil || !strings.Contains(err.Error(), sub) {
+			if _, err := loadWithCacheDir(dir, testCacheDir); err == nil || !strings.Contains(err.Error(), sub) {
 				t.Errorf("error %v does not name %s", err, sub)
 			}
 		})
@@ -600,10 +793,10 @@ func TestConfigMount(t *testing.T) {
 		{"/mnt/files2", "", false},
 		{"", "", false},
 	}
-	for _, tc := range tests {
-		m, ok := cfg.Mount(tc.target)
-		if ok != tc.found || m.Path != tc.want {
-			t.Errorf("Mount(%q) = %+v, %v, want path %q, %v", tc.target, m, ok, tc.want, tc.found)
+	for _, tt := range tests {
+		m, ok := cfg.Mount(tt.target)
+		if ok != tt.found || m.Path != tt.want {
+			t.Errorf("Mount(%q) = %+v, %v, want path %q, %v", tt.target, m, ok, tt.want, tt.found)
 		}
 	}
 }
@@ -640,9 +833,42 @@ func TestContains(t *testing.T) {
 		{"/", "/", true},
 		{"/", "/mnt", true},
 	}
-	for _, tc := range tests {
-		if got := contains(tc.outer, tc.inner); got != tc.want {
-			t.Errorf("contains(%q, %q) = %v, want %v", tc.outer, tc.inner, got, tc.want)
+	for _, tt := range tests {
+		if got := contains(tt.outer, tt.inner); got != tt.want {
+			t.Errorf("contains(%q, %q) = %v, want %v", tt.outer, tt.inner, got, tt.want)
 		}
+	}
+}
+
+// TestYAMLErrorsAreTheParsersOwn checks that an error of the YAML package reaches the caller
+// as the package wrote it: the caller adds the file name, and a second prefix would repeat it.
+func TestYAMLErrorsAreTheParsersOwn(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"syntax error in the first document", "url: ["},
+		{"syntax error in the second document", "cache: {}\n---\n[\n"},
+		{"unknown key", "unknown: 1\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := decodeStrict([]byte(tt.data), &rawSettings{})
+			if err == nil || !strings.HasPrefix(err.Error(), "yaml: ") {
+				t.Errorf("error = %v, want the message of the YAML package", err)
+			}
+		})
+	}
+}
+
+// TestURLSyntaxErrorIsTheParsersOwn checks that the caller's prefix, the key, is the only
+// one: the message of the url package already says what is wrong.
+func TestURLSyntaxErrorIsTheParsersOwn(t *testing.T) {
+	t.Parallel()
+	err := validateURL("http://exa mple.com")
+	if err == nil || !strings.HasPrefix(err.Error(), "parse ") {
+		t.Errorf("error = %v, want the message of the url package", err)
 	}
 }

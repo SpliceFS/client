@@ -1,6 +1,7 @@
 package fetch
 
 import (
+	"cmp"
 	"fmt"
 	"time"
 )
@@ -44,7 +45,7 @@ type Options struct {
 }
 
 // validate rejects values that have no sensible meaning.
-func (o *Options) validate() error {
+func (o Options) validate() error {
 	checks := []struct {
 		ok   bool
 		what string
@@ -61,7 +62,7 @@ func (o *Options) validate() error {
 	}
 	for _, c := range checks {
 		if !c.ok {
-			return fmt.Errorf("fetch options: %s", c.what)
+			return fmt.Errorf("%w: %s", ErrInvalidOptions, c.what)
 		}
 	}
 	return nil
@@ -69,21 +70,13 @@ func (o *Options) validate() error {
 
 // withDefaults returns o with every zero optional field set to its default.
 func (o Options) withDefaults() Options {
-	o.ProbeSize = orDefault(o.ProbeSize, defaultProbeSize)
-	o.SwitchAfter = orDefault(o.SwitchAfter, defaultSwitchAfter)
-	o.Slack = orDefault(o.Slack, defaultSlack)
-	o.BlockTimeout = orDefault(o.BlockTimeout, defaultBlockTimeout)
-	o.HedgeFloor = orDefault(o.HedgeFloor, defaultHedgeFloor)
+	o.ProbeSize = cmp.Or(o.ProbeSize, defaultProbeSize)
+	o.SwitchAfter = cmp.Or(o.SwitchAfter, defaultSwitchAfter)
+	o.Slack = cmp.Or(o.Slack, defaultSlack)
+	o.BlockTimeout = cmp.Or(o.BlockTimeout, defaultBlockTimeout)
+	o.HedgeFloor = cmp.Or(o.HedgeFloor, defaultHedgeFloor)
 	if o.Clock == nil {
 		o.Clock = SystemClock{}
 	}
 	return o
-}
-
-func orDefault[T comparable](v, def T) T {
-	var zero T
-	if v == zero {
-		return def
-	}
-	return v
 }

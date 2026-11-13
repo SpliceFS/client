@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"syscall"
@@ -31,33 +32,63 @@ type fileSystem interface {
 
 type osFS struct{}
 
-func (osFS) MkdirAll(path string) error { return os.MkdirAll(path, dirPerm) }
-
-func (osFS) ReadDir(name string) ([]os.DirEntry, error) { return os.ReadDir(name) }
-
-func (osFS) ReadFile(name string) ([]byte, error) { return os.ReadFile(name) }
-
-// OpenFile returns an untyped nil on failure; returning the *os.File directly would
-// produce a non-nil interface holding a nil pointer.
-func (osFS) OpenFile(name string, flag int) (dataFile, error) {
-	f, err := os.OpenFile(name, flag, filePerm)
-	if err != nil {
-		return nil, err
+func (osFS) MkdirAll(path string) error {
+	if err := os.MkdirAll(path, dirPerm); err != nil {
+		return fmt.Errorf("make directory: %w", err)
 	}
-	return f, nil
+	return nil
 }
 
-func (osFS) Remove(name string) error { return os.Remove(name) }
+func (osFS) ReadDir(name string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(name)
+	if err != nil {
+		return nil, fmt.Errorf("list directory: %w", err)
+	}
+	return entries, nil
+}
 
-func (osFS) Rename(oldPath, newPath string) error { return os.Rename(oldPath, newPath) }
+func (osFS) ReadFile(name string) ([]byte, error) {
+	raw, err := os.ReadFile(name)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	return raw, nil
+}
+
+// OpenFile returns an untyped nil on failure; returning the *os.File directly would
+// produce a non-nil interface holding a nil pointer. It returns the dataFile interface
+// because it implements fileSystem, whose tests substitute their own file type.
+//
+//nolint:ireturn // required by the fileSystem interface so that tests can inject failures
+func (osFS) OpenFile(name string, flag int) (dataFile, error) {
+	file, err := os.OpenFile(name, flag, filePerm)
+	if err != nil {
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	return file, nil
+}
+
+func (osFS) Remove(name string) error {
+	if err := os.Remove(name); err != nil {
+		return fmt.Errorf("remove file: %w", err)
+	}
+	return nil
+}
+
+func (osFS) Rename(oldPath, newPath string) error {
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return fmt.Errorf("rename file: %w", err)
+	}
+	return nil
+}
 
 // statfsFree returns the bytes available to an unprivileged process on the disk holding dir.
 func statfsFree(dir string) (uint64, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		return 0, err
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(dir, &stat); err != nil {
+		return 0, fmt.Errorf("read file system statistics: %w", err)
 	}
-	return asUint64(st.Bavail) * asUint64(st.Bsize), nil
+	return asUint64(stat.Bavail) * asUint64(stat.Bsize), nil
 }
 
 // asUint64 exists because the fields of Statfs_t have another type on every system: the

@@ -19,29 +19,29 @@ func (s *source) ready() bool {
 	return !s.gone && !s.cooling
 }
 
-// sourceFailed records a failed fetch from s. Called with r.mu held.
+// sourceFailed records a failed fetch from failing. Called with r.mu held.
 //
 // ErrGone is not reported to the Meter: it says this node lost one version of
 // one file, not that the node is slow, and the Meter outlives this file.
-// Failures while s is already cooling down do not lengthen the cooldown,
+// Failures while failing is already cooling down do not lengthen the cooldown,
 // since the parallel streams of one outage would otherwise count as many
 // consecutive failures.
-func (r *Reader) sourceFailed(s *source, err error) {
+func (r *Reader) sourceFailed(failing *source, err error) {
 	if errors.Is(err, ErrGone) {
-		s.gone = true
-		r.stop(s.coolTimer)
-		s.coolTimer = nil
+		failing.gone = true
+		r.stop(failing.coolTimer)
+		failing.coolTimer = nil
 		return
 	}
-	r.meter.Failed(s.id)
-	if s.cooling {
+	r.meter.Failed(failing.id)
+	if failing.cooling {
 		return
 	}
-	s.failures++
-	s.cooling = true
-	s.coolTimer = r.afterFunc(cooldown(s.failures), func() {
-		s.cooling = false
-		s.coolTimer = nil
+	failing.failures++
+	failing.cooling = true
+	failing.coolTimer = r.afterFunc(cooldown(failing.failures), func() {
+		failing.cooling = false
+		failing.coolTimer = nil
 		r.schedule()
 		r.broadcast()
 	})

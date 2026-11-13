@@ -16,23 +16,11 @@ import (
 	"github.com/SpliceFS/client/mount"
 )
 
-func TestRunMountsEveryConfiguredMount(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t)
-	r := h.start()
-
-	if got, want := h.mounter.targets(), []string{"/mnt/a", "/mnt/b", "/mnt/c"}; !slices.Equal(got, want) {
-		t.Fatalf("mounted %v, want %v", got, want)
-	}
-	if got, want := h.core.connectedClusters(), []string{"example", "other"}; !slices.Equal(got, want) {
-		t.Errorf("connected to %v, want one connection per cluster %v", got, want)
-	}
-	for i, want := range []mount.Options{
-		{Target: "/mnt/a", Source: "splicefs:example/media", AllowOther: true},
-		{Target: "/mnt/b", Source: "splicefs:example/"},
-		{Target: "/mnt/c", Source: "splicefs:other/docs"},
-	} {
-		got := h.mounter.opts[i]
+// wantMountOptions checks the options and the view each mount was started with, in mount order.
+func wantMountOptions(t *testing.T, env *harness, wants []mount.Options) {
+	t.Helper()
+	for i, want := range wants {
+		got := env.mounter.opts[i]
 		if got.Logger == nil {
 			t.Errorf("mount %d has no logger", i)
 		}
@@ -40,56 +28,74 @@ func TestRunMountsEveryConfiguredMount(t *testing.T) {
 		if got != want {
 			t.Errorf("mount %d options = %+v, want %+v", i, got, want)
 		}
-		if fsys, _ := h.mounter.fsys[i].(namedFS); fsys.name != want.Target {
-			t.Errorf("mount %d got the view of %q", i, fsys.name)
+		if fsys, ok := env.mounter.fsys[i].(namedFS); !ok || fsys.name != want.Target {
+			t.Errorf("mount %d got the view %+v, want one of %q", i, fsys, want.Target)
 		}
 	}
+}
+
+func TestRunMountsEveryConfiguredMount(t *testing.T) {
+	t.Parallel()
+	env := newHarness(t)
+	r := env.start()
+
+	if got, want := env.mounter.targets(), []string{"/mnt/a", "/mnt/b", "/mnt/c"}; !slices.Equal(got, want) {
+		t.Fatalf("mounted %v, want %v", got, want)
+	}
+	if got, want := env.core.connectedClusters(), []string{"example", "other"}; !slices.Equal(got, want) {
+		t.Errorf("connected to %v, want one connection per cluster %v", got, want)
+	}
+	wantMountOptions(t, env, []mount.Options{
+		{Target: "/mnt/a", Source: "splicefs:example/media", AllowOther: true},
+		{Target: "/mnt/b", Source: "splicefs:example/"},
+		{Target: "/mnt/c", Source: "splicefs:other/docs"},
+	})
 
 	if err := r.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil after a clean stop", err)
 	}
-	for _, target := range h.mounter.targets() {
-		if calls := h.mounter.get(target).unmountCalls(); !slices.Equal(calls, []bool{false}) {
+	for _, target := range env.mounter.targets() {
+		if calls := env.mounter.get(target).unmountCalls(); !slices.Equal(calls, []bool{false}) {
 			t.Errorf("%s unmount calls (force) = %v, want one polite unmount", target, calls)
 		}
 	}
-	if h.core.closeCount() != 1 {
-		t.Errorf("core closed %d times, want once", h.core.closeCount())
+	if env.core.closeCount() != 1 {
+		t.Errorf("core closed %d times, want once", env.core.closeCount())
 	}
-	if _, err := os.Stat(h.socket); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(env.socket); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("socket file after Run: %v, want it removed", err)
 	}
 }
 
 func TestRunNotifiesReadyThenStopping(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	r := h.start()
-	if got := h.notes.got(); !slices.Equal(got, []string{"READY=1"}) {
+	env := newHarness(t)
+	r := env.start()
+	if got := env.notes.got(); !slices.Equal(got, []string{"READY=1"}) {
 		t.Fatalf("notifications before stop = %v", got)
 	}
 	if err := r.stop(); err != nil {
 		t.Fatal(err)
 	}
-	if got := h.notes.got(); !slices.Equal(got, []string{"READY=1", "STOPPING=1"}) {
+	if got := env.notes.got(); !slices.Equal(got, []string{"READY=1", "STOPPING=1"}) {
 		t.Errorf("notifications = %v", got)
 	}
 }
 
 func TestRunWithoutNotifierOrLogger(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.opts.Notify, h.opts.Logger = nil, nil
-	h.cfg.Mounts = h.cfg.Mounts[:1]
-	mounter := h.opts.Mounter
+	env := newHarness(t)
+	env.opts.Notify, env.opts.Logger = nil, nil
+	env.cfg.Mounts = env.cfg.Mounts[:1]
+	mounter := env.opts.Mounter
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	h.opts.Mounter = func(fsys core.FS, opts mount.Options) (mount.Mounted, error) {
+	env.opts.Mounter = func(fsys core.FS, opts mount.Options) (mount.Mounted, error) {
 		m, err := mounter(fsys, opts)
 		cancel()
 		return m, err
 	}
-	if err := Run(ctx, h.cfg, nil, h.opts); err != nil {
+	if err := Run(ctx, env.cfg, nil, env.opts); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -109,12 +115,12 @@ func TestRunSelectsTargets(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := newHarness(t)
-			r := h.start(tt.targets...)
-			if got := h.mounter.targets(); !slices.Equal(got, tt.want) {
+			env := newHarness(t)
+			r := env.start(tt.targets...)
+			if got := env.mounter.targets(); !slices.Equal(got, tt.want) {
 				t.Errorf("mounted %v, want %v", got, tt.want)
 			}
-			if got := h.core.connectedClusters(); !slices.Equal(got, tt.cluster) {
+			if got := env.core.connectedClusters(); !slices.Equal(got, tt.cluster) {
 				t.Errorf("connected to %v, want %v", got, tt.cluster)
 			}
 			if err := r.stop(); err != nil {
@@ -126,13 +132,13 @@ func TestRunSelectsTargets(t *testing.T) {
 
 func TestRunRelativeTargetIsResolved(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.cfg.Mounts = []config.Mount{{Cluster: "example", Path: "/", Target: "/mnt/a"}}
+	env := newHarness(t)
+	env.cfg.Mounts = []config.Mount{{Cluster: "example", Path: "/", Target: "/mnt/a"}}
 	sys := systemHost()
 	sys.abs = func(p string) (string, error) { return "/mnt/" + p, nil }
-	h.opts.sys = &sys
-	r := h.start("a")
-	if got := h.mounter.targets(); !slices.Equal(got, []string{"/mnt/a"}) {
+	env.opts.sys = &sys
+	r := env.start("a")
+	if got := env.mounter.targets(); !slices.Equal(got, []string{"/mnt/a"}) {
 		t.Errorf("mounted %v", got)
 	}
 	if err := r.stop(); err != nil {
@@ -149,27 +155,38 @@ func TestRunRejectsBadSelection(t *testing.T) {
 		abs     func(string) (string, error)
 		want    string
 	}{
-		{"unknown target", testConfig().Mounts, []string{"/mnt/a", "/mnt/nope"}, nil, "/mnt/nope is not a mount in the configuration"},
-		{"unresolvable target", testConfig().Mounts, []string{"x"}, func(string) (string, error) { return "", errors.New("no cwd") }, `resolve "x": no cwd`},
+		{
+			name:    "unknown target",
+			mounts:  testConfig().Mounts,
+			targets: []string{"/mnt/a", "/mnt/nope"},
+			want:    "/mnt/nope is not a mount in the configuration",
+		},
+		{
+			name:    "unresolvable target",
+			mounts:  testConfig().Mounts,
+			targets: []string{"x"},
+			abs:     func(string) (string, error) { return "", errors.New("no cwd") },
+			want:    `resolve "x": no cwd`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := newHarness(t)
-			h.cfg.Mounts = tt.mounts
+			env := newHarness(t)
+			env.cfg.Mounts = tt.mounts
 			if tt.abs != nil {
 				sys := systemHost()
 				sys.abs = tt.abs
-				h.opts.sys = &sys
+				env.opts.sys = &sys
 			}
-			err := h.runSync(tt.targets...)
+			err := env.runSync(tt.targets...)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("Run = %v, want an error containing %q", err, tt.want)
 			}
-			if got := h.mounter.targets(); len(got) != 0 {
+			if got := env.mounter.targets(); len(got) != 0 {
 				t.Errorf("mounted %v before rejecting the selection", got)
 			}
-			if _, err := os.Stat(h.socket); !errors.Is(err, os.ErrNotExist) {
+			if _, err := os.Stat(env.socket); !errors.Is(err, os.ErrNotExist) {
 				t.Errorf("a socket was created: %v", err)
 			}
 		})
@@ -178,28 +195,32 @@ func TestRunRejectsBadSelection(t *testing.T) {
 
 func TestRunStopsOnBadCredentials(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.core.connectErr["other"] = fmt.Errorf("connect to cluster %q: %w", "other", core.ErrBadCredentials)
-	err := h.runSync()
+	env := newHarness(t)
+	env.core.connectErr["other"] = fmt.Errorf("connect to cluster %q: %w", "other", core.ErrBadCredentials)
+	err := env.runSync()
 	errIs(t, err, core.ErrBadCredentials)
-	if got := h.mounter.targets(); len(got) != 0 {
+	// The core package already says which cluster, so the message starts with it once.
+	if want := "connect to cluster \"other\": " + core.ErrBadCredentials.Error(); err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
+	}
+	if got := env.mounter.targets(); len(got) != 0 {
 		t.Errorf("mounted %v with bad credentials", got)
 	}
-	if h.core.closeCount() != 1 {
-		t.Errorf("core closed %d times", h.core.closeCount())
+	if env.core.closeCount() != 1 {
+		t.Errorf("core closed %d times", env.core.closeCount())
 	}
-	if _, err := os.Stat(h.socket); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(env.socket); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("socket left behind: %v", err)
 	}
 }
 
 func TestRunStopsOnOtherConnectError(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	env := newHarness(t)
 	boom := errors.New("not configured")
-	h.core.connectErr["example"] = boom
-	errIs(t, h.runSync(), boom)
-	if got := h.mounter.targets(); len(got) != 0 {
+	env.core.connectErr["example"] = boom
+	errIs(t, env.runSync(), boom)
+	if got := env.mounter.targets(); len(got) != 0 {
 		t.Errorf("mounted %v", got)
 	}
 }
@@ -208,29 +229,30 @@ func TestRunMountsWhenClusterIsUnreachable(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		setup func(h *harness)
+		setup func(env *harness)
 	}{
-		{"unavailable", func(h *harness) {
-			h.core.connectErr["other"] = fmt.Errorf("connect: %w", core.ErrUnavailable)
+		{"unavailable", func(env *harness) {
+			env.core.connectErr["other"] = fmt.Errorf("connect: %w", core.ErrUnavailable)
 		}},
-		{"connect timeout", func(h *harness) {
-			h.core.blockOn["other"] = true
-			h.opts.ConnectTimeout = time.Millisecond
+		{"connect timeout", func(env *harness) {
+			env.core.blockOn["other"] = true
+			env.opts.ConnectTimeout = time.Millisecond
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := newHarness(t)
-			tt.setup(h)
-			r := h.start()
-			if got := h.mounter.targets(); len(got) != 3 {
+			env := newHarness(t)
+			tt.setup(env)
+			r := env.start()
+			if got := env.mounter.targets(); len(got) != 3 {
 				t.Errorf("mounted %v, want all three", got)
 			}
 			if err := r.stop(); err != nil {
 				t.Fatal(err)
 			}
-			if out := h.log.String(); !strings.Contains(out, "cluster unreachable") || !strings.Contains(out, "cluster=other") {
+			out := env.log.String()
+			if !strings.Contains(out, "cluster unreachable") || !strings.Contains(out, "cluster=other") {
 				t.Errorf("no warning about the cluster in the log:\n%s", out)
 			}
 		})
@@ -239,52 +261,52 @@ func TestRunMountsWhenClusterIsUnreachable(t *testing.T) {
 
 func TestRunStoppedWhileConnecting(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.core.blockOn["example"] = true
-	r := h.startUnready()
-	<-h.core.blocked
+	env := newHarness(t)
+	env.core.blockOn["example"] = true
+	r := env.startUnready()
+	<-env.core.blocked
 	if err := r.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil: a stop request always succeeds", err)
 	}
-	if got := h.mounter.targets(); len(got) != 0 {
+	if got := env.mounter.targets(); len(got) != 0 {
 		t.Errorf("mounted %v", got)
 	}
 }
 
 func TestRunRollsBackWhenAMountFails(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	env := newHarness(t)
 	boom := errors.New("fuse is not available")
-	h.mounter.fail["/mnt/c"] = boom
-	err := h.runSync()
+	env.mounter.fail["/mnt/c"] = boom
+	err := env.runSync()
 	errIs(t, err, boom)
 	if !strings.Contains(err.Error(), "mount /mnt/c") {
 		t.Errorf("error does not name the target: %v", err)
 	}
 	for _, target := range []string{"/mnt/a", "/mnt/b"} {
-		if calls := h.mounter.get(target).unmountCalls(); !slices.Equal(calls, []bool{true}) {
+		if calls := env.mounter.get(target).unmountCalls(); !slices.Equal(calls, []bool{true}) {
 			t.Errorf("%s unmount calls (force) = %v, want one forced unmount", target, calls)
 		}
 	}
-	if h.core.closeCount() != 1 {
-		t.Errorf("core closed %d times", h.core.closeCount())
+	if env.core.closeCount() != 1 {
+		t.Errorf("core closed %d times", env.core.closeCount())
 	}
-	if got := h.notes.got(); len(got) != 0 {
+	if got := env.notes.got(); len(got) != 0 {
 		t.Errorf("notified %v although nothing became ready", got)
 	}
 }
 
 func TestRunRollbackReportsAnUnmountFailure(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.mounter.fail["/mnt/b"] = errors.New("no fuse")
+	env := newHarness(t)
+	env.mounter.fail["/mnt/b"] = errors.New("no fuse")
 	stuck := errors.New("device is stuck")
-	h.mounter.configure = func(f *fakeMounted) {
+	env.mounter.configure = func(f *fakeMounted) {
 		f.behavior = func(bool) error { return stuck }
 		f.endsOnOK = false
 	}
-	h.opts.limits = stopLimits{graceful: time.Millisecond, force: 20 * time.Millisecond}
-	err := h.runSync()
+	env.opts.limits = stopLimits{graceful: time.Millisecond, force: 20 * time.Millisecond}
+	err := env.runSync()
 	errIs(t, err, stuck)
 	if !strings.Contains(err.Error(), "no fuse") || !strings.Contains(err.Error(), "did not stop") {
 		t.Errorf("error = %v", err)
@@ -312,71 +334,75 @@ func TestRunRefusesToStartTwice(t *testing.T) {
 
 func TestRunReportsAViewError(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	env := newHarness(t)
 	boom := errors.New("cluster \"example\" is not configured")
-	h.core.viewErr = boom
-	errIs(t, h.runSync(), boom)
+	env.core.viewErr = boom
+	err := env.runSync()
+	errIs(t, err, boom)
+	if err.Error() != boom.Error() {
+		t.Errorf("error = %q, want the message of the core package as it is", err)
+	}
 }
 
 func TestRunReportsACoreError(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	env := newHarness(t)
 	boom := errors.New("cache directory is not writable")
-	h.opts.NewCore = func(*config.Config, core.Options) (Core, error) { return nil, boom }
-	err := h.runSync()
+	env.opts.NewCore = func(*config.Config, core.Options) (Core, error) { return nil, boom }
+	err := env.runSync()
 	errIs(t, err, boom)
 	if !strings.HasPrefix(err.Error(), "start client: ") {
 		t.Errorf("error = %v", err)
 	}
-	if _, err := os.Stat(h.socket); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(env.socket); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("socket left behind: %v", err)
 	}
 }
 
 func TestRunReportsACloseError(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	env := newHarness(t)
 	boom := errors.New("cache close failed")
-	h.core.closeErr = boom
-	r := h.start()
+	env.core.closeErr = boom
+	r := env.start()
 	errIs(t, r.stop(), boom)
 }
 
 func TestRunFailsWhenReadyCannotBeSignalled(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	env := newHarness(t)
 	boom := errors.New("notify socket gone")
-	h.notes.fail["READY=1"] = boom
-	err := h.runSync()
+	env.notes.fail["READY=1"] = boom
+	err := env.runSync()
 	errIs(t, err, boom)
-	for _, target := range h.mounter.targets() {
-		if calls := h.mounter.get(target).unmountCalls(); !slices.Equal(calls, []bool{true}) {
+	for _, target := range env.mounter.targets() {
+		if calls := env.mounter.get(target).unmountCalls(); !slices.Equal(calls, []bool{true}) {
 			t.Errorf("%s unmount calls (force) = %v, want a forced unmount", target, calls)
 		}
 	}
-	if _, err := os.Stat(h.socket); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(env.socket); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("socket left behind: %v", err)
 	}
 }
 
 func TestRunOnlyWarnsWhenStoppingCannotBeSignalled(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.notes.fail["STOPPING=1"] = errors.New("notify socket gone")
-	r := h.start()
+	env := newHarness(t)
+	env.notes.fail["STOPPING=1"] = errors.New("notify socket gone")
+	r := env.start()
 	if err := r.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil", err)
 	}
-	if !strings.Contains(h.log.String(), "could not tell the service manager") {
-		t.Errorf("no warning in the log:\n%s", h.log.String())
+	if !strings.Contains(env.log.String(), "could not tell the service manager") {
+		t.Errorf("no warning in the log:\n%s", env.log.String())
 	}
 }
 
 func TestRunForcesAMountThatIsInUse(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	r := h.start()
-	busy := h.mounter.get("/mnt/b")
+	env := newHarness(t)
+	r := env.start()
+	busy := env.mounter.get("/mnt/b")
 	busy.setBehavior(busyUnlessForced)
 	if err := r.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil: a stop must always succeed", err)
@@ -384,56 +410,56 @@ func TestRunForcesAMountThatIsInUse(t *testing.T) {
 	if calls := busy.unmountCalls(); !slices.Equal(calls, []bool{false, true}) {
 		t.Errorf("busy mount unmount calls (force) = %v, want polite then forced", calls)
 	}
-	if calls := h.mounter.get("/mnt/a").unmountCalls(); !slices.Equal(calls, []bool{false}) {
+	if calls := env.mounter.get("/mnt/a").unmountCalls(); !slices.Equal(calls, []bool{false}) {
 		t.Errorf("idle mount unmount calls (force) = %v, want only the polite one", calls)
 	}
-	if !strings.Contains(h.log.String(), "unmount refused, forcing it") {
-		t.Errorf("refusal not logged:\n%s", h.log.String())
+	if !strings.Contains(env.log.String(), "unmount refused, forcing it") {
+		t.Errorf("refusal not logged:\n%s", env.log.String())
 	}
 }
 
 func TestRunReportsAMountThatCannotBeRemoved(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.opts.limits = stopLimits{graceful: time.Millisecond, force: 20 * time.Millisecond}
-	r := h.start("/mnt/a")
+	env := newHarness(t)
+	env.opts.limits = stopLimits{graceful: time.Millisecond, force: 20 * time.Millisecond}
+	r := env.start("/mnt/a")
 	stuck := errors.New("device is stuck")
-	m := h.mounter.get("/mnt/a")
-	m.setBehavior(func(bool) error { return stuck })
+	mounted := env.mounter.get("/mnt/a")
+	mounted.setBehavior(func(bool) error { return stuck })
 	err := r.stop()
 	errIs(t, err, stuck)
 	if !strings.Contains(err.Error(), "mount /mnt/a did not stop") {
 		t.Errorf("error = %v", err)
 	}
-	if calls := m.unmountCalls(); !slices.Equal(calls, []bool{false, true}) {
+	if calls := mounted.unmountCalls(); !slices.Equal(calls, []bool{false, true}) {
 		t.Errorf("unmount calls (force) = %v", calls)
 	}
 }
 
 func TestRunKeepsRunningWhenEveryMountEnds(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	r := h.start()
-	for _, target := range h.mounter.targets() {
-		h.mounter.get(target).end(nil)
+	env := newHarness(t)
+	r := env.start()
+	for _, target := range env.mounter.targets() {
+		env.mounter.get(target).end(nil)
 	}
-	waitFor(t, "every view to be released", func() bool { return h.core.releasedCount() == 3 })
+	waitFor(t, "every view to be released", func() bool { return env.core.releasedCount() == 3 })
 	select {
 	case err := <-r.result:
 		t.Fatalf("Run ended with %v after its mounts ended, want it to idle", err)
 	default:
 	}
-	if got := len(h.status().Mounts); got != 0 {
+	if got := len(env.status().Mounts); got != 0 {
 		t.Errorf("report lists %d mounts, want none", got)
 	}
 	if err := r.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil after a clean stop", err)
 	}
-	if got := h.notes.got(); !slices.Equal(got, []string{"READY=1", "STOPPING=1"}) {
+	if got := env.notes.got(); !slices.Equal(got, []string{"READY=1", "STOPPING=1"}) {
 		t.Errorf("notifications = %v", got)
 	}
-	for _, target := range h.mounter.targets() {
-		if calls := h.mounter.get(target).unmountCalls(); len(calls) != 0 {
+	for _, target := range env.mounter.targets() {
+		if calls := env.mounter.get(target).unmountCalls(); len(calls) != 0 {
 			t.Errorf("%s was unmounted again: %v", target, calls)
 		}
 	}
@@ -441,34 +467,34 @@ func TestRunKeepsRunningWhenEveryMountEnds(t *testing.T) {
 
 func TestRunKeepsRunningWhileOneMountRemains(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	r := h.start()
-	h.mounter.get("/mnt/a").end(nil)
-	h.mounter.get("/mnt/b").end(nil)
-	waitFor(t, "two views to be released", func() bool { return h.core.releasedCount() == 2 })
-	report := h.status()
+	env := newHarness(t)
+	r := env.start()
+	env.mounter.get("/mnt/a").end(nil)
+	env.mounter.get("/mnt/b").end(nil)
+	waitFor(t, "two views to be released", func() bool { return env.core.releasedCount() == 2 })
+	report := env.status()
 	if len(report.Mounts) != 1 || report.Mounts[0].Target != "/mnt/c" || report.Mounts[0].State != StateMounted {
 		t.Errorf("mounts = %+v, want only /mnt/c, mounted", report.Mounts)
 	}
 	if err := r.stop(); err != nil {
 		t.Fatal(err)
 	}
-	if calls := h.mounter.get("/mnt/a").unmountCalls(); len(calls) != 0 {
+	if calls := env.mounter.get("/mnt/a").unmountCalls(); len(calls) != 0 {
 		t.Errorf("an ended mount was unmounted: %v", calls)
 	}
 }
 
 func TestRunLogsAMountThatEndsWithAnError(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.cfg.Mounts = h.cfg.Mounts[:2]
-	r := h.start()
+	env := newHarness(t)
+	env.cfg.Mounts = env.cfg.Mounts[:2]
+	r := env.start()
 	lost := errors.New("connection to the kernel was lost")
-	h.mounter.get("/mnt/a").end(lost)
-	waitFor(t, "the view to be released", func() bool { return h.core.releasedCount() == 1 })
-	waitFor(t, "the log line", func() bool { return strings.Contains(h.log.String(), "mount ended with an error") })
-	if !strings.Contains(h.log.String(), lost.Error()) {
-		t.Errorf("the error is not in the log:\n%s", h.log.String())
+	env.mounter.get("/mnt/a").end(lost)
+	waitFor(t, "the view to be released", func() bool { return env.core.releasedCount() == 1 })
+	waitFor(t, "the log line", func() bool { return strings.Contains(env.log.String(), "mount ended with an error") })
+	if !strings.Contains(env.log.String(), lost.Error()) {
+		t.Errorf("the error is not in the log:\n%s", env.log.String())
 	}
 	if err := r.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil: the failure was logged when it happened", err)
@@ -477,18 +503,18 @@ func TestRunLogsAMountThatEndsWithAnError(t *testing.T) {
 
 func TestOptionsDefaults(t *testing.T) {
 	t.Parallel()
-	o := Options{ConfigDir: "/etc/example"}.withDefaults()
-	if o.Logger == nil || o.Notify == nil || o.NewCore == nil || o.sys == nil {
-		t.Errorf("defaults missing: %+v", o)
+	opts := Options{ConfigDir: "/etc/example"}.withDefaults()
+	if opts.Logger == nil || opts.Notify == nil || opts.NewCore == nil || opts.sys == nil {
+		t.Errorf("defaults missing: %+v", opts)
 	}
-	if err := o.Notify("READY=1"); err != nil {
+	if err := opts.Notify("READY=1"); err != nil {
 		t.Errorf("default Notify = %v", err)
 	}
-	if o.ConnectTimeout != 15*time.Second {
-		t.Errorf("ConnectTimeout = %v", o.ConnectTimeout)
+	if opts.ConnectTimeout != 15*time.Second {
+		t.Errorf("ConnectTimeout = %v", opts.ConnectTimeout)
 	}
-	if o.limits.graceful != gracefulStopTimeout || o.limits.force != forceStopTimeout {
-		t.Errorf("limits = %+v", o.limits)
+	if opts.limits.graceful != gracefulStopTimeout || opts.limits.force != forceStopTimeout {
+		t.Errorf("limits = %+v", opts.limits)
 	}
 	kept := Options{ConnectTimeout: time.Second}.withDefaults()
 	if kept.ConnectTimeout != time.Second {
@@ -510,8 +536,11 @@ func TestControlSocket(t *testing.T) {
 		wantErr error
 	}{
 		{"explicit socket", Options{SocketPath: "/x.sock", sys: &failing}, "/x.sock", nil},
-		{"configuration directory", Options{ConfigDir: "/etc/other", sys: &failing},
-			sys.socketPath("/etc/other"), nil},
+		{
+			"configuration directory",
+			Options{ConfigDir: "/etc/other", sys: &failing},
+			sys.socketPath("/etc/other"), nil,
+		},
 		{"default directory", Options{sys: &sys}, sys.socketPath("/etc/example"), nil},
 		{"default directory unknown", Options{sys: &failing}, "", boom},
 	}
@@ -536,13 +565,13 @@ func TestSystemHostFindsTheDefaultConfigDir(t *testing.T) {
 
 func TestRunReportsAnUnknownDefaultConfigDir(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
+	env := newHarness(t)
 	boom := errors.New("home directory unknown")
 	sys := fakeSystem(nil, 1000)
 	sys.configDir = func() (string, error) { return "", boom }
-	h.opts.SocketPath, h.opts.sys = "", &sys
-	errIs(t, h.runSync(), boom)
-	if got := h.mounter.targets(); len(got) != 0 {
+	env.opts.SocketPath, env.opts.sys = "", &sys
+	errIs(t, env.runSync(), boom)
+	if got := env.mounter.targets(); len(got) != 0 {
 		t.Errorf("mounted %v without a control socket", got)
 	}
 }
@@ -555,24 +584,28 @@ func TestDefaultCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{
-		Clusters: map[string]config.Cluster{"example": {URL: "https://files.example.com/api", User: "alice", PasswordFile: password, StreamsPerNode: 1}},
-		Mounts:   []config.Mount{{Cluster: "example", Path: "/", Target: dir + "/mnt", Cache: config.Cache{Dir: dir + "/cache"}}},
+		Clusters: map[string]config.Cluster{"example": {
+			URL: "https://files.example.com/api", User: "alice", PasswordFile: password, StreamsPerNode: 1,
+		}},
+		Mounts: []config.Mount{{
+			Cluster: "example", Path: "/", Target: dir + "/mnt", Cache: config.Cache{Dir: dir + "/cache"},
+		}},
 	}
-	c, err := newCoreClient(cfg, core.Options{})
+	coreClient, err := newCoreClient(cfg, core.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Status().Clusters; len(got) != 1 || got[0].Name != "example" {
-		t.Errorf("status = %+v", c.Status())
+	if got := coreClient.Status().Clusters; len(got) != 1 || got[0].Name != "example" {
+		t.Errorf("status = %+v", coreClient.Status())
 	}
-	if err := c.Close(); err != nil {
+	if err = coreClient.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	cfg.Clusters["example"] = config.Cluster{PasswordFile: dir + "/missing"}
-	c, err = newCoreClient(cfg, core.Options{})
-	if err == nil || c != nil {
-		t.Errorf("newCoreClient with a missing password file = %v, %v", c, err)
+	coreClient, err = newCoreClient(cfg, core.Options{})
+	if err == nil || coreClient != nil {
+		t.Errorf("newCoreClient with a missing password file = %v, %v", coreClient, err)
 	}
 }
 

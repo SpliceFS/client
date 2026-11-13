@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -69,7 +70,7 @@ func (s *requestedStore) load() {
 		err = json.Unmarshal(data, &stored)
 	}
 	if err != nil {
-		s.log.Warn("requested mounts ignored", "file", s.path, "err", err)
+		s.log.Warn("requested mounts ignored", slog.String("file", s.path), slog.Any("err", err))
 		return
 	}
 	for _, m := range stored {
@@ -130,7 +131,8 @@ func (s *requestedStore) index(target string) int {
 // a restart of the client would not bring it back.
 func (s *requestedStore) save() {
 	if err := s.write(); err != nil {
-		s.log.Warn("requested mounts not saved", "file", s.path, "err", err)
+		s.log.Warn("requested mounts not saved",
+			slog.String("file", s.path), slog.Any("err", err))
 	}
 }
 
@@ -141,19 +143,24 @@ func (s *requestedStore) write() error {
 	for _, r := range s.items {
 		stored = append(stored, mountRequestOf(r))
 	}
-	// A list of strings and booleans always encodes, so there is no error to handle.
-	data, _ := json.Marshal(stored)
+	// A list of strings and booleans always encodes, so there is no error to handle. The bytes
+	// are written as they are, without the newline that an Encoder adds.
+	data, _ := json.Marshal(stored) //nolint:errcheck,errchkjson // Strings and booleans always encode.
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".mounts-*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("create the temporary file: %w", err)
 	}
 	_, err = tmp.Write(data)
-	err = errors.Join(err, tmp.Chmod(0o600), tmp.Close())
+	err = errors.Join(err, tmp.Chmod(privateFileMode), tmp.Close())
 	if err == nil {
 		err = os.Rename(tmp.Name(), s.path)
 	}
 	if err != nil {
-		_ = os.Remove(tmp.Name())
+		// The write already failed and its error is the one returned. A temporary file that
+		// stays behind is only a few bytes in the state directory, and the next write makes its
+		// own, so a failure to remove it tells nobody anything useful.
+		_ = os.Remove(tmp.Name()) //nolint:errcheck // See above, the write error is the one that matters.
 	}
+	//nolint:wrapcheck // The error of the rename names both files, and the caller only logs it.
 	return err
 }

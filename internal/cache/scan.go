@@ -3,6 +3,7 @@ package cache
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 )
@@ -34,43 +35,57 @@ func (c *Cache) scanShard(shard string) {
 	dir := filepath.Join(c.opts.Dir, shard)
 	infos, err := c.fs.ReadDir(dir)
 	if err != nil {
-		c.log.Warn("scan cache subdirectory", "dir", dir, "error", err)
+		c.log.Warn("scan cache subdirectory", slog.String("dir", dir), slog.Any("error", err))
 		return
 	}
 	found := make(map[string]*files)
 	for _, info := range infos {
-		hash, ext, ok := splitName(info.Name(), shard)
+		name, ok := splitName(info.Name(), shard)
 		if !ok || !info.Type().IsRegular() {
 			continue
 		}
-		f := found[hash]
-		if f == nil {
-			f = &files{}
-			found[hash] = f
+		hashFiles := found[name.hash]
+		if hashFiles == nil {
+			hashFiles = &files{}
+			found[name.hash] = hashFiles
 		}
-		switch ext {
-		case dataExt:
-			f.data = true
-		case metaExt:
-			f.meta = true
-		case tmpExt:
-			f.tmp = true
-		}
+		hashFiles.mark(name.ext)
 	}
-	for hash, f := range found {
-		c.scanEntry(filepath.Join(dir, hash), hash, *f)
+	for hash, hashFiles := range found {
+		c.scanEntry(filepath.Join(dir, hash), hash, *hashFiles)
 	}
 }
 
-// splitName splits the name of a file the cache could have created into its hash and
-// extension. ok is false for any other name.
-func splitName(name, shard string) (hash, ext string, ok bool) {
+// mark records that a file with extension ext was found. splitName only returns the three
+// extensions the cache creates, so any other one is ignored.
+func (f *files) mark(ext string) {
+	switch ext {
+	case dataExt:
+		f.data = true
+	case metaExt:
+		f.meta = true
+	case tmpExt:
+		f.tmp = true
+	default:
+	}
+}
+
+// fileName is the name of a file the cache could have created, split into its hash and
+// its extension.
+type fileName struct {
+	hash string
+	ext  string
+}
+
+// splitName splits the name of a file the cache could have created. The boolean is false
+// for any other name.
+func splitName(name, shard string) (fileName, bool) {
 	for _, suffix := range []string{dataExt, metaExt, tmpExt} {
 		if stem, found := strings.CutSuffix(name, suffix); found {
-			return stem, suffix, isLowerHex(stem, hashLen) && strings.HasPrefix(stem, shard)
+			return fileName{hash: stem, ext: suffix}, isLowerHex(stem, hashLen) && strings.HasPrefix(stem, shard)
 		}
 	}
-	return "", "", false
+	return fileName{}, false
 }
 
 func isLowerHex(s string, n int) bool {
@@ -87,29 +102,31 @@ func isLowerHex(s string, n int) bool {
 
 // scanEntry loads one entry or removes its files. A leftover temporary file is always
 // removed; a data or metadata file without its partner, or with an unusable one, is too.
-func (c *Cache) scanEntry(base, hash string, f files) {
-	if f.tmp {
+func (c *Cache) scanEntry(base, hash string, found files) {
+	if found.tmp {
 		c.cleanup(base + tmpExt)
 	}
-	if !f.data || !f.meta {
+	if !found.data || !found.meta {
 		c.cleanup(base+dataExt, base+metaExt)
 		return
 	}
-	e, err := c.load(base, hash)
+	loaded, err := c.load(base, hash)
 	if err != nil {
-		c.log.Warn("dropping unusable cache entry", "name", hash, "error", err)
+		c.log.Warn("dropping unusable cache entry", slog.String("name", hash), slog.Any("error", err))
 		c.cleanup(base+dataExt, base+metaExt)
 		return
 	}
-	c.entries[e.key] = e
-	c.total += e.bytes
+	c.entries[loaded.key] = loaded
+	c.total += loaded.bytes
 }
 
 // cleanup removes files, logging failures: a file that cannot be removed is retried at
 // the next Open.
 func (c *Cache) cleanup(names ...string) {
 	for _, name := range names {
-		c.warn("remove stale cache file", unlink(c.fs, name))
+		if err := unlink(c.fs, name); err != nil {
+			c.log.Warn("remove stale cache file", slog.Any("error", err))
+		}
 	}
 }
 
@@ -119,22 +136,23 @@ func (c *Cache) load(base, hash string) (*entry, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read metadata: %w", err)
 	}
-	var m metaFile
-	if err := json.Unmarshal(raw, &m); err != nil {
+	var meta metaFile
+	if err := json.Unmarshal(raw, &meta); err != nil {
 		return nil, fmt.Errorf("parse metadata: %w", err)
 	}
-	if err := m.Version.validate(); err != nil {
+	if err := meta.Version.validate(); err != nil {
 		return nil, err
 	}
-	if hashName(m.Key) != hash {
-		return nil, fmt.Errorf("metadata is for %q, not for this file name", m.Key.Path)
+	if hashName(meta.Key) != hash {
+		return nil, fmt.Errorf("%w: metadata is for %q, not for this file name", ErrInvalidMetadata, meta.Key.Path)
 	}
-	if err := checkBitmap(m.Version, m.Blocks); err != nil {
+	if err := checkBitmap(meta.Version, meta.Blocks); err != nil {
 		return nil, err
 	}
-	e := newEntry(c.opts.Dir, m.Key, m.Version, m.LastRead)
-	e.bitmap = m.Blocks
-	e.validated = m.Validated
-	e.present, e.bytes = countBlocks(m.Version, m.Blocks)
-	return e, nil
+	loaded := newEntry(c.opts.Dir, meta.Key, meta.Version, meta.LastRead)
+	loaded.bitmap = meta.Blocks
+	loaded.validated = meta.Validated
+	count := countBlocks(meta.Version, meta.Blocks)
+	loaded.present, loaded.bytes = count.present, count.bytes
+	return loaded, nil
 }

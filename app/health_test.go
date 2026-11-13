@@ -92,7 +92,7 @@ func (p *probes) release() { p.once.Do(func() { close(p.hold) }) }
 
 // healthRig is a run whose health rounds the test starts by hand.
 type healthRig struct {
-	h      *harness
+	env    *harness
 	probes *probes
 	ticks  chan time.Time
 	beats  chan struct{}
@@ -105,30 +105,30 @@ type healthRig struct {
 }
 
 // wireHealth replaces the clock, the lstat and the limits of h, and counts the heartbeats.
-func wireHealth(h *harness, failures int, timeout time.Duration) *healthRig {
-	g := &healthRig{
-		h:      h,
+func wireHealth(env *harness, failures int, timeout time.Duration) *healthRig {
+	rig := &healthRig{
+		env:    env,
 		probes: newProbes(),
 		ticks:  make(chan time.Time),
 		beats:  make(chan struct{}, 64),
 	}
-	h.t.Cleanup(g.probes.release)
-	notify := h.opts.Notify
-	h.opts.Notify = func(state string) error {
+	env.t.Cleanup(rig.probes.release)
+	notify := env.opts.Notify
+	env.opts.Notify = func(state string) error {
 		err := notify(state)
 		if state == "WATCHDOG=1" {
-			g.beats <- struct{}{}
+			rig.beats <- struct{}{}
 		}
 		return err
 	}
-	h.opts.newTicker = func(d time.Duration) (<-chan time.Time, func()) {
-		g.interval = d
-		return g.ticks, func() {}
+	env.opts.newTicker = func(d time.Duration) tickSource {
+		rig.interval = d
+		return tickSource{ticks: rig.ticks, stop: func() {}}
 	}
-	h.opts.lstat = g.probes.lstat
-	h.opts.probeFailures = failures
-	h.opts.probeTimeout = timeout
-	return g
+	env.opts.lstat = rig.probes.lstat
+	env.opts.probeFailures = failures
+	env.opts.probeTimeout = timeout
+	return rig
 }
 
 func newHealthRig(t *testing.T, failures int, timeout time.Duration) *healthRig {
@@ -136,90 +136,90 @@ func newHealthRig(t *testing.T, failures int, timeout time.Duration) *healthRig 
 	return wireHealth(newHarness(t), failures, timeout)
 }
 
-func (g *healthRig) start() {
-	g.h.t.Helper()
-	g.run = g.h.start()
+func (rig *healthRig) start() {
+	rig.env.t.Helper()
+	rig.run = rig.env.start()
 }
 
 // tick starts a round without waiting for it.
-func (g *healthRig) tick() {
-	g.h.t.Helper()
-	g.rounds++
+func (rig *healthRig) tick() {
+	rig.env.t.Helper()
+	rig.rounds++
 	select {
-	case g.ticks <- time.Now():
+	case rig.ticks <- time.Now():
 	case <-time.After(reloadTimeout):
-		g.h.t.Fatal("the run did not take the tick")
+		rig.env.t.Fatal("the run did not take the tick")
 	}
 }
 
 // round sends one tick and waits for the heartbeat that ends the round.
-func (g *healthRig) round() {
-	g.h.t.Helper()
-	g.tick()
+func (rig *healthRig) round() {
+	rig.env.t.Helper()
+	rig.tick()
 	select {
-	case <-g.beats:
+	case <-rig.beats:
 	case <-time.After(reloadTimeout):
-		g.h.t.Fatal("the round did not send its heartbeat")
+		rig.env.t.Fatal("the round did not send its heartbeat")
 	}
 }
 
 // wantBeats checks that every round sent exactly one heartbeat.
-func (g *healthRig) wantBeats() {
-	g.h.t.Helper()
+func (rig *healthRig) wantBeats() {
+	rig.env.t.Helper()
 	n := 0
-	for _, s := range g.h.notes.got() {
+	for _, s := range rig.env.notes.got() {
 		if s == "WATCHDOG=1" {
 			n++
 		}
 	}
-	if n != g.rounds {
-		g.h.t.Errorf("heartbeats = %d after %d rounds, want one each", n, g.rounds)
+	if n != rig.rounds {
+		rig.env.t.Errorf("heartbeats = %d after %d rounds, want one each", n, rig.rounds)
 	}
 }
 
-func (g *healthRig) wantCalls(target string, want int) {
-	g.h.t.Helper()
-	if got := g.probes.count(target); got != want {
-		g.h.t.Errorf("%s was asked %d times, want %d", target, got, want)
+func (rig *healthRig) wantCalls(target string, want int) {
+	rig.env.t.Helper()
+	if got := rig.probes.count(target); got != want {
+		rig.env.t.Errorf("%s was asked %d times, want %d", target, got, want)
 	}
 }
 
-func (g *healthRig) wantMountCalls(want ...string) {
-	g.h.t.Helper()
-	if got := g.h.mounter.targets(); !slices.Equal(got, want) {
-		g.h.t.Errorf("mount calls = %v, want %v", got, want)
+func (rig *healthRig) wantMountCalls(want ...string) {
+	rig.env.t.Helper()
+	if got := rig.env.mounter.targets(); !slices.Equal(got, want) {
+		rig.env.t.Errorf("mount calls = %v, want %v", got, want)
 	}
 }
 
-func (g *healthRig) wantUnmounts(f *fakeMounted, want ...bool) {
-	g.h.t.Helper()
+func (rig *healthRig) wantUnmounts(f *fakeMounted, want ...bool) {
+	rig.env.t.Helper()
 	if got := f.unmountCalls(); !slices.Equal(got, want) {
-		g.h.t.Errorf("unmount calls (force) = %v, want %v", got, want)
+		rig.env.t.Errorf("unmount calls (force) = %v, want %v", got, want)
 	}
 }
 
 // wantUntouched checks that the mounts of these targets were never unmounted.
-func (g *healthRig) wantUntouched(targets ...string) {
-	g.h.t.Helper()
+func (rig *healthRig) wantUntouched(targets ...string) {
+	rig.env.t.Helper()
 	for _, target := range targets {
-		g.wantUnmounts(g.h.mounter.get(target))
+		rig.wantUnmounts(rig.env.mounter.get(target))
 	}
 }
 
-func (g *healthRig) wantLogged(parts ...string) {
-	g.h.t.Helper()
-	out := g.h.log.String()
+func (rig *healthRig) wantLogged(parts ...string) {
+	rig.env.t.Helper()
+	out := rig.env.log.String()
 	for _, part := range parts {
 		if !strings.Contains(out, part) {
-			g.h.t.Errorf("log lacks %q:\n%s", part, out)
+			rig.env.t.Errorf("log lacks %q:\n%s", part, out)
 		}
 	}
 }
 
-func (g *healthRig) wantNotLogged(part string) {
-	g.h.t.Helper()
-	if out := g.h.log.String(); strings.Contains(out, part) {
-		g.h.t.Errorf("log has %q:\n%s", part, out)
+func (rig *healthRig) wantNotLogged(part string) {
+	rig.env.t.Helper()
+	if out := rig.env.log.String(); strings.Contains(out, part) {
+		rig.env.t.Errorf("log has %q:\n%s", part, out)
 	}
 }
 
@@ -230,30 +230,30 @@ const (
 
 func TestHealthHealthyMountsPassRoundAfterRound(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 2, 0)
-	g.start()
+	rig := newHealthRig(t, 2, 0)
+	rig.start()
 
 	targets := []string{"/mnt/a", "/mnt/b", "/mnt/c"}
 	for round := 1; round <= 4; round++ {
-		g.round()
+		rig.round()
 		for _, target := range targets {
-			g.wantCalls(target, round)
+			rig.wantCalls(target, round)
 		}
 	}
 
-	if g.interval != probeInterval {
-		t.Errorf("ticker interval = %v, want %v", g.interval, probeInterval)
+	if rig.interval != probeInterval {
+		t.Errorf("ticker interval = %v, want %v", rig.interval, probeInterval)
 	}
 	for _, target := range targets {
 		want := filepath.Join(target, mount.ProbeName)
-		if got := g.probes.path(target); got != want {
+		if got := rig.probes.path(target); got != want {
 			t.Errorf("probe path = %q, want %q", got, want)
 		}
 	}
-	g.wantBeats()
-	g.wantUntouched(targets...)
-	g.wantMountCalls(targets...)
-	g.wantNotLogged(hungLogText)
+	rig.wantBeats()
+	rig.wantUntouched(targets...)
+	rig.wantMountCalls(targets...)
+	rig.wantNotLogged(hungLogText)
 }
 
 func TestHealthFailingMountIsMountedAgain(t *testing.T) {
@@ -269,93 +269,93 @@ func TestHealthFailingMountIsMountedAgain(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newHealthRig(t, 2, hungTimeout)
-			g.start()
-			old := g.h.mounter.get("/mnt/a")
-			g.probes.set("/mnt/a", tt.answer)
+			rig := newHealthRig(t, 2, hungTimeout)
+			rig.start()
+			old := rig.env.mounter.get("/mnt/a")
+			rig.probes.set("/mnt/a", tt.answer)
 
-			g.round()
+			rig.round()
 			// One failure is below the limit, so nothing is done yet.
-			g.wantUnmounts(old)
-			g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
-			g.wantNotLogged(hungLogText)
+			rig.wantUnmounts(old)
+			rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
+			rig.wantNotLogged(hungLogText)
 
-			g.round()
-			g.wantUnmounts(old, true)
-			g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
-			g.wantLogged(hungLog)
-			if g.h.mounter.get("/mnt/a") == old {
+			rig.round()
+			rig.wantUnmounts(old, true)
+			rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
+			rig.wantLogged(hungLog)
+			if rig.env.mounter.get("/mnt/a") == old {
 				t.Error("the mount at /mnt/a is still the one that did not answer")
 			}
-			g.wantUntouched("/mnt/b", "/mnt/c")
-			g.wantNotLogged("could not abort")
-			g.wantBeats()
+			rig.wantUntouched("/mnt/b", "/mnt/c")
+			rig.wantNotLogged("could not abort")
+			rig.wantBeats()
 		})
 	}
 }
 
 func TestHealthHungMountThatCanBeAbortedIsAbortedOnceAfterItsUnmount(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 2, hungTimeout)
-	g.h.mounter.abortable = true
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
-	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+	rig := newHealthRig(t, 2, hungTimeout)
+	rig.env.mounter.abortable = true
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
+	rig.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
 
-	g.round()
+	rig.round()
 	if got := old.abortCalls(); len(got) != 0 {
 		t.Errorf("abort calls after one failure = %v, want none", got)
 	}
-	g.round()
+	rig.round()
 
-	g.wantUnmounts(old, true)
+	rig.wantUnmounts(old, true)
 	// One Abort, made when the one forced unmount had been made.
 	if got, want := old.abortCalls(), []int{1}; !slices.Equal(got, want) {
 		t.Errorf("abort calls = %v, want %v", got, want)
 	}
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
-	g.wantNotLogged("could not abort")
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
+	rig.wantNotLogged("could not abort")
 	for _, target := range []string{"/mnt/b", "/mnt/c"} {
-		if got := g.h.mounter.get(target).abortCalls(); len(got) != 0 {
+		if got := rig.env.mounter.get(target).abortCalls(); len(got) != 0 {
 			t.Errorf("%s was aborted: %v", target, got)
 		}
 	}
-	g.wantBeats()
+	rig.wantBeats()
 }
 
 func TestHealthFailedAbortIsLoggedAndTheMountIsMadeAgain(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 1, hungTimeout)
-	g.h.mounter.abortable = true
-	g.h.mounter.configure = func(f *fakeMounted) { f.abortErr = errors.New("permission denied") }
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
-	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+	rig := newHealthRig(t, 1, hungTimeout)
+	rig.env.mounter.abortable = true
+	rig.env.mounter.configure = func(f *fakeMounted) { f.abortErr = errors.New("permission denied") }
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
+	rig.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
 
-	g.round()
+	rig.round()
 
-	g.wantUnmounts(old, true)
+	rig.wantUnmounts(old, true)
 	if got, want := old.abortCalls(), []int{1}; !slices.Equal(got, want) {
 		t.Errorf("abort calls = %v, want %v", got, want)
 	}
-	g.wantLogged(`level=WARN msg="could not abort the connection of a hung mount" ` +
+	rig.wantLogged(`level=WARN msg="could not abort the connection of a hung mount" ` +
 		`target=/mnt/a err="permission denied"`)
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
-	g.wantBeats()
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
+	rig.wantBeats()
 }
 
 func TestHealthMountThatWasNotDetachedIsNotAborted(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 1, hungTimeout)
-	g.h.mounter.abortable = true
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
+	rig := newHealthRig(t, 1, hungTimeout)
+	rig.env.mounter.abortable = true
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
 	old.setBehavior(func(bool) error { return errors.New("device is busy") })
-	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+	rig.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
 
-	g.round()
+	rig.round()
 
-	g.wantUnmounts(old, true)
+	rig.wantUnmounts(old, true)
 	if got := old.abortCalls(); len(got) != 0 {
 		t.Errorf("abort calls = %v, want none for a mount that is still attached", got)
 	}
@@ -365,23 +365,23 @@ func TestHealthMountThatWasNotDetachedIsNotAborted(t *testing.T) {
 
 func TestReloadAndStopDetachMountsWithoutAbortingThem(t *testing.T) {
 	t.Parallel()
-	g := &reloadRig{h: newHarness(t), signals: make(chan os.Signal)}
-	g.h.mounter.abortable = true
-	g.h.cfg = &config.Config{Mounts: []config.Mount{reloadA, reloadB}}
-	g.h.opts.Reload = g.signals
-	g.h.opts.Load = g.load
-	g.run = g.h.start()
-	a, b := g.h.mounter.get("/mnt/a"), g.h.mounter.get("/mnt/b")
+	rig := &reloadRig{env: newHarness(t), signals: make(chan os.Signal)}
+	rig.env.mounter.abortable = true
+	rig.env.cfg = &config.Config{Mounts: []config.Mount{reloadA(), reloadB()}}
+	rig.env.opts.Reload = rig.signals
+	rig.env.opts.Load = rig.load
+	rig.run = rig.env.start()
+	mountedA, mountedB := rig.env.mounter.get("/mnt/a"), rig.env.mounter.get("/mnt/b")
 
 	// The reload detaches /mnt/a with a forced unmount, which open files must survive.
-	g.reload(reloadB)
-	if got, want := a.unmountCalls(), []bool{true}; !slices.Equal(got, want) {
+	rig.reload(reloadB())
+	if got, want := mountedA.unmountCalls(), []bool{true}; !slices.Equal(got, want) {
 		t.Fatalf("/mnt/a unmount calls (force) = %v, want %v", got, want)
 	}
-	g.stop()
+	rig.stop()
 
-	for target, m := range map[string]*fakeMounted{"/mnt/a": a, "/mnt/b": b} {
-		if got := m.abortCalls(); len(got) != 0 {
+	for target, mounted := range map[string]*fakeMounted{"/mnt/a": mountedA, "/mnt/b": mountedB} {
+		if got := mounted.abortCalls(); len(got) != 0 {
 			t.Errorf("%s was aborted: %v", target, got)
 		}
 	}
@@ -389,207 +389,207 @@ func TestReloadAndStopDetachMountsWithoutAbortingThem(t *testing.T) {
 
 func TestHealthWaitingCheckCountsWithoutAskingAgain(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 3, hungTimeout)
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
-	g.probes.set("/mnt/a", probeAnswer{hang: true})
+	rig := newHealthRig(t, 3, hungTimeout)
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
+	rig.probes.set("/mnt/a", probeAnswer{hang: true})
 
 	for round := 1; round <= 2; round++ {
-		g.round()
-		g.wantCalls("/mnt/a", 1)
-		g.wantUnmounts(old)
+		rig.round()
+		rig.wantCalls("/mnt/a", 1)
+		rig.wantUnmounts(old)
 	}
-	g.round()
+	rig.round()
 
 	// The second and third round counted a failure each without asking, which is how the
 	// third one reached the limit.
-	g.wantCalls("/mnt/a", 1)
-	g.wantUnmounts(old, true)
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
-	g.wantCalls("/mnt/b", 3)
+	rig.wantCalls("/mnt/a", 1)
+	rig.wantUnmounts(old, true)
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
+	rig.wantCalls("/mnt/b", 3)
 }
 
 func TestHealthOnePassResetsTheCount(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 2, hungTimeout)
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
+	rig := newHealthRig(t, 2, hungTimeout)
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
 
 	fail := probeAnswer{err: syscall.EIO}
 	pass := probeAnswer{err: fs.ErrNotExist}
 	for _, answer := range []probeAnswer{fail, pass, fail, pass, fail} {
-		g.probes.set("/mnt/a", answer)
-		g.round()
-		g.wantUnmounts(old)
+		rig.probes.set("/mnt/a", answer)
+		rig.round()
+		rig.wantUnmounts(old)
 	}
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
 
 	// Two in a row after the last pass still reach the limit.
-	g.probes.set("/mnt/a", fail)
-	g.round()
-	g.wantUnmounts(old, true)
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
+	rig.probes.set("/mnt/a", fail)
+	rig.round()
+	rig.wantUnmounts(old, true)
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
 }
 
 func TestHealthLateAnswerIsDiscarded(t *testing.T) {
 	t.Parallel()
 	// The limit is far away so that rounds that find the answer not yet in are harmless.
-	g := newHealthRig(t, 1000, hungTimeout)
-	g.start()
-	g.probes.set("/mnt/a", probeAnswer{err: fs.ErrNotExist, hang: true})
+	rig := newHealthRig(t, 1000, hungTimeout)
+	rig.start()
+	rig.probes.set("/mnt/a", probeAnswer{err: fs.ErrNotExist, hang: true})
 
-	g.round()
-	g.wantCalls("/mnt/a", 1)
-	g.probes.release()
+	rig.round()
+	rig.wantCalls("/mnt/a", 1)
+	rig.probes.release()
 
 	// The answer is sent right after the release, and the test cannot see it. A round
 	// before it counts a failure without asking, so rounds go on until one asks again.
-	for i := 0; g.probes.count("/mnt/a") < 2; i++ {
+	for i := 0; rig.probes.count("/mnt/a") < 2; i++ {
 		if i == 1000 {
 			t.Fatal("no new check was started after the late answer")
 		}
-		g.round()
+		rig.round()
 	}
 	// With the late answer used up, every round asks anew.
-	asked := g.probes.count("/mnt/a")
-	g.round()
-	g.wantCalls("/mnt/a", asked+1)
-	g.wantUntouched("/mnt/a", "/mnt/b", "/mnt/c")
-	g.wantBeats()
+	asked := rig.probes.count("/mnt/a")
+	rig.round()
+	rig.wantCalls("/mnt/a", asked+1)
+	rig.wantUntouched("/mnt/a", "/mnt/b", "/mnt/c")
+	rig.wantBeats()
 }
 
 func TestHealthHungRequestedMountStaysRequested(t *testing.T) {
 	t.Parallel()
-	rig := newRequestRig(t)
-	g := wireHealth(rig.h, 2, hungTimeout)
-	g.run = rig.begin()
-	rig.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
-	old := rig.h.mounter.get("/mnt/tv")
-	g.probes.set("/mnt/tv", probeAnswer{hang: true})
+	requested := newRequestRig(t)
+	rig := wireHealth(requested.env, 2, hungTimeout)
+	rig.run = requested.begin()
+	requested.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
+	old := requested.env.mounter.get("/mnt/tv")
+	rig.probes.set("/mnt/tv", probeAnswer{hang: true})
 
-	g.round()
-	g.round()
+	rig.round()
+	rig.round()
 
-	g.wantUnmounts(old, true)
-	g.wantMountCalls("/mnt/a", "/mnt/tv", "/mnt/tv")
+	rig.wantUnmounts(old, true)
+	rig.wantMountCalls("/mnt/a", "/mnt/tv", "/mnt/tv")
 	// The watcher of the old mount takes it off the requested list unless it sees the mount
 	// was detached. It logs the end last, so the list can be read once that is there.
 	waitFor(t, "the old mount to end", func() bool {
-		return strings.Contains(rig.h.log.String(), `msg="mount ended" target=/mnt/tv`)
+		return strings.Contains(requested.env.log.String(), `msg="mount ended" target=/mnt/tv`)
 	})
-	if got := rig.listedTargets(); !slices.Equal(got, []string{"/mnt/tv"}) {
+	if got := requested.listedTargets(); !slices.Equal(got, []string{"/mnt/tv"}) {
 		t.Errorf("requested list = %v, want [/mnt/tv]", got)
 	}
-	rig.wantLive("/mnt/a", "/mnt/tv")
+	requested.wantLive("/mnt/a", "/mnt/tv")
 }
 
 func TestHealthUnmountThatFailsLeavesTheMount(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 2, hungTimeout)
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
+	rig := newHealthRig(t, 2, hungTimeout)
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
 	old.setBehavior(func(bool) error { return errors.New("device is busy") })
-	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+	rig.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
 
-	g.round()
-	g.round()
+	rig.round()
+	rig.round()
 
-	g.wantUnmounts(old, true)
+	rig.wantUnmounts(old, true)
 	// The mount is still in the set, so it is not made again over itself.
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
-	g.wantLogged(`level=ERROR msg="mount not detached" target=/mnt/a`)
-	if got := g.h.mounter.get("/mnt/a"); got != old {
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
+	rig.wantLogged(`level=ERROR msg="mount not detached" target=/mnt/a`)
+	if got := rig.env.mounter.get("/mnt/a"); got != old {
 		t.Error("the mount at /mnt/a was replaced")
 	}
-	g.wantBeats()
+	rig.wantBeats()
 	// Let the mount go at the end, or the stop of the run waits out its whole force limit.
 	old.setBehavior(func(bool) error { return nil })
 }
 
 func TestHealthMountThatCannotBeMadeAgainIsLogged(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 2, hungTimeout)
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
-	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
-	g.h.mounter.mu.Lock()
-	g.h.mounter.fail["/mnt/a"] = errors.New("no such device")
-	g.h.mounter.mu.Unlock()
+	rig := newHealthRig(t, 2, hungTimeout)
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
+	rig.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+	rig.env.mounter.mu.Lock()
+	rig.env.mounter.fail["/mnt/a"] = errors.New("no such device")
+	rig.env.mounter.mu.Unlock()
 
-	g.round()
-	g.round()
+	rig.round()
+	rig.round()
 
-	g.wantUnmounts(old, true)
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
-	g.wantLogged(`level=ERROR msg="mount not made" target=/mnt/a`)
+	rig.wantUnmounts(old, true)
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c", "/mnt/a")
+	rig.wantLogged(`level=ERROR msg="mount not made" target=/mnt/a`)
 
 	// The run goes on: the mounts that are left are still checked.
-	g.round()
-	g.wantCalls("/mnt/a", 2)
-	g.wantCalls("/mnt/b", 3)
-	g.wantCalls("/mnt/c", 3)
-	g.wantBeats()
-	if err := g.run.stop(); err != nil {
+	rig.round()
+	rig.wantCalls("/mnt/a", 2)
+	rig.wantCalls("/mnt/b", 3)
+	rig.wantCalls("/mnt/c", 3)
+	rig.wantBeats()
+	if err := rig.run.stop(); err != nil {
 		t.Errorf("Run = %v, want nil after a clean stop", err)
 	}
 }
 
 func TestHealthMountAgainStopsWhenTheConfigurationIsNotUsable(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 1, hungTimeout)
+	rig := newHealthRig(t, 1, hungTimeout)
 	// The configuration of this run names clusters it does not define, so the requested
 	// mount left by an earlier run cannot be added to it. It stays on the list.
 	list := `[{"cluster":"example","path":"/","target":"/mnt/r"}]`
-	if err := os.WriteFile(requestedPath(g.h.socket), []byte(list), 0o600); err != nil {
+	if err := os.WriteFile(requestedPath(rig.env.socket), []byte(list), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
-	g.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
+	rig.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
 
-	g.round()
+	rig.round()
 
-	g.wantUnmounts(old, true)
-	g.wantLogged(`level=ERROR msg="hung mounts not made again"`)
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
-	g.wantBeats()
+	rig.wantUnmounts(old, true)
+	rig.wantLogged(`level=ERROR msg="hung mounts not made again"`)
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
+	rig.wantBeats()
 }
 
 func TestHealthHeartbeatIsSentWhateverTheRoundFound(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 2, hungTimeout)
-	g.h.notes.fail["WATCHDOG=1"] = errors.New("no socket")
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
-	g.probes.set("/mnt/a", probeAnswer{hang: true})
+	rig := newHealthRig(t, 2, hungTimeout)
+	rig.env.notes.fail["WATCHDOG=1"] = errors.New("no socket")
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
+	rig.probes.set("/mnt/a", probeAnswer{hang: true})
 
 	// A hung mount and a refused heartbeat in every round change nothing for the rest.
 	for range 3 {
-		g.round()
+		rig.round()
 	}
 
-	g.wantBeats()
-	g.wantUnmounts(old, true)
-	g.wantLogged(`level=DEBUG msg="could not send the heartbeat to the service manager"`)
-	g.wantCalls("/mnt/b", 3)
-	if err := g.run.stop(); err != nil {
+	rig.wantBeats()
+	rig.wantUnmounts(old, true)
+	rig.wantLogged(`level=DEBUG msg="could not send the heartbeat to the service manager"`)
+	rig.wantCalls("/mnt/b", 3)
+	if err := rig.run.stop(); err != nil {
 		t.Errorf("Run = %v, want nil after a clean stop", err)
 	}
 }
 
 func TestHealthRunWithoutMountsSendsHeartbeats(t *testing.T) {
 	t.Parallel()
-	g := newHealthRig(t, 1, 0)
-	g.h.cfg = &config.Config{}
-	g.start()
+	rig := newHealthRig(t, 1, 0)
+	rig.env.cfg = &config.Config{}
+	rig.start()
 
-	g.round()
-	g.round()
+	rig.round()
+	rig.round()
 
-	g.wantBeats()
-	g.wantCalls("/mnt/a", 0)
-	g.wantMountCalls()
-	if err := g.run.stop(); err != nil {
+	rig.wantBeats()
+	rig.wantCalls("/mnt/a", 0)
+	rig.wantMountCalls()
+	if err := rig.run.stop(); err != nil {
 		t.Errorf("Run = %v, want nil after a clean stop", err)
 	}
 }
@@ -597,38 +597,38 @@ func TestHealthRunWithoutMountsSendsHeartbeats(t *testing.T) {
 func TestHealthContextEndingDuringARoundCountsNoFailure(t *testing.T) {
 	t.Parallel()
 	// With a limit of one, a failure counted for the answer not waited for would unmount.
-	g := newHealthRig(t, 1, reloadTimeout)
-	g.start()
-	old := g.h.mounter.get("/mnt/a")
-	g.probes.set("/mnt/a", probeAnswer{hang: true})
+	rig := newHealthRig(t, 1, reloadTimeout)
+	rig.start()
+	old := rig.env.mounter.get("/mnt/a")
+	rig.probes.set("/mnt/a", probeAnswer{hang: true})
 
-	g.tick()
+	rig.tick()
 	select {
-	case <-g.probes.started:
+	case <-rig.probes.started:
 	case <-time.After(reloadTimeout):
 		t.Fatal("the round did not ask the mount")
 	}
-	if err := g.run.stop(); err != nil {
+	if err := rig.run.stop(); err != nil {
 		t.Errorf("Run = %v, want nil after a clean stop", err)
 	}
 
 	// The stop unmounts politely. A forced unmount would be the round's doing.
-	g.wantUnmounts(old, false)
-	g.wantNotLogged(hungLogText)
+	rig.wantUnmounts(old, false)
+	rig.wantNotLogged(hungLogText)
 }
 
 func TestSystemTicker(t *testing.T) {
 	t.Parallel()
-	ticks, stop := systemTicker(5 * time.Millisecond)
+	source := systemTicker(5 * time.Millisecond)
 	select {
-	case <-ticks:
+	case <-source.ticks:
 	case <-time.After(reloadTimeout):
 		t.Fatal("no tick arrived")
 	}
-	stop()
+	source.stop()
 	// A stopped timer sends nothing more, and the wait is long enough for several ticks.
 	select {
-	case <-ticks:
+	case <-source.ticks:
 		t.Error("a tick arrived after stop")
 	case <-time.After(40 * time.Millisecond):
 	}

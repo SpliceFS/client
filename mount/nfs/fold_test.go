@@ -172,7 +172,8 @@ func TestNormalizingFSPassesOtherErrorsThrough(t *testing.T) {
 				if op != "stat" {
 					return nil
 				}
-				if stats++; stats == 1 {
+				stats++
+				if stats == 1 {
 					return core.ErrNotExist // the request itself
 				}
 				return core.ErrUnavailable // the probe of its segment

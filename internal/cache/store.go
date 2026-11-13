@@ -49,10 +49,10 @@ func (e *entry) snapshotLocked() snapshot {
 // names its blocks, so the bitmap on disk never claims a block that is not on disk.
 // A snapshot older than one already written, or of a removed entry, is skipped.
 func (s snapshot) write(fsys fileSystem) error {
-	e := s.entry
-	e.pmu.Lock()
-	defer e.pmu.Unlock()
-	if e.removed || s.seq <= e.persisted {
+	cached := s.entry
+	cached.pmu.Lock()
+	defer cached.pmu.Unlock()
+	if cached.removed || s.seq <= cached.persisted {
 		return nil
 	}
 	if s.f != nil {
@@ -64,24 +64,24 @@ func (s snapshot) write(fsys fileSystem) error {
 	if err != nil {
 		return fmt.Errorf("encode metadata: %w", err)
 	}
-	if err := writeAtomic(fsys, e.base+metaExt, e.base+tmpExt, data); err != nil {
+	if err := writeAtomic(fsys, cached.base+metaExt, cached.base+tmpExt, data); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
-	e.persisted = s.seq
+	cached.persisted = s.seq
 	return nil
 }
 
 // writeAtomic replaces path with data. The temporary file is synced before the rename so
 // that a crash leaves either the old or the new content, never a torn file.
 func writeAtomic(fsys fileSystem, path, tmp string, data []byte) error {
-	f, err := fsys.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	file, err := fsys.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 	if err != nil {
-		return err
+		return fmt.Errorf("create temporary file: %w", err)
 	}
-	if _, err = f.WriteAt(data, 0); err == nil {
-		err = f.Sync()
+	if _, err = file.WriteAt(data, 0); err == nil {
+		err = file.Sync()
 	}
-	if cerr := f.Close(); err == nil {
+	if cerr := file.Close(); err == nil {
 		err = cerr
 	}
 	if err == nil {
@@ -104,11 +104,11 @@ func unlink(fsys fileSystem, name string) error {
 // removeLocked drops the entry and unlinks its files. Holders that still have the data
 // file open keep working on it; the unlinked inode lives until they close it. The entry
 // is dropped even if unlinking fails, and the leftovers are cleaned up by the next Open.
-func (c *Cache) removeLocked(e *entry) error {
-	delete(c.entries, e.key)
-	c.total -= e.bytes
-	e.pmu.Lock()
-	defer e.pmu.Unlock()
-	e.removed = true
-	return errors.Join(unlink(c.fs, e.base+dataExt), unlink(c.fs, e.base+metaExt))
+func (c *Cache) removeLocked(cached *entry) error {
+	delete(c.entries, cached.key)
+	c.total -= cached.bytes
+	cached.pmu.Lock()
+	defer cached.pmu.Unlock()
+	cached.removed = true
+	return errors.Join(unlink(c.fs, cached.base+dataExt), unlink(c.fs, cached.base+metaExt))
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"path"
 	"slices"
 	"strings"
@@ -15,7 +16,9 @@ import (
 	"github.com/SpliceFS/client/core"
 )
 
-var fakeMTime = time.Unix(1_700_000_000, 123_000_000)
+// fakeMTime is the modification time of every node of a fakeFS, with a fraction of a
+// second so a test notices a time that is truncated to whole seconds.
+func fakeMTime() time.Time { return time.Unix(1_700_000_000, 123_000_000) }
 
 type fakeNode struct {
 	attr core.Attr
@@ -35,71 +38,8 @@ type fakeFS struct {
 
 func newFakeFS() *fakeFS {
 	f := &fakeFS{nodes: map[string]*fakeNode{}, nextInode: 100, space: core.Space{Total: 1000, Free: 400}}
-	f.nodes[""] = &fakeNode{attr: core.Attr{Dir: true, MTime: fakeMTime, Inode: 1}}
+	f.nodes[""] = &fakeNode{attr: core.Attr{Dir: true, MTime: fakeMTime(), Inode: 1}}
 	return f
-}
-
-func (f *fakeFS) addDir(name string) *fakeFS {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureDir(path.Dir(name))
-	f.ensureDir(name)
-	return f
-}
-
-func (f *fakeFS) addFile(name string, data []byte) *fakeFS {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.ensureDir(path.Dir(name))
-	f.nextInode++
-	f.nodes[name] = &fakeNode{
-		attr: core.Attr{Name: path.Base(name), Size: int64(len(data)), MTime: fakeMTime, Inode: f.nextInode},
-		data: data,
-	}
-	return f
-}
-
-func (f *fakeFS) ensureDir(name string) {
-	if name == "." || name == "" {
-		return
-	}
-	if _, ok := f.nodes[name]; ok {
-		return
-	}
-	f.ensureDir(path.Dir(name))
-	f.nextInode++
-	f.nodes[name] = &fakeNode{attr: core.Attr{Name: path.Base(name), Dir: true, MTime: fakeMTime, Inode: f.nextInode}}
-}
-
-func (f *fakeFS) record(op, name string) error {
-	f.mu.Lock()
-	f.calls = append(f.calls, op+":"+name)
-	fail := f.fail
-	f.mu.Unlock()
-	if fail == nil {
-		return nil
-	}
-	return fail(op, name)
-}
-
-// listings returns the directories that were listed, in order.
-func (f *fakeFS) listings() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []string
-	for _, c := range f.calls {
-		if rest, ok := strings.CutPrefix(c, "readdir:"); ok {
-			out = append(out, rest)
-		}
-	}
-	return out
-}
-
-func (f *fakeFS) node(name string) (*fakeNode, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n, ok := f.nodes[name]
-	return n, ok
 }
 
 func (f *fakeFS) Stat(_ context.Context, name string) (core.Attr, error) {
@@ -144,6 +84,7 @@ func childDir(name string) string {
 	return name
 }
 
+//nolint:ireturn // core.FS declares Open to return the interface core.File.
 func (f *fakeFS) Open(_ context.Context, name string) (core.File, error) {
 	if err := f.record("open", name); err != nil {
 		return nil, err
@@ -165,6 +106,69 @@ func (f *fakeFS) StatFS(context.Context) (core.Space, error) {
 	return f.space, nil
 }
 
+func (f *fakeFS) addDir(name string) *fakeFS {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureDir(path.Dir(name))
+	f.ensureDir(name)
+	return f
+}
+
+func (f *fakeFS) addFile(name string, data []byte) *fakeFS {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureDir(path.Dir(name))
+	f.nextInode++
+	f.nodes[name] = &fakeNode{
+		attr: core.Attr{Name: path.Base(name), Size: int64(len(data)), MTime: fakeMTime(), Inode: f.nextInode},
+		data: data,
+	}
+	return f
+}
+
+func (f *fakeFS) ensureDir(name string) {
+	if name == "." || name == "" {
+		return
+	}
+	if _, ok := f.nodes[name]; ok {
+		return
+	}
+	f.ensureDir(path.Dir(name))
+	f.nextInode++
+	f.nodes[name] = &fakeNode{attr: core.Attr{Name: path.Base(name), Dir: true, MTime: fakeMTime(), Inode: f.nextInode}}
+}
+
+func (f *fakeFS) record(operation, name string) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, operation+":"+name)
+	fail := f.fail
+	f.mu.Unlock()
+	if fail == nil {
+		return nil
+	}
+	return fail(operation, name)
+}
+
+// listings returns the directories that were listed, in order.
+func (f *fakeFS) listings() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.calls {
+		if rest, ok := strings.CutPrefix(c, "readdir:"); ok {
+			out = append(out, rest)
+		}
+	}
+	return out
+}
+
+func (f *fakeFS) node(name string) (*fakeNode, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n, ok := f.nodes[name]
+	return n, ok
+}
+
 type fakeFile struct {
 	fs     *fakeFS
 	name   string
@@ -172,15 +176,15 @@ type fakeFile struct {
 	closed bool
 }
 
-func (f *fakeFile) ReadAt(_ context.Context, p []byte, off int64) (int, error) {
+func (f *fakeFile) ReadAt(_ context.Context, buf []byte, off int64) (int, error) {
 	if err := f.fs.record("read", f.name); err != nil {
 		return 0, err
 	}
 	if off >= int64(len(f.node.data)) {
 		return 0, io.EOF
 	}
-	n := copy(p, f.node.data[off:])
-	if n < len(p) {
+	n := copy(buf, f.node.data[off:])
+	if n < len(buf) {
 		return n, io.EOF
 	}
 	return n, nil
@@ -200,22 +204,33 @@ func dialTCP(t *testing.T, addr string) (net.Conn, error) {
 	return d.DialContext(t.Context(), "tcp", addr)
 }
 
-// wantClosed checks that ln no longer accepts connections. It asks the listener itself
-// rather than dialing its port, because a closed port can be handed to another test
-// within microseconds.
-func wantClosed(t *testing.T, ln net.Listener) {
+// wantClosed checks that listener no longer accepts connections. It asks the listener
+// itself rather than dialing its port, because a closed port can be handed to another
+// test within microseconds.
+func wantClosed(t *testing.T, listener net.Listener) {
 	t.Helper()
-	tcp := ln.(*net.TCPListener)
+	tcp, ok := listener.(*net.TCPListener)
+	if !ok {
+		t.Fatalf("the listener on %v is a %T, want a *net.TCPListener", listener.Addr(), listener)
+	}
 	// A deadline in the past makes a listener that is still open time out at once
-	// instead of blocking in Accept.
-	_ = tcp.SetDeadline(time.Unix(1, 0))
-	if _, err := tcp.Accept(); !errors.Is(err, net.ErrClosed) {
-		t.Errorf("the listener on %v is still open: %v", ln.Addr(), err)
+	// instead of blocking in Accept. On a closed listener, setting it already fails.
+	err := tcp.SetDeadline(time.Unix(1, 0))
+	if err == nil {
+		_, err = tcp.Accept()
+	}
+	if !errors.Is(err, net.ErrClosed) {
+		t.Errorf("the listener on %v is still open: %v", listener.Addr(), err)
 	}
 }
 
-// closeAfter closes c when the test ends.
-func closeAfter(t *testing.T, c io.Closer) {
+// closeAfter closes closer when the test ends. Something the test already closed is
+// not an error.
+func closeAfter(t *testing.T, closer io.Closer) {
 	t.Helper()
-	t.Cleanup(func() { _ = c.Close() })
+	t.Cleanup(func() {
+		if err := closer.Close(); err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, os.ErrClosed) {
+			t.Errorf("close at the end of the test: %v", err)
+		}
+	})
 }

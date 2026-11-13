@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 
 	"github.com/SpliceFS/common/wire"
@@ -45,8 +47,8 @@ func (s *Session) connect(ctx context.Context) error {
 		// A caller that gave up says nothing about the cluster.
 		if ctx.Err() == nil {
 			s.connectRetry.fail(now, err)
-			s.opts.Logger.Warn("cluster connect failed", "cluster", s.opts.Cluster,
-				"retry_in", delay(s.connectRetry.failures), "error", err)
+			s.opts.Logger.WarnContext(ctx, "cluster connect failed", slog.String("cluster", s.opts.Cluster),
+				slog.Duration("retry_in", delay(s.connectRetry.failures)), slog.Any("error", err))
 		}
 		return err
 	}
@@ -55,12 +57,15 @@ func (s *Session) connect(ctx context.Context) error {
 	s.token, s.expires = login.Token, login.Expires
 	s.members = members
 	s.fetched = now
-	s.opts.Logger.Info("cluster connected", "cluster", s.opts.Cluster, "nodes", len(members))
+	s.opts.Logger.InfoContext(ctx, "cluster connected", slog.String("cluster", s.opts.Cluster),
+		slog.Int("nodes", len(members)))
 	return nil
 }
 
 // entryNode returns the cluster host. It is dialed on first use and kept; if dialing fails, the
 // next attempt dials again.
+//
+//nolint:ireturn // Node is this package's own interface, and Options.Dial returns it.
 func (s *Session) entryNode() (Node, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,6 +83,9 @@ func (s *Session) badCredentials(what string, err error) error {
 	return fmt.Errorf("cluster %q: %s: %w: %w", s.opts.Cluster, what, ErrBadCredentials, err)
 }
 
+// errNoneUsable ends the text of the error for a node list in which no node could be dialed.
+var errNoneUsable = errors.New("none usable")
+
 // enter logs in at the cluster host and fetches the node list with that token.
 func (s *Session) enter(ctx context.Context) (wire.LoginResponse, []*member, error) {
 	entry, login, err := s.loginAtEntry(ctx)
@@ -91,7 +99,7 @@ func (s *Session) enter(ctx context.Context) (wire.LoginResponse, []*member, err
 	members := s.dialAll(s.listed(list.Nodes), nil)
 	if len(members) == 0 {
 		return wire.LoginResponse{}, nil, s.unavailable("fetch node list",
-			fmt.Errorf("%d nodes listed, none usable", len(list.Nodes)))
+			fmt.Errorf("%d nodes listed, %w", len(list.Nodes), errNoneUsable))
 	}
 	return login, members, nil
 }
@@ -107,7 +115,7 @@ func (s *Session) listed(nodes []wire.Node) []wire.Node {
 	}
 	s.fallbackNote.Do(func() {
 		s.opts.Logger.Info("cluster lists no nodes, using its address as the only node",
-			"cluster", s.opts.Cluster, "url", s.opts.EntryURL)
+			slog.String("cluster", s.opts.Cluster), slog.String("url", s.opts.EntryURL))
 	})
 	return []wire.Node{s.entryAsNode()}
 }
@@ -129,8 +137,8 @@ func (s *Session) entryAsNode() wire.Node {
 // dialed is skipped so that one bad entry does not hide the others.
 func (s *Session) dialAll(listed []wire.Node, known []*member) []*member {
 	byName := make(map[string]*member, len(known))
-	for _, m := range known {
-		byName[m.name] = m
+	for _, peer := range known {
+		byName[peer.name] = peer
 	}
 	seen := make(map[string]bool, len(listed))
 	members := make([]*member, 0, len(listed))
@@ -139,13 +147,14 @@ func (s *Session) dialAll(listed []wire.Node, known []*member) []*member {
 			continue
 		}
 		seen[n.Name] = true
-		if m, ok := byName[n.Name]; ok && m.url == n.URL {
-			members = append(members, m)
+		if peer, ok := byName[n.Name]; ok && peer.url == n.URL {
+			members = append(members, peer)
 			continue
 		}
 		node, err := s.opts.Dial(n.Name, n.URL)
 		if err != nil {
-			s.opts.Logger.Warn("cannot dial node", "cluster", s.opts.Cluster, "node", n.Name, "error", err)
+			s.opts.Logger.Warn("cannot dial node", slog.String("cluster", s.opts.Cluster),
+				slog.String("node", n.Name), slog.Any("error", err))
 			continue
 		}
 		members = append(members, &member{name: n.Name, url: n.URL, node: node})
@@ -210,6 +219,8 @@ func (s *Session) login(ctx context.Context, stale string) error {
 // loginAtEntry logs in at the cluster host and returns it with the login. Every login goes
 // there and nowhere else: when the cluster host cannot be reached, no node is assumed to be
 // reachable either, so the failure is final until the next attempt.
+//
+//nolint:ireturn // Node is this package's own interface, and Options.Dial returns it.
 func (s *Session) loginAtEntry(ctx context.Context) (Node, wire.LoginResponse, error) {
 	entry, err := s.entryNode()
 	if err != nil {

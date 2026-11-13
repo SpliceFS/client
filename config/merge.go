@@ -21,7 +21,7 @@ func decodeStrict(data []byte, out any) ([]string, error) {
 		if errors.Is(err, io.EOF) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, err //nolint:wrapcheck // The caller adds the file name, the YAML error says the rest.
 	}
 	if err := rejectSecondDocument(dec); err != nil {
 		return nil, err
@@ -29,7 +29,7 @@ func decodeStrict(data []byte, out any) ([]string, error) {
 	strict := yaml.NewDecoder(bytes.NewReader(data))
 	strict.KnownFields(true)
 	if err := strict.Decode(out); err != nil {
-		return nil, err
+		return nil, err //nolint:wrapcheck // The caller adds the file name, the YAML error says the rest.
 	}
 	return leafPaths(doc.Content[0], ""), nil
 }
@@ -40,9 +40,9 @@ func rejectSecondDocument(dec *yaml.Decoder) error {
 	err := dec.Decode(&next)
 	switch {
 	case err == nil:
-		return errors.New("more than one YAML document")
+		return ErrMultipleDocuments
 	case !errors.Is(err, io.EOF):
-		return err
+		return err //nolint:wrapcheck // The caller adds the file name, the YAML error says the rest.
 	}
 	return nil
 }

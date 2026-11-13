@@ -41,6 +41,10 @@ const (
 	// mntNoWait is MNT_NOWAIT: getfsstat(2) then returns cached data instead of asking
 	// each filesystem, so reading the table never talks to our own server.
 	mntNoWait = 2
+
+	// mountTableSpare is how many spare entries the mount table buffer has beyond the
+	// count read first; they cover a mount that appears between the two calls.
+	mountTableSpare = 4
 )
 
 // mountOptions is the option list for mount_nfs(8), which also accepts the generic
@@ -89,7 +93,7 @@ func mountFrom(source string) string {
 type commandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
 func execCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
-	//nolint:gosec // name is always one of the two system tool paths above.
+	//nolint:gosec,wrapcheck // name is one of two fixed tool paths; commandError names the tool in this error
 	return exec.CommandContext(ctx, name, args...).CombinedOutput()
 }
 
@@ -131,10 +135,13 @@ func systemEnvironment() environment {
 // server itself is open to every local process on 127.0.0.1, the same as with
 // AllowOther. Keeping other users out is a matter of the permissions of the
 // directories above the mount point.
+//
+//nolint:ireturn // The signature is fixed by the mount package, which is how callers reach this layer.
 func Mount(fsys core.FS, opts mount.Options) (mount.Mounted, error) {
 	return mountWith(fsys, opts, systemEnvironment())
 }
 
+//nolint:ireturn // It stands behind Mount, whose result type is fixed by the mount package.
 func mountWith(fsys core.FS, opts mount.Options, env environment) (mount.Mounted, error) {
 	log := opts.Logger
 	if log == nil {
@@ -159,11 +166,13 @@ func mountWith(fsys core.FS, opts mount.Options, env environment) (mount.Mounted
 		srv.Close()
 		return nil, err
 	}
-	m := &mounted{env: env, log: log, target: target, from: from, srv: srv,
-		unmounted: make(chan struct{}), done: make(chan struct{})}
-	ticks, stop := m.pollTicks()
-	go m.supervise(ticks, stop)
-	return m, nil
+	live := &mounted{
+		env: env, log: log, target: target, from: from, srv: srv,
+		unmounted: make(chan struct{}), done: make(chan struct{}),
+	}
+	poll := live.pollTicks()
+	go live.supervise(poll)
+	return live, nil
 }
 
 func runMount(run commandRunner, port int, from, target string) error {
@@ -209,19 +218,11 @@ type mounted struct {
 
 var _ mount.Mounted = (*mounted)(nil)
 
-// pollTicks returns the ticks that trigger a look at the mount table. A mount that is
-// not found in the table right after it succeeded (for example because the table
-// spells its path differently from the target) is never polled: reporting a mount as
-// gone when it is not would stop the server under a live mount, and the only thing
-// lost by not polling is noticing an unmount done from outside.
-func (m *mounted) pollTicks() (<-chan time.Time, func()) {
-	present, err := m.env.isMounted(m.target, m.from)
-	if err != nil || !present {
-		m.log.Warn("mount not found in the mount table; unmounts from outside will not be noticed",
-			"target", m.target, "err", err)
-		return nil, func() {}
-	}
-	return m.env.newTicker(pollInterval)
+// pollTicker is the clock of the mount table check: ticks says when to look, stop
+// releases the clock.
+type pollTicker struct {
+	ticks <-chan time.Time
+	stop  func()
 }
 
 // Done is closed when the mount has ended.
@@ -232,6 +233,8 @@ func (m *mounted) Err() error { return m.err }
 
 // Unmount runs umount, with -f when force is set, and returns after the server has
 // stopped. Without force, umount refuses a mount that is in use.
+//
+//nolint:revive // The flag is part of the signature of mount.Mounted.
 func (m *mounted) Unmount(ctx context.Context, force bool) error {
 	select {
 	case <-m.done:
@@ -259,12 +262,28 @@ func (m *mounted) Unmount(ctx context.Context, force bool) error {
 	}
 }
 
+// pollTicks returns the ticks that trigger a look at the mount table. A mount that is
+// not found in the table right after it succeeded (for example because the table
+// spells its path differently from the target) is never polled: reporting a mount as
+// gone when it is not would stop the server under a live mount, and the only thing
+// lost by not polling is noticing an unmount done from outside.
+func (m *mounted) pollTicks() pollTicker {
+	present, err := m.env.isMounted(m.target, m.from)
+	if err != nil || !present {
+		m.log.Warn("mount not found in the mount table; unmounts from outside will not be noticed",
+			slog.String("target", m.target), slog.Any("err", err))
+		return pollTicker{stop: func() {}}
+	}
+	ticks, stop := m.env.newTicker(pollInterval)
+	return pollTicker{ticks: ticks, stop: stop}
+}
+
 // supervise ends the mount when the server fails, the mount disappears or Unmount
 // succeeded, then stops the server and closes done.
-func (m *mounted) supervise(ticks <-chan time.Time, stopTicks func()) {
+func (m *mounted) supervise(poll pollTicker) {
 	defer close(m.done)
-	defer stopTicks()
-	m.err = m.wait(ticks)
+	defer poll.stop()
+	m.err = m.wait(poll.ticks)
 	m.srv.Close()
 }
 
@@ -278,7 +297,7 @@ func (m *mounted) wait(ticks <-chan time.Time) error {
 		case <-ticks:
 			present, err := m.env.isMounted(m.target, m.from)
 			if err != nil {
-				m.log.Warn("read the mount table", "err", err)
+				m.log.Warn("read the mount table", slog.Any("err", err))
 			} else if !present {
 				return nil
 			}
@@ -305,8 +324,7 @@ func mountTableHas(getfsstat func([]syscall.Statfs_t, int) (int, error), target,
 	if err != nil {
 		return false, fmt.Errorf("count mounts: %w", err)
 	}
-	// A few spare entries cover a mount that appears between the two calls.
-	table := make([]syscall.Statfs_t, n+4)
+	table := make([]syscall.Statfs_t, n+mountTableSpare)
 	n, err = getfsstat(table, mntNoWait)
 	if err != nil {
 		return false, fmt.Errorf("read mounts: %w", err)

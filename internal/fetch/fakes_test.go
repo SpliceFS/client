@@ -1,6 +1,7 @@
 package fetch
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -26,7 +27,7 @@ type call struct {
 	claimed bool // handed to the test
 	off     int64
 	n       int
-	ctx     context.Context
+	ctx     context.Context //nolint:containedctx // Kept to tell later whether the Reader cancelled the call.
 	reply   chan error
 	done    chan struct{} // closed when Fetch returns
 }
@@ -61,9 +62,9 @@ func newFakeSource(id string) *fakeSource {
 func (s *fakeSource) ID() string { return s.id }
 
 func (s *fakeSource) Fetch(ctx context.Context, off int64, buf []byte) error {
-	c := &call{off: off, n: len(buf), ctx: ctx, reply: make(chan error, 1), done: make(chan struct{})}
+	fetchCall := &call{off: off, n: len(buf), ctx: ctx, reply: make(chan error, 1), done: make(chan struct{})}
 	s.mu.Lock()
-	s.calls = append(s.calls, c)
+	s.calls = append(s.calls, fetchCall)
 	s.inflight++
 	s.peak = max(s.peak, s.inflight)
 	respond := s.respond
@@ -73,14 +74,14 @@ func (s *fakeSource) Fetch(ctx context.Context, off int64, buf []byte) error {
 		s.mu.Lock()
 		s.inflight--
 		s.mu.Unlock()
-		close(c.done)
+		close(fetchCall.done)
 	}()
 	var err error
 	if respond != nil {
 		err = respond(off)
 	} else {
 		select {
-		case err = <-c.reply:
+		case err = <-fetchCall.reply:
 		case <-ctx.Done():
 			err = ctx.Err()
 		}
@@ -125,10 +126,17 @@ func (s *fakeSource) manual() {
 	}
 }
 
-func (s *fakeSource) snapshot() (calls []*call, peak int) {
+// sourceSnapshot is what a fakeSource has seen so far: every call, and the most
+// fetches that ran at once.
+type sourceSnapshot struct {
+	calls []*call
+	peak  int
+}
+
+func (s *fakeSource) snapshot() sourceSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]*call(nil), s.calls...), s.peak
+	return sourceSnapshot{calls: append([]*call(nil), s.calls...), peak: s.peak}
 }
 
 func always(err error) func(int64) error { return func(int64) error { return err } }
@@ -146,13 +154,13 @@ type fakeStore struct {
 // newFakeStore returns a Store for a file of size bytes in 100-byte blocks,
 // holding the given blocks.
 func newFakeStore(size int64, present ...int64) *fakeStore {
-	s := &fakeStore{blockSize: 100, blocks: make(map[int64][]byte)}
-	s.cond = sync.NewCond(&s.mu)
+	store := &fakeStore{blockSize: 100, blocks: make(map[int64][]byte)}
+	store.cond = sync.NewCond(&store.mu)
 	for _, b := range present {
-		start, length := span(b, s.blockSize, size)
-		s.blocks[b] = fileBytes(start, length)
+		piece := span(b, store.blockSize, size)
+		store.blocks[b] = fileBytes(piece.start, piece.length)
 	}
-	return s
+	return store
 }
 
 func (s *fakeStore) Has(b int64) bool {
@@ -162,17 +170,17 @@ func (s *fakeStore) Has(b int64) bool {
 	return ok
 }
 
-func (s *fakeStore) ReadAt(p []byte, off int64) (int, error) {
+func (s *fakeStore) ReadAt(dest []byte, off int64) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.readErr != nil {
 		return 0, s.readErr
 	}
-	for i := range p {
+	for i := range dest {
 		pos := off + int64(i)
-		p[i] = s.blocks[pos/s.blockSize][pos%s.blockSize]
+		dest[i] = s.blocks[pos/s.blockSize][pos%s.blockSize]
 	}
-	return len(p), nil
+	return len(dest), nil
 }
 
 func (s *fakeStore) WriteBlock(b int64, data []byte) error {
@@ -201,8 +209,8 @@ func (s *fakeStore) check(t *testing.T, size int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for b, data := range s.blocks {
-		start, length := span(b, s.blockSize, size)
-		if string(data) != string(fileBytes(start, length)) {
+		piece := span(b, s.blockSize, size)
+		if !bytes.Equal(data, fileBytes(piece.start, piece.length)) {
 			t.Errorf("stored block %d holds wrong bytes", b)
 		}
 	}
@@ -278,6 +286,7 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
+//nolint:ireturn // Implements Clock.AfterFunc, whose signature is fixed.
 func (c *fakeClock) AfterFunc(d time.Duration, f func()) Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -425,25 +434,32 @@ func baseOptions(size int64) Options {
 
 func newHarness(t *testing.T, opts Options, store *fakeStore, rates map[string]float64, ids ...string) *harness {
 	t.Helper()
-	h := &harness{t: t, clock: newFakeClock(), meter: newFakeMeter(rates), rec: newRecorder(), src: map[string]*fakeSource{}, store: store}
-	opts.Clock = h.clock
-	var sources []Source
+	env := &harness{
+		t:     t,
+		clock: newFakeClock(),
+		meter: newFakeMeter(rates),
+		rec:   newRecorder(),
+		src:   map[string]*fakeSource{},
+		store: store,
+	}
+	opts.Clock = env.clock
+	sources := make([]Source, 0, len(ids))
 	for _, id := range ids {
-		h.src[id] = newFakeSource(id)
-		sources = append(sources, h.src[id])
+		env.src[id] = newFakeSource(id)
+		sources = append(sources, env.src[id])
 	}
 	var st Store
 	if store != nil {
 		st = store
 	}
-	r, err := New(opts, sources, st, h.meter)
+	r, err := New(opts, sources, st, env.meter)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	r.trace = h.rec
-	h.r = r
-	t.Cleanup(h.close)
-	return h
+	r.trace = env.rec
+	env.r = r
+	t.Cleanup(env.close)
+	return env
 }
 
 func (h *harness) close() {
@@ -470,13 +486,13 @@ type result struct {
 
 // start runs ReadAt in its own goroutine.
 func (h *harness) start(ctx context.Context, off int64, n int) <-chan result {
-	ch := make(chan result, 1)
+	results := make(chan result, 1)
 	go func() {
 		buf := make([]byte, n)
 		got, err := h.r.ReadAt(ctx, buf, off)
-		ch <- result{buf[:got], got, err}
+		results <- result{buf[:got], got, err}
 	}()
-	return ch
+	return results
 }
 
 // mustRead reads and checks that the bytes are the file's.
@@ -491,7 +507,7 @@ func (h *harness) check(res result, off int64, n int) {
 	if res.err != nil {
 		h.t.Fatalf("read %d at %d: %v", n, off, res.err)
 	}
-	if string(res.data) != string(fileBytes(off, int64(n))) {
+	if !bytes.Equal(res.data, fileBytes(off, int64(n))) {
 		h.t.Fatalf("read %d at %d: wrong bytes", n, off)
 	}
 }
@@ -504,13 +520,13 @@ func (h *harness) state(f func(r *Reader)) {
 }
 
 func (h *harness) cooling(id string) bool {
-	var c bool
+	var isCooling bool
 	h.state(func(r *Reader) {
 		for _, s := range r.sources {
 			if s.id == id {
-				c = s.cooling
+				isCooling = s.cooling
 			}
 		}
 	})
-	return c
+	return isCooling
 }

@@ -18,7 +18,7 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 	t.Helper()
 	for name, content := range files {
 		path := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // a test directory
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -64,9 +64,9 @@ func TestConfigCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			status, stdout, stderr := executeWith(realConfigBackend(), "--config", tt.dir, "config", "check")
-			if status != exitOK || stdout != tt.want || stderr != "" {
-				t.Errorf("status %d stdout %q stderr %q, want 0 %q", status, stdout, stderr, tt.want)
+			ran := executeWith(realConfigBackend(), "--config", tt.dir, "config", "check")
+			if ran.status != exitOK || ran.stdout != tt.want || ran.stderr != "" {
+				t.Errorf("status %d stdout %q stderr %q, want 0 %q", ran.status, ran.stdout, ran.stderr, tt.want)
 			}
 		})
 	}
@@ -81,13 +81,13 @@ func TestConfigCheckPrintsEveryProblem(t *testing.T) {
 		// A file where a folder belongs: the loader cannot read the mounts folder.
 		"mounts.d": "not a folder",
 	})
-	status, stdout, stderr := executeWith(realConfigBackend(), "--config", dir, "config", "check")
-	if status != exitError || stdout != "" {
-		t.Errorf("status %d stdout %q", status, stdout)
+	ran := executeWith(realConfigBackend(), "--config", dir, "config", "check")
+	if ran.status != exitError || ran.stdout != "" {
+		t.Errorf("status %d stdout %q", ran.status, ran.stdout)
 	}
 	for _, want := range []string{"conf.d/cache.yaml", "colour", "mounts.d"} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr does not mention %q:\n%s", want, stderr)
+		if !strings.Contains(ran.stderr, want) {
+			t.Errorf("stderr does not mention %q:\n%s", want, ran.stderr)
 		}
 	}
 }
@@ -104,9 +104,9 @@ func TestConfigShow(t *testing.T) {
 			"cache:\n  max_age: 7d\n",
 		"mounts.d/docs.yaml": "cluster: east\npath: /docs\ntarget: /srv/docs\noffline: true\n",
 	})
-	status, stdout, stderr := executeWith(realConfigBackend(), "--config", dir, "config", "show")
-	if status != exitOK || stderr != "" {
-		t.Fatalf("status %d stderr %q", status, stderr)
+	ran := executeWith(realConfigBackend(), "--config", dir, "config", "show")
+	if ran.status != exitOK || ran.stderr != "" {
+		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
 	want := `cache:
   dir: /var/cache/example # conf.d/10-cache.yaml
@@ -154,17 +154,17 @@ mounts:
       revalidate: 1h
       listing_ttl: 30s
 `
-	if stdout != want {
-		t.Errorf("output:\n%s\nwant:\n%s", stdout, want)
+	if ran.stdout != want {
+		t.Errorf("output:\n%s\nwant:\n%s", ran.stdout, want)
 	}
 }
 
 func TestConfigShowWithoutClustersAndMounts(t *testing.T) {
 	t.Parallel()
 	b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
-	status, stdout, stderr := executeWith(b, "config", "show")
-	if !strings.HasSuffix(stdout, "clusters: {}\nmounts: []\n") || status != exitOK || stderr != "" {
-		t.Errorf("status %d stdout %q stderr %q", status, stdout, stderr)
+	ran := executeWith(b, "config", "show")
+	if !strings.HasSuffix(ran.stdout, "clusters: {}\nmounts: []\n") || ran.status != exitOK || ran.stderr != "" {
+		t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 	}
 }
 
@@ -175,9 +175,9 @@ func TestConfigFailures(t *testing.T) {
 		t.Run("load "+command, func(t *testing.T) {
 			t.Parallel()
 			b, _ := fakeBackend(nil, boom, nil, nil, nil, app.Report{})
-			status, stdout, stderr := executeWith(b, "config", command)
-			if status != exitError || stdout != "" || stderr != "splicefs: "+boom.Error()+"\n" {
-				t.Errorf("status %d stdout %q stderr %q", status, stdout, stderr)
+			ran := executeWith(b, "config", command)
+			if ran.status != exitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
+				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 		})
 		t.Run("write "+command, func(t *testing.T) {
@@ -198,35 +198,48 @@ func TestUnknownDefaultConfigDir(t *testing.T) {
 	tests := []struct {
 		name string
 		args []string
-		// looksUp says whether the command needs the default configuration directory.
-		looksUp bool
 	}{
-		{"mount", []string{"mount"}, true},
-		{"umount", []string{"umount"}, true},
-		{"status", []string{"status"}, true},
-		{"config check", []string{"config", "check"}, true},
-		{"config show", []string{"config", "show"}, true},
-		{"directory given", []string{"--config", "/etc/example", "status"}, false},
-		{"version", []string{"--version"}, false},
-		{"help", []string{"--help"}, false},
+		{"mount", []string{"mount"}},
+		{"umount", []string{"umount"}},
+		{"status", []string{"status"}},
+		{"config check", []string{"config", "check"}},
+		{"config show", []string{"config", "show"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			b, c := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
+			b, recorded := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
 			b.defaultConfigDir = func() (string, error) { return "", boom }
-			status, stdout, stderr := executeWith(b, tt.args...)
-			if !tt.looksUp {
-				if status != exitOK {
-					t.Errorf("status %d stdout %q stderr %q, want a command that ran", status, stdout, stderr)
-				}
-				return
+			ran := executeWith(b, tt.args...)
+			if ran.status != exitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
+				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
-			if status != exitError || stdout != "" || stderr != "splicefs: "+boom.Error()+"\n" {
-				t.Errorf("status %d stdout %q stderr %q", status, stdout, stderr)
+			if recorded.loadDir != "" || recorded.runCfg != nil || recorded.socketPath != "" || recorded.statusCalls != 0 {
+				t.Errorf("a command ran without a configuration directory: %+v", recorded)
 			}
-			if c.loadDir != "" || c.runCfg != nil || c.socketPath != "" || c.statusCalls != 0 {
-				t.Errorf("a command ran without a configuration directory: %+v", c)
+		})
+	}
+}
+
+// TestDefaultConfigDirIsNotLookedUp checks that the commands that do not need the default
+// configuration directory do not ask for it, so they work where there is none.
+func TestDefaultConfigDirIsNotLookedUp(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"directory given", []string{"--config", "/etc/example", "status"}},
+		{"version", []string{"--version"}},
+		{"help", []string{"--help"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
+			b.defaultConfigDir = func() (string, error) { return "", errors.New("must not be asked") }
+			if ran := executeWith(b, tt.args...); ran.status != exitOK {
+				t.Errorf("status %d stdout %q stderr %q, want a command that ran", ran.status, ran.stdout, ran.stderr)
 			}
 		})
 	}

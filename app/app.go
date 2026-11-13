@@ -33,6 +33,10 @@ const (
 	forceStopTimeout = 30 * time.Second
 )
 
+// ErrReloadWithoutLoad means Options.Reload was set without Options.Load, so a reload would
+// have nothing to read.
+var ErrReloadWithoutLoad = errors.New("reload needs a function that loads the configuration")
+
 // Mounter mounts fsys at opts.Target with the mount layer of the operating system and
 // returns once the mount is usable.
 type Mounter func(fsys core.FS, opts mount.Options) (mount.Mounted, error)
@@ -60,12 +64,16 @@ type Core interface {
 // NewCore builds a Core for a configuration.
 type NewCore func(cfg *config.Config, opts core.Options) (Core, error)
 
+// newCoreClient fills Options.NewCore, whose type returns the Core interface so that tests
+// can replace the core client.
+//
+//nolint:ireturn // the NewCore function type it implements returns the interface
 func newCoreClient(cfg *config.Config, opts core.Options) (Core, error) {
-	c, err := core.New(cfg, opts)
+	client, err := core.New(cfg, opts)
 	if err != nil {
-		return nil, err
+		return nil, err //nolint:wrapcheck // Run adds "start client: ", the core package says the rest.
 	}
-	return c, nil
+	return client, nil
 }
 
 // Options are the parts of a run that do not come from the configuration file.
@@ -99,7 +107,7 @@ type Options struct {
 
 	// The health round: where its ticks come from, how it asks a mount for the probe name,
 	// and how long and how often a mount may fail before it is counted as hung.
-	newTicker     func(time.Duration) (<-chan time.Time, func())
+	newTicker     func(time.Duration) tickSource
 	lstat         func(string) (os.FileInfo, error)
 	probeTimeout  time.Duration
 	probeFailures int
@@ -112,6 +120,11 @@ type stopLimits struct {
 }
 
 func (o Options) withDefaults() Options {
+	return o.withPublicDefaults().withHostDefaults()
+}
+
+// withPublicDefaults fills the options that a caller of Run may leave out.
+func (o Options) withPublicDefaults() Options {
 	if o.Logger == nil {
 		o.Logger = slog.New(slog.DiscardHandler)
 	}
@@ -124,6 +137,12 @@ func (o Options) withDefaults() Options {
 	if o.NewCore == nil {
 		o.NewCore = newCoreClient
 	}
+	return o
+}
+
+// withHostDefaults fills the options that only tests replace: what the run takes from the
+// operating system, and the limits of the stop and of the health round.
+func (o Options) withHostDefaults() Options {
 	if o.sys == nil {
 		sys := systemHost()
 		o.sys = &sys
@@ -180,10 +199,10 @@ func (o Options) controlSocket() (string, error) {
 func Run(ctx context.Context, cfg *config.Config, targets []string, opts Options) (err error) {
 	opts = opts.withDefaults()
 	if opts.Reload != nil && opts.Load == nil {
-		return errors.New("reload needs a function that loads the configuration")
+		return ErrReloadWithoutLoad
 	}
-	var socketPath string
-	if socketPath, err = opts.controlSocket(); err != nil {
+	socketPath, err := opts.controlSocket()
+	if err != nil {
 		return err
 	}
 	opts.SocketPath = socketPath
@@ -197,19 +216,33 @@ func Run(ctx context.Context, cfg *config.Config, targets []string, opts Options
 	}
 	// The socket is claimed before anything is mounted, so that a second client for the
 	// same configuration fails here and not after it has mounted over the first.
-	sock, err := opts.sys.claim(opts.SocketPath)
+	sock, err := opts.sys.claim(ctx, opts.SocketPath)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, sock.Close()) }()
+	return serve(ctx, sock, cfg, selection{targets: abs, mounts: selected}, opts)
+}
 
-	cc, err := opts.NewCore(cfg, core.Options{Logger: opts.Logger})
+// selection is what a run was asked to mount: the mounts, and the absolute targets that
+// were named, which are empty when every mount was asked for.
+type selection struct {
+	targets []string
+	mounts  []config.Mount
+}
+
+// serve builds the core client, mounts the selection and keeps it mounted until ctx ends.
+// The control socket is already claimed.
+func serve(ctx context.Context, sock *socket, cfg *config.Config, chosen selection,
+	opts Options,
+) (err error) {
+	coreClient, err := opts.NewCore(cfg, core.Options{Logger: opts.Logger})
 	if err != nil {
 		return fmt.Errorf("start client: %w", err)
 	}
-	defer func() { err = errors.Join(err, cc.Close()) }()
+	defer func() { err = errors.Join(err, coreClient.Close()) }()
 
-	if err := connectClusters(ctx, cc, selected, opts); err != nil {
+	if err = connectClusters(ctx, coreClient, chosen.mounts, opts); err != nil {
 		if ctx.Err() != nil {
 			// Being told to stop while still connecting is a successful stop.
 			return nil
@@ -218,91 +251,98 @@ func Run(ctx context.Context, cfg *config.Config, targets []string, opts Options
 	}
 	store := newRequestedStore(requestedPath(opts.SocketPath), opts.Logger)
 	store.load()
-	set, err := mountAll(cc, selected, store, opts)
+	set, err := mountAll(ctx, coreClient, chosen.mounts, store, opts)
 	if err != nil {
 		return err
 	}
-	r := &reloader{
-		cc: cc, set: set, opts: opts, targets: abs, store: store, last: cfg,
-		requests: make(chan mountRequest),
+	run := &reloader{
+		coreClient: coreClient, set: set, opts: opts, targets: chosen.targets, store: store,
+		last: cfg, requests: make(chan mountRequest),
 	}
-	return supervise(ctx, r, sock)
+	return supervise(ctx, run, sock)
 }
 
 // mountAll mounts every selected mount. If one fails, the ones already mounted are
 // unmounted with force, because a mount left behind would block the next start.
-func mountAll(cc Core, selected []config.Mount, store *requestedStore,
-	opts Options) (*mountSet, error) {
-	set := newMountSet(cc.Release, opts.Logger)
+func mountAll(ctx context.Context, coreClient Core, selected []config.Mount,
+	store *requestedStore, opts Options,
+) (*mountSet, error) {
+	set := newMountSet(coreClient.Release, opts.Logger)
 	// Set before the first watcher starts, which reads it.
 	set.requested = store
-	for _, m := range selected {
-		live, err := mountOne(cc, m, opts)
+	for i := range selected {
+		live, err := mountOne(coreClient, selected[i], opts)
 		if err != nil {
-			return nil, errors.Join(err, set.forceAll(opts.limits.force))
+			return nil, errors.Join(err, set.forceAll(ctx, opts.limits.force))
 		}
 		set.add(live)
 	}
 	return set, nil
 }
 
-func mountOne(cc Core, m config.Mount, opts Options) (*liveMount, error) {
-	fsys, err := cc.View(m)
+func mountOne(coreClient Core, mountCfg config.Mount, opts Options) (*liveMount, error) {
+	fsys, err := coreClient.View(mountCfg)
 	if err != nil {
-		return nil, err
+		return nil, err //nolint:wrapcheck // The core package names the mount and what was wrong.
 	}
-	source := "splicefs:" + m.Cluster + m.Path
+	source := "splicefs:" + mountCfg.Cluster + mountCfg.Path
 	mounted, err := opts.Mounter(fsys, mount.Options{
-		Target:     m.Target,
+		Target:     mountCfg.Target,
 		Source:     source,
-		AllowOther: m.AllowOther,
+		AllowOther: mountCfg.AllowOther,
 		Logger:     opts.Logger,
 	})
 	if err != nil {
 		// The mount never existed, so nothing else will give the view back.
-		cc.Release(fsys)
-		return nil, fmt.Errorf("mount %s: %w", m.Target, err)
+		coreClient.Release(fsys)
+		return nil, fmt.Errorf("mount %s: %w", mountCfg.Target, err)
 	}
-	return &liveMount{target: m.Target, source: source, mounted: mounted, cfg: m, fs: fsys}, nil
+	return &liveMount{
+		target: mountCfg.Target, source: source, mounted: mounted, cfg: mountCfg, fs: fsys,
+	}, nil
 }
 
 // supervise reports readiness, keeps the control socket going and applies reloads until
 // the context ends, then stops everything.
-func supervise(ctx context.Context, r *reloader, sock *socket) error {
-	opts := r.opts
-	ctl := startControl(sock, r.set, r.cc, opts.Logger, r.requests)
-	r.restoreRequested(ctx)
+func supervise(ctx context.Context, run *reloader, sock *socket) error {
+	opts := run.opts
+	ctl := startControl(ctx, sock, run.set, run.coreClient, opts.Logger, run.requests)
+	run.restoreRequested(ctx)
 	if err := opts.Notify("READY=1"); err != nil {
 		ctl.stop()
 		return errors.Join(fmt.Errorf("tell the service manager the client is ready: %w", err),
-			r.set.forceAll(opts.limits.force))
+			run.set.forceAll(ctx, opts.limits.force))
 	}
-	r.wait(ctx, opts.Reload)
+	run.wait(ctx, opts.Reload)
 
 	if err := opts.Notify("STOPPING=1"); err != nil {
-		opts.Logger.Warn("could not tell the service manager the client is stopping", "err", err)
+		opts.Logger.WarnContext(ctx, "could not tell the service manager the client is stopping",
+			slog.Any("err", err))
 	}
 	ctl.stop()
-	return r.set.stopAll(opts.Logger, opts.limits)
+	return run.set.stopAll(ctx, opts.Logger, opts.limits)
 }
 
 // connectClusters logs in to every cluster the selected mounts use, all at once, each
 // within the connect timeout. Rejected credentials are fatal: a wrong password should
 // fail loudly and not produce a mount full of I/O errors. An unreachable cluster is only
 // a warning.
-func connectClusters(ctx context.Context, cc Core, selected []config.Mount, opts Options) error {
+func connectClusters(ctx context.Context, coreClient Core, selected []config.Mount,
+	opts Options,
+) error {
 	names := clusterNames(selected)
 	results := make([]error, len(names))
 	var wg sync.WaitGroup
 	for i, name := range names {
-		wg.Go(func() { results[i] = connectOne(ctx, cc, name, opts.ConnectTimeout) })
+		wg.Go(func() { results[i] = connectOne(ctx, coreClient, name, opts.ConnectTimeout) })
 	}
 	wg.Wait()
 	for i, err := range results {
 		switch {
 		case err == nil:
 		case errors.Is(err, core.ErrUnavailable):
-			opts.Logger.Warn("cluster unreachable, mounting anyway", "cluster", names[i], "err", err)
+			opts.Logger.WarnContext(ctx, "cluster unreachable, mounting anyway",
+				slog.String("cluster", names[i]), slog.Any("err", err))
 		default:
 			return err
 		}
@@ -310,20 +350,20 @@ func connectClusters(ctx context.Context, cc Core, selected []config.Mount, opts
 	return nil
 }
 
-func connectOne(ctx context.Context, cc Core, name string, timeout time.Duration) error {
+func connectOne(ctx context.Context, coreClient Core, name string, timeout time.Duration) error {
 	attempt, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	err := cc.Connect(attempt, name)
+	err := coreClient.Connect(attempt, name)
 	if err != nil && attempt.Err() != nil && ctx.Err() == nil {
 		return fmt.Errorf("connect to cluster %q: %w: %w", name, core.ErrUnavailable, err)
 	}
-	return err
+	return err //nolint:wrapcheck // The core package already starts the message with the cluster.
 }
 
 func clusterNames(selected []config.Mount) []string {
 	set := make(map[string]struct{})
-	for _, m := range selected {
-		set[m.Cluster] = struct{}{}
+	for i := range selected {
+		set[selected[i].Cluster] = struct{}{}
 	}
 	return slices.Sorted(maps.Keys(set))
 }

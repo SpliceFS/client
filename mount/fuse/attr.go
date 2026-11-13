@@ -38,33 +38,40 @@ type attributes struct {
 // newAttributes converts the description of a file from the core into what the kernel
 // is told: read-only permissions, one link, the given owner, and one timestamp that
 // serves as modification, access and change time alike.
-func newAttributes(a core.Attr, o owner) attributes {
+func newAttributes(attr core.Attr, fileOwner owner) attributes {
 	mode := uint32(syscall.S_IFREG | fileMode)
-	if a.Dir {
+	if attr.Dir {
 		mode = syscall.S_IFDIR | dirMode
 	}
-	size := uint64(max(a.Size, 0))
-	sec, nsec := unixTime(a.MTime)
+	size := uint64(max(attr.Size, 0))
+	mtime := unixTime(attr.MTime)
 	return attributes{
-		ino:       a.Inode,
+		ino:       attr.Inode,
 		mode:      mode,
 		nlink:     1,
-		owner:     o,
+		owner:     fileOwner,
 		size:      size,
 		blocks:    (size + sectorSize - 1) / sectorSize,
-		mtimeSec:  sec,
-		mtimeNsec: nsec,
+		mtimeSec:  mtime.sec,
+		mtimeNsec: mtime.nsec,
 	}
+}
+
+// epochTime is a point in time as the kernel structure holds it.
+type epochTime struct {
+	sec  uint64
+	nsec uint32
 }
 
 // unixTime splits t into seconds and nanoseconds since the epoch. Times before the
 // epoch, including the zero time of a node that reported none, become the epoch
 // because the kernel structure cannot hold a negative time.
-func unixTime(t time.Time) (sec uint64, nsec uint32) {
+func unixTime(t time.Time) epochTime {
 	if t.Before(time.Unix(0, 0)) {
-		return 0, 0
+		return epochTime{}
 	}
-	return uint64(t.Unix()), uint32(t.Nanosecond()) //nolint:gosec // t is not before the epoch, so both values are non-negative
+	// t is not before the epoch, so both values are non-negative.
+	return epochTime{sec: uint64(t.Unix()), nsec: uint32(t.Nanosecond())} //nolint:gosec // see above
 }
 
 // capacity is the size of a view in statfs blocks.

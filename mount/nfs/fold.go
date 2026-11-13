@@ -3,8 +3,10 @@ package nfs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -27,6 +29,7 @@ const resolutionCacheSize = 4096
 // treated as missing rather than guessed.
 type normalizingFS struct {
 	core.FS
+
 	resolved *lru[string, string] // requested path -> stored path
 }
 
@@ -51,37 +54,43 @@ func (n *normalizingFS) ReadDir(ctx context.Context, name string) ([]core.Attr, 
 }
 
 // Open opens name, finding it under another normalization form if needed.
+//
+//nolint:ireturn // The signature is fixed by core.FS.
 func (n *normalizingFS) Open(ctx context.Context, name string) (core.File, error) {
 	return withFallback(ctx, n, name, func(p string) (core.File, error) {
 		return n.FS.Open(ctx, p)
 	})
 }
 
-// withFallback runs op on name and, only when that says the name does not exist and the
+// withFallback runs operation on name and, only when that says the name does not exist and the
 // name is not pure ASCII, retries it on the stored spelling of the name.
-func withFallback[T any](ctx context.Context, n *normalizingFS, name string, op func(string) (T, error)) (T, error) {
-	v, err := op(name)
+//
+//nolint:ireturn // T is the result type of operation, which the caller chooses; not an interface here.
+func withFallback[T any](
+	ctx context.Context, n *normalizingFS, name string, operation func(string) (T, error),
+) (T, error) {
+	result, err := operation(name)
 	if !errors.Is(err, core.ErrNotExist) || isASCII(name) {
-		return v, err
+		return result, err
 	}
 	// A remembered spelling is only a hint: it is tried, and dropped if the tree has
 	// changed since, so no clock is needed to expire it.
 	if stored, ok := n.resolved.get(name); ok {
-		if v2, err2 := op(stored); !errors.Is(err2, core.ErrNotExist) {
-			return v2, err2
+		if retried, retryErr := operation(stored); !errors.Is(retryErr, core.ErrNotExist) {
+			return retried, retryErr
 		}
 		n.resolved.remove(name)
 	}
 	stored, rerr := n.resolve(ctx, name)
 	switch {
 	case errors.Is(rerr, core.ErrNotExist) || stored == name:
-		return v, err
+		return result, err
 	case rerr != nil:
 		var zero T
 		return zero, rerr
 	}
 	n.resolved.add(name, stored)
-	return op(stored)
+	return operation(stored)
 }
 
 // resolve returns the stored spelling of name. It lists a directory only for a segment
@@ -106,11 +115,14 @@ func (n *normalizingFS) resolve(ctx context.Context, name string) (string, error
 // whose NFC form equals that of seg, otherwise core.ErrNotExist.
 func (n *normalizingFS) storedSegment(ctx context.Context, dir, seg string) (string, error) {
 	if _, err := n.FS.Stat(ctx, path.Join(dir, seg)); !errors.Is(err, core.ErrNotExist) {
-		return seg, err
+		if err != nil {
+			return "", fmt.Errorf("stat %q: %w", path.Join(dir, seg), err)
+		}
+		return seg, nil
 	}
 	entries, err := n.FS.ReadDir(ctx, dir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("list %q: %w", dir, err)
 	}
 	want := norm.NFC.String(seg)
 	match := ""
@@ -129,7 +141,7 @@ func (n *normalizingFS) storedSegment(ctx context.Context, dir, seg string) (str
 
 func isASCII(s string) bool {
 	for i := range len(s) {
-		if s[i] >= 0x80 {
+		if s[i] >= utf8.RuneSelf {
 			return false
 		}
 	}

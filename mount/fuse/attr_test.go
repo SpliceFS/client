@@ -11,7 +11,7 @@ import (
 func TestNewAttributes(t *testing.T) {
 	t.Parallel()
 	mtime := time.Unix(1_700_000_000, 123_456_789)
-	o := owner{uid: 1000, gid: 1001}
+	fileOwner := owner{uid: 1000, gid: 1001}
 	tests := []struct {
 		name string
 		in   core.Attr
@@ -21,7 +21,7 @@ func TestNewAttributes(t *testing.T) {
 			name: "file",
 			in:   core.Attr{Name: "a", Size: 1000, MTime: mtime, Inode: 42},
 			want: attributes{
-				ino: 42, mode: syscall.S_IFREG | 0o444, nlink: 1, owner: o,
+				ino: 42, mode: syscall.S_IFREG | 0o444, nlink: 1, owner: fileOwner,
 				size: 1000, blocks: 2, mtimeSec: 1_700_000_000, mtimeNsec: 123_456_789,
 			},
 		},
@@ -29,7 +29,7 @@ func TestNewAttributes(t *testing.T) {
 			name: "directory",
 			in:   core.Attr{Name: "d", Dir: true, MTime: mtime, Inode: 7},
 			want: attributes{
-				ino: 7, mode: syscall.S_IFDIR | 0o555, nlink: 1, owner: o,
+				ino: 7, mode: syscall.S_IFDIR | 0o555, nlink: 1, owner: fileOwner,
 				mtimeSec: 1_700_000_000, mtimeNsec: 123_456_789,
 			},
 		},
@@ -37,7 +37,7 @@ func TestNewAttributes(t *testing.T) {
 			name: "blocks round up in 512 byte units",
 			in:   core.Attr{Size: 513, MTime: mtime},
 			want: attributes{
-				mode: syscall.S_IFREG | 0o444, nlink: 1, owner: o,
+				mode: syscall.S_IFREG | 0o444, nlink: 1, owner: fileOwner,
 				size: 513, blocks: 2, mtimeSec: 1_700_000_000, mtimeNsec: 123_456_789,
 			},
 		},
@@ -45,7 +45,7 @@ func TestNewAttributes(t *testing.T) {
 			name: "exact multiple of 512",
 			in:   core.Attr{Size: 1024, MTime: mtime},
 			want: attributes{
-				mode: syscall.S_IFREG | 0o444, nlink: 1, owner: o,
+				mode: syscall.S_IFREG | 0o444, nlink: 1, owner: fileOwner,
 				size: 1024, blocks: 2, mtimeSec: 1_700_000_000, mtimeNsec: 123_456_789,
 			},
 		},
@@ -53,30 +53,30 @@ func TestNewAttributes(t *testing.T) {
 			name: "negative size is empty",
 			in:   core.Attr{Size: -5, MTime: mtime},
 			want: attributes{
-				mode: syscall.S_IFREG | 0o444, nlink: 1, owner: o,
+				mode: syscall.S_IFREG | 0o444, nlink: 1, owner: fileOwner,
 				mtimeSec: 1_700_000_000, mtimeNsec: 123_456_789,
 			},
 		},
 		{
 			name: "zero time becomes the epoch",
 			in:   core.Attr{Size: 1},
-			want: attributes{mode: syscall.S_IFREG | 0o444, nlink: 1, owner: o, size: 1, blocks: 1},
+			want: attributes{mode: syscall.S_IFREG | 0o444, nlink: 1, owner: fileOwner, size: 1, blocks: 1},
 		},
 		{
 			name: "time before the epoch becomes the epoch",
 			in:   core.Attr{MTime: time.Unix(-10, 5)},
-			want: attributes{mode: syscall.S_IFREG | 0o444, nlink: 1, owner: o},
+			want: attributes{mode: syscall.S_IFREG | 0o444, nlink: 1, owner: fileOwner},
 		},
 		{
 			name: "the epoch itself",
 			in:   core.Attr{MTime: time.Unix(0, 9)},
-			want: attributes{mode: syscall.S_IFREG | 0o444, nlink: 1, owner: o, mtimeNsec: 9},
+			want: attributes{mode: syscall.S_IFREG | 0o444, nlink: 1, owner: fileOwner, mtimeNsec: 9},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := newAttributes(tt.in, o); got != tt.want {
+			if got := newAttributes(tt.in, fileOwner); got != tt.want {
 				t.Fatalf("newAttributes(%+v) =\n%+v\nwant\n%+v", tt.in, got, tt.want)
 			}
 		})
@@ -91,8 +91,16 @@ func TestCapacityOf(t *testing.T) {
 		want capacity
 	}{
 		{"whole blocks", core.Space{Total: 10 * blockSize, Free: 3 * blockSize}, capacity{blocks: 10, free: 3}},
-		{"partial blocks round down", core.Space{Total: 10*blockSize + 100, Free: 3*blockSize + 100}, capacity{blocks: 10, free: 3}},
-		{"free larger than total is clamped", core.Space{Total: 5 * blockSize, Free: 9 * blockSize}, capacity{blocks: 5, free: 5}},
+		{
+			"partial blocks round down",
+			core.Space{Total: 10*blockSize + 100, Free: 3*blockSize + 100},
+			capacity{blocks: 10, free: 3},
+		},
+		{
+			"free larger than total is clamped",
+			core.Space{Total: 5 * blockSize, Free: 9 * blockSize},
+			capacity{blocks: 5, free: 5},
+		},
 		{"empty", core.Space{}, capacity{}},
 	}
 	for _, tt := range tests {

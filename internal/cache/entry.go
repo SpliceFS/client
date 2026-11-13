@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -41,12 +42,12 @@ type entry struct {
 	removed bool
 }
 
-func newEntry(dir string, key Key, v Version, now time.Time) *entry {
+func newEntry(dir string, key Key, version Version, now time.Time) *entry {
 	return &entry{
 		key:       key,
 		base:      baseName(dir, key),
-		version:   v,
-		bitmap:    make([]byte, bitmapLen(v.blocks())),
+		version:   version,
+		bitmap:    make([]byte, bitmapLen(version.blocks())),
 		lastRead:  now,
 		validated: now,
 	}
@@ -57,21 +58,21 @@ func (e *entry) openLocked(fsys fileSystem, flag int) error {
 	if e.f != nil {
 		return nil
 	}
-	f, err := fsys.OpenFile(e.base+dataExt, flag)
+	file, err := fsys.OpenFile(e.base+dataExt, flag)
 	if err != nil {
 		return fmt.Errorf("open data file: %w", err)
 	}
-	e.f = f
+	e.f = file
 	return nil
 }
 
 func (e *entry) closeFileLocked() error {
-	f := e.f
+	file := e.f
 	e.f = nil
-	if f == nil {
+	if file == nil {
 		return nil
 	}
-	if err := f.Close(); err != nil {
+	if err := file.Close(); err != nil {
 		return fmt.Errorf("close data file: %w", err)
 	}
 	return nil
@@ -79,14 +80,15 @@ func (e *entry) closeFileLocked() error {
 
 // pinLocked returns the entry for key and version with its data file open and one more
 // pin. The caller has already removed any entry of a different version.
-func (c *Cache) pinLocked(key Key, v Version) (*entry, error) {
-	e, ok := c.entries[key]
+func (c *Cache) pinLocked(key Key, version Version) (*entry, error) {
+	cached, ok := c.entries[key]
 	if ok {
-		if err := e.openLocked(c.fs, os.O_RDWR); err != nil {
+		if err := cached.openLocked(c.fs, os.O_RDWR); err != nil {
 			// A data file that vanished would otherwise be recreated empty while
 			// the bitmap still claims its blocks.
-			c.log.Warn("cached entry unusable, discarding", "cluster", key.Cluster, "path", key.Path, "error", err)
-			if err := c.removeLocked(e); err != nil {
+			c.log.Warn("cached entry unusable, discarding",
+				slog.String("cluster", key.Cluster), slog.String("path", key.Path), slog.Any("error", err))
+			if err := c.removeLocked(cached); err != nil {
 				return nil, fmt.Errorf("discard unusable entry: %w", err)
 			}
 			ok = false
@@ -94,35 +96,35 @@ func (c *Cache) pinLocked(key Key, v Version) (*entry, error) {
 	}
 	if !ok {
 		var err error
-		if e, err = c.createLocked(key, v); err != nil {
+		if cached, err = c.createLocked(key, version); err != nil {
 			return nil, err
 		}
 	}
-	e.pins++
-	return e, nil
+	cached.pins++
+	return cached, nil
 }
 
-func (c *Cache) createLocked(key Key, v Version) (*entry, error) {
-	e := newEntry(c.opts.Dir, key, v, c.opts.Now())
-	if err := c.fs.MkdirAll(filepath.Dir(e.base)); err != nil {
+func (c *Cache) createLocked(key Key, version Version) (*entry, error) {
+	created := newEntry(c.opts.Dir, key, version, c.opts.Now())
+	if err := c.fs.MkdirAll(filepath.Dir(created.base)); err != nil {
 		return nil, fmt.Errorf("create cache subdirectory: %w", err)
 	}
-	if err := e.openLocked(c.fs, os.O_RDWR|os.O_CREATE|os.O_TRUNC); err != nil {
+	if err := created.openLocked(c.fs, os.O_RDWR|os.O_CREATE|os.O_TRUNC); err != nil {
 		return nil, err
 	}
-	c.entries[key] = e
-	return e, nil
+	c.entries[key] = created
+	return created, nil
 }
 
 // drop removes one pin and closes the data file when the last one is gone.
-func (c *Cache) drop(e *entry) error {
+func (c *Cache) drop(cached *entry) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e.pins--
-	if e.pins > 0 {
+	cached.pins--
+	if cached.pins > 0 {
 		return nil
 	}
-	return e.closeFileLocked()
+	return cached.closeFileLocked()
 }
 
 // Entry is one holder's pin on a cached file. It is safe for concurrent use, except that
@@ -131,19 +133,6 @@ type Entry struct {
 	c        *Cache
 	e        *entry
 	released atomic.Bool
-}
-
-// live returns the open data file, or an error if the handle or the cache is finished.
-func (h *Entry) live() (dataFile, error) {
-	h.c.mu.Lock()
-	defer h.c.mu.Unlock()
-	switch {
-	case h.released.Load():
-		return nil, ErrReleased
-	case h.c.closed:
-		return nil, ErrClosed
-	}
-	return h.e.f, nil
 }
 
 // Version returns the version of the file this entry holds.
@@ -166,28 +155,28 @@ func (h *Entry) Complete() bool {
 // ReadAt reads from the file like os.File.ReadAt, serving only blocks that are present.
 // If any block in the range is missing it returns ErrNotCached and no data. A read that
 // reaches the end of the file returns the bytes available and io.EOF.
-func (h *Entry) ReadAt(p []byte, off int64) (int, error) {
-	f, err := h.live()
+func (h *Entry) ReadAt(dst []byte, off int64) (int, error) {
+	file, err := h.live()
 	if err != nil {
 		return 0, err
 	}
-	v := h.e.version
+	version := h.e.version
 	switch {
 	case off < 0:
-		return 0, fmt.Errorf("cache: negative offset %d", off)
-	case len(p) == 0:
+		return 0, fmt.Errorf("%w %d", ErrNegativeOffset, off)
+	case len(dst) == 0:
 		return 0, nil
-	case off >= v.Size:
+	case off >= version.Size:
 		return 0, io.EOF
 	}
-	buf := p[:min(int64(len(p)), v.Size-off)]
-	if err := h.c.touch(h.e, off/v.BlockSize, (off+int64(len(buf))-1)/v.BlockSize); err != nil {
+	buf := dst[:min(int64(len(dst)), version.Size-off)]
+	if err := h.c.touch(h.e, off/version.BlockSize, (off+int64(len(buf))-1)/version.BlockSize); err != nil {
 		return 0, err
 	}
-	if _, err := io.ReadFull(io.NewSectionReader(f, off, int64(len(buf))), buf); err != nil {
+	if _, err := io.ReadFull(io.NewSectionReader(file, off, int64(len(buf))), buf); err != nil {
 		return 0, fmt.Errorf("read data file: %w", err)
 	}
-	if len(buf) < len(p) {
+	if len(buf) < len(dst) {
 		return len(buf), io.EOF
 	}
 	return len(buf), nil
@@ -195,15 +184,15 @@ func (h *Entry) ReadAt(p []byte, off int64) (int, error) {
 
 // touch records a read of blocks first through last, or returns ErrNotCached if any of
 // them is missing.
-func (c *Cache) touch(e *entry, first, last int64) error {
+func (c *Cache) touch(cached *entry, first, last int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for b := first; b <= last; b++ {
-		if !hasBit(e.bitmap, b) {
-			return fmt.Errorf("%w: block %d of %s", ErrNotCached, b, e.key.Path)
+		if !hasBit(cached.bitmap, b) {
+			return fmt.Errorf("%w: block %d of %s", ErrNotCached, b, cached.key.Path)
 		}
 	}
-	e.lastRead = c.opts.Now()
+	cached.lastRead = c.opts.Now()
 	return nil
 }
 
@@ -212,12 +201,12 @@ func (c *Cache) touch(e *entry, first, last int64) error {
 // ErrNoSpace, after trying to evict, when storing the block would leave less than MinFree
 // bytes free or the disk is full; the caller then passes the data through.
 func (h *Entry) WriteBlock(block int64, data []byte) error {
-	f, err := h.live()
+	file, err := h.live()
 	if err != nil {
 		return err
 	}
-	v := h.e.version
-	want := v.blockLen(block)
+	version := h.e.version
+	want := version.blockLen(block)
 	if want < 0 || int64(len(data)) != want {
 		return fmt.Errorf("%w: block %d with %d bytes", ErrInvalidBlock, block, len(data))
 	}
@@ -227,7 +216,7 @@ func (h *Entry) WriteBlock(block int64, data []byte) error {
 	if err := h.c.reserve(want); err != nil {
 		return err
 	}
-	if _, err := f.WriteAt(data, block*v.BlockSize); err != nil {
+	if _, err := file.WriteAt(data, block*version.BlockSize); err != nil {
 		if errors.Is(err, syscall.ENOSPC) {
 			return fmt.Errorf("%w: %w", ErrNoSpace, err)
 		}
@@ -239,39 +228,38 @@ func (h *Entry) WriteBlock(block int64, data []byte) error {
 
 // stored marks a block present after its data was written, then persists and evicts if
 // that is due.
-func (c *Cache) stored(e *entry, block, size int64) {
+func (c *Cache) stored(cached *entry, block, size int64) {
 	c.mu.Lock()
-	if hasBit(e.bitmap, block) {
+	if hasBit(cached.bitmap, block) {
 		c.mu.Unlock()
 		return
 	}
-	setBit(e.bitmap, block)
-	e.present++
-	e.bytes += size
-	e.fresh++
-	if !e.removed {
+	setBit(cached.bitmap, block)
+	cached.present++
+	cached.bytes += size
+	cached.fresh++
+	if !cached.removed {
 		c.total += size
 	}
 	var snap snapshot
-	persist := e.fresh >= persistEvery
+	persist := cached.fresh >= persistEvery
 	if persist {
-		snap = e.snapshotLocked()
+		snap = cached.snapshotLocked()
 	}
 	over := c.total > c.opts.MaxSize
 	c.mu.Unlock()
 
+	// A failure here does not fail the write: the block is stored, and the metadata or
+	// the eviction is tried again later.
 	if persist {
-		c.warn("persist metadata", snap.write(c.fs), "path", e.key.Path)
+		if err := snap.write(c.fs); err != nil {
+			c.log.Warn("persist metadata", slog.String("path", cached.key.Path), slog.Any("error", err))
+		}
 	}
 	if over {
-		c.warn("evict over size limit", c.Evict())
-	}
-}
-
-// warn logs err, if there is one, as a failure that does not fail the operation.
-func (c *Cache) warn(what string, err error, attrs ...any) {
-	if err != nil {
-		c.log.Warn(what, append(attrs, "error", err)...)
+		if err := c.Evict(); err != nil {
+			c.log.Warn("evict over size limit", slog.Any("error", err))
+		}
 	}
 }
 
@@ -281,13 +269,28 @@ func (h *Entry) Release() error {
 	if !h.released.CompareAndSwap(false, true) {
 		return ErrReleased
 	}
-	c := h.c
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
+	cache := h.c
+	cache.mu.Lock()
+	if cache.closed {
+		cache.mu.Unlock()
 		return ErrClosed
 	}
 	snap := h.e.snapshotLocked()
-	c.mu.Unlock()
-	return errors.Join(snap.write(c.fs), c.drop(h.e))
+	cache.mu.Unlock()
+	return errors.Join(snap.write(cache.fs), cache.drop(h.e))
+}
+
+// live returns the open data file, or an error if the handle or the cache is finished.
+//
+//nolint:ireturn // the data file is an interface so that tests can inject failures
+func (h *Entry) live() (dataFile, error) {
+	h.c.mu.Lock()
+	defer h.c.mu.Unlock()
+	switch {
+	case h.released.Load():
+		return nil, ErrReleased
+	case h.c.closed:
+		return nil, ErrClosed
+	}
+	return h.e.f, nil
 }

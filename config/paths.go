@@ -11,8 +11,8 @@ import (
 // for a system whose packages keep their files elsewhere. Empty means the default of the
 // operating system, which is chosen at compile time in paths_default.go and paths_darwin.go.
 var (
-	defaultConfigDir string
-	defaultCacheDir  string
+	defaultConfigDir string //nolint:gochecknoglobals // set by the build with -ldflags -X
+	defaultCacheDir  string //nolint:gochecknoglobals // set by the build with -ldflags -X
 )
 
 // homePrefix marks a directory that is relative to the home directory of the user running

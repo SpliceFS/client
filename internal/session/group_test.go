@@ -9,18 +9,19 @@ import (
 )
 
 func TestGroupSharesOneRun(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		var g group
+		var shared group
 		var runs atomic.Int32
 		gate := make(chan struct{})
-		fn := func(context.Context) error {
+		run := func(context.Context) error {
 			runs.Add(1)
 			<-gate
 			return errDown
 		}
 		errs := make(chan error, 2)
 		for range 2 {
-			go func() { errs <- g.do(context.Background(), fn) }()
+			go func() { errs <- shared.do(context.Background(), run) }()
 		}
 		synctest.Wait()
 		close(gate)
@@ -36,13 +37,14 @@ func TestGroupSharesOneRun(t *testing.T) {
 }
 
 func TestGroupWaiterRunsAgainWhenLeaderGaveUp(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		var g group
+		var shared group
 		leaderCtx, cancelLeader := context.WithCancel(context.Background())
 		leaderStarted := make(chan struct{})
 		leaderErr := make(chan error, 1)
 		go func() {
-			leaderErr <- g.do(leaderCtx, func(ctx context.Context) error {
+			leaderErr <- shared.do(leaderCtx, func(ctx context.Context) error {
 				close(leaderStarted)
 				<-ctx.Done()
 				return ctx.Err()
@@ -52,7 +54,7 @@ func TestGroupWaiterRunsAgainWhenLeaderGaveUp(t *testing.T) {
 
 		waiterErr := make(chan error, 1)
 		go func() {
-			waiterErr <- g.do(context.Background(), func(context.Context) error { return errDown })
+			waiterErr <- shared.do(context.Background(), func(context.Context) error { return errDown })
 		}()
 		synctest.Wait()
 		cancelLeader()
@@ -67,12 +69,13 @@ func TestGroupWaiterRunsAgainWhenLeaderGaveUp(t *testing.T) {
 }
 
 func TestGroupWaiterStopsWaitingWhenItsContextEnds(t *testing.T) {
+	t.Parallel()
 	synctest.Test(t, func(t *testing.T) {
-		var g group
+		var shared group
 		gate := make(chan struct{})
 		leaderErr := make(chan error, 1)
 		go func() {
-			leaderErr <- g.do(context.Background(), func(context.Context) error {
+			leaderErr <- shared.do(context.Background(), func(context.Context) error {
 				<-gate
 				return nil
 			})
@@ -81,7 +84,7 @@ func TestGroupWaiterStopsWaitingWhenItsContextEnds(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		waiterErr := make(chan error, 1)
-		go func() { waiterErr <- g.do(ctx, nil) }()
+		go func() { waiterErr <- shared.do(ctx, nil) }()
 		synctest.Wait()
 		cancel()
 		if err := <-waiterErr; !errors.Is(err, context.Canceled) {

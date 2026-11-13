@@ -7,60 +7,77 @@ import (
 	"time"
 )
 
-func TestStatFS(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t, "a", "b", "c")
-	h.fc.put("media/file", pattern(1, 10), fileTime)
-	h.fc.put("docs/file", pattern(1, 10), fileTime)
+// spaceHarness is three nodes with the space of two shares, and a mount of the media share
+// as its second view.
+func spaceHarness(t *testing.T) *harness {
+	t.Helper()
+	env := newHarness(t, "a", "b", "c")
+	env.fc.put("media/file", pattern(1, 10), fileTime())
+	env.fc.put("docs/file", pattern(1, 10), fileTime())
 	sizes := map[string][3][2]uint64{ // share: per node {total, free}
 		"media": {{1000, 300}, {900, 400}, {950, 200}},
 		"docs":  {{50, 40}, {60, 10}, {70, 30}},
 	}
 	for share, perNode := range sizes {
-		for i, s := range perNode {
-			h.fc.nodes[i].setSpace(share, s[0], s[1])
+		for i, nodeSize := range perNode {
+			env.fc.nodes[i].setSpace(share, nodeSize[0], nodeSize[1])
 		}
 	}
-	h.addMount("/media/sub", "/mnt/media")
-	media := h.view(1)
+	env.addMount("/media/sub", "/mnt/media")
+	return env
+}
+
+func TestStatFSCombinesTheNodes(t *testing.T) {
+	t.Parallel()
+	env := spaceHarness(t)
 	ctx := context.Background()
 
-	if got, err := media.StatFS(ctx); err != nil || got != (Space{Total: 900, Free: 200}) {
+	if got, err := env.view(1).StatFS(ctx); err != nil || got != (Space{Total: 900, Free: 200}) {
 		t.Errorf("StatFS of a media view = %+v, %v; want the smallest total and free", got, err)
 	}
-	if got, err := h.view(0).StatFS(ctx); err != nil || got != (Space{Total: 950, Free: 210}) {
+	if got, err := env.view(0).StatFS(ctx); err != nil || got != (Space{Total: 950, Free: 210}) {
 		t.Errorf("StatFS of the root = %+v, %v; want the sum of the shares", got, err)
 	}
+}
 
-	h.fc.nodes[1].setSpace("media", 10, 5)
-	if got, _ := media.StatFS(ctx); got != (Space{Total: 900, Free: 200}) {
-		t.Errorf("StatFS within a minute = %+v, want the remembered answer", got)
+func TestStatFSRemembersTheAnswerForAMinute(t *testing.T) {
+	t.Parallel()
+	env := spaceHarness(t)
+	media := env.view(1)
+	ctx := context.Background()
+	if _, err := media.StatFS(ctx); err != nil {
+		t.Fatal(err)
 	}
-	h.clock.Advance(time.Minute)
-	if got, _ := media.StatFS(ctx); got != (Space{Total: 10, Free: 5}) {
-		t.Errorf("StatFS after a minute = %+v, want a new answer", got)
+
+	env.fc.nodes[1].setSpace("media", 10, 5)
+	if got, err := media.StatFS(ctx); err != nil || got != (Space{Total: 900, Free: 200}) {
+		t.Errorf("StatFS within a minute = %+v, %v; want the remembered answer", got, err)
+	}
+	env.clock.Advance(time.Minute)
+	if got, err := media.StatFS(ctx); err != nil || got != (Space{Total: 10, Free: 5}) {
+		t.Errorf("StatFS after a minute = %+v, %v; want a new answer", got, err)
 	}
 }
 
 func TestStatFSWithSilentNodes(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, "a", "b")
-	h.fc.put("media/file", pattern(1, 10), fileTime)
-	h.fc.nodes[0].setSpace("media", 100, 50)
-	h.fc.nodes[1].setSpace("media", 10, 5)
-	h.addMount("/media", "/mnt/media")
-	fsys := h.view(1)
+	env := newHarness(t, "a", "b")
+	env.fc.put("media/file", pattern(1, 10), fileTime())
+	env.fc.nodes[0].setSpace("media", 100, 50)
+	env.fc.nodes[1].setSpace("media", 10, 5)
+	env.addMount("/media", "/mnt/media")
+	fsys := env.view(1)
 	ctx := context.Background()
 	if _, err := fsys.Stat(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 
-	h.fc.nodes[1].setDown(true)
+	env.fc.nodes[1].setDown(true)
 	if got, err := fsys.StatFS(ctx); err != nil || got != (Space{Total: 100, Free: 50}) {
 		t.Errorf("StatFS with one node down = %+v, %v; want the answering node's", got, err)
 	}
-	h.clock.Advance(time.Minute)
-	h.fc.nodes[0].setDown(true)
+	env.clock.Advance(time.Minute)
+	env.fc.nodes[0].setDown(true)
 	if _, err := fsys.StatFS(ctx); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("StatFS with every node down = %v, want ErrUnavailable", err)
 	}
@@ -87,7 +104,7 @@ func TestStatFSFailures(t *testing.T) {
 	}
 
 	held := newHarness(t, "a")
-	held.fc.put("media/file", pattern(1, 10), fileTime)
+	held.fc.put("media/file", pattern(1, 10), fileTime())
 	held.addMount("/media", "/mnt/media")
 	fsys = held.view(1)
 	if _, err := fsys.Stat(ctx, ""); err != nil {

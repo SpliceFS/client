@@ -1,7 +1,6 @@
 package remote
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -21,17 +20,17 @@ type Node struct {
 // Leave the transport's compression enabled: listings rely on it for transparent gzip.
 func New(name, baseURL string, client *http.Client) (*Node, error) {
 	if client == nil {
-		return nil, errors.New("remote: nil http client")
+		return nil, ErrNilClient
 	}
-	u, err := url.Parse(baseURL)
+	parsed, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("remote: node %s: parse base URL: %w", name, err)
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("remote: node %s: base URL %q is not an absolute http or https URL", name, baseURL)
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, fmt.Errorf("remote: node %s: base URL %q %w", name, baseURL, errNotAbsoluteURL)
 	}
-	if u.RawQuery != "" || u.Fragment != "" {
-		return nil, fmt.Errorf("remote: node %s: base URL %q must not have a query or fragment", name, baseURL)
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("remote: node %s: base URL %q %w", name, baseURL, errQueryOrFragURL)
 	}
 	return &Node{name: name, base: strings.TrimRight(baseURL, "/"), client: client}, nil
 }
@@ -48,7 +47,7 @@ func escapePath(p string) (string, error) {
 	segments := strings.Split(p, "/")
 	for i, s := range segments {
 		if s == "" || s == "." || s == ".." {
-			return "", fmt.Errorf("invalid path %q: empty, \".\" or \"..\" segment", p)
+			return "", fmt.Errorf("%w %q: empty, \".\" or \"..\" segment", ErrInvalidPath, p)
 		}
 		segments[i] = url.PathEscape(s)
 	}
@@ -56,10 +55,10 @@ func escapePath(p string) (string, error) {
 }
 
 // route builds the request path for a call below prefix, with p escaped.
-func (n *Node) route(op, prefix, p string) (string, error) {
+func (n *Node) route(operation, prefix, p string) (string, error) {
 	escaped, err := escapePath(p)
 	if err != nil {
-		return "", fmt.Errorf("node %s: %s: %w", n.name, op, err)
+		return "", fmt.Errorf("node %s: %s: %w", n.name, operation, err)
 	}
 	return prefix + escaped, nil
 }

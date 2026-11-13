@@ -22,7 +22,8 @@ var (
 // from the entry URL when the cluster lists no nodes.
 const entryHost = "entry.example.com"
 
-var start = time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+// start is the time every test clock begins at.
+func start() time.Time { return time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC) }
 
 // clock is a manual clock.
 type clock struct {
@@ -127,19 +128,19 @@ type env struct {
 
 func newEnv(t *testing.T, names ...string) *env {
 	t.Helper()
-	e := &env{
+	cluster := &env{
 		t:       t,
-		clk:     &clock{now: start},
+		clk:     &clock{now: start()},
 		ttl:     time.Hour,
 		nodes:   make(map[string]*fakeNode),
 		dialErr: make(map[string]error),
 	}
-	e.entry = e.newNode(entryName)
-	e.byHost = e.newNode(entryHost)
+	cluster.entry = cluster.newNode(entryName)
+	cluster.byHost = cluster.newNode(entryHost)
 	for _, name := range names {
-		e.addNode(name)
+		cluster.addNode(name)
 	}
-	return e
+	return cluster
 }
 
 func (e *env) newNode(name string) *fakeNode {
@@ -176,6 +177,9 @@ func (e *env) serveList(context.Context, string) (wire.Nodes, error) {
 	return wire.Nodes{Cluster: e.list.Cluster, Nodes: slices.Clone(e.list.Nodes)}, nil
 }
 
+// dial is the Dial of the fake cluster. It records every call.
+//
+//nolint:ireturn // Options.Dial fixes this signature.
 func (e *env) dial(name, baseURL string) (Node, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -266,18 +270,18 @@ func names(t *testing.T, nodes []Node) []string {
 	return out
 }
 
-func mustNodes(t *testing.T, s *Session) []string {
+func mustNodes(t *testing.T, session *Session) []string {
 	t.Helper()
-	nodes, err := s.Nodes(context.Background())
+	nodes, err := session.Nodes(context.Background())
 	if err != nil {
 		t.Fatalf("Nodes: %v", err)
 	}
 	return names(t, nodes)
 }
 
-func mustUsable(t *testing.T, s *Session) []string {
+func mustUsable(t *testing.T, session *Session) []string {
 	t.Helper()
-	nodes, err := s.Usable(context.Background())
+	nodes, err := session.Usable(context.Background())
 	if err != nil {
 		t.Fatalf("Usable: %v", err)
 	}
@@ -292,10 +296,10 @@ func checkNames(t *testing.T, what string, got, want []string) {
 }
 
 // token returns the token that Do hands to its callback.
-func token(t *testing.T, s *Session, n Node) string {
+func token(t *testing.T, session *Session, n Node) string {
 	t.Helper()
 	var got string
-	err := s.Do(context.Background(), n, func(_ context.Context, tok string) error {
+	err := session.Do(context.Background(), n, func(_ context.Context, tok string) error {
 		got = tok
 		return nil
 	})
@@ -306,24 +310,30 @@ func token(t *testing.T, s *Session, n Node) string {
 }
 
 // fail makes Do record an unavailable failure for n.
-func fail(t *testing.T, s *Session, n Node) {
+func fail(t *testing.T, session *Session, n Node) {
 	t.Helper()
-	err := s.Do(context.Background(), n, func(context.Context, string) error { return errDown })
+	err := session.Do(context.Background(), n, func(context.Context, string) error { return errDown })
 	if !errors.Is(err, errDown) {
 		t.Fatalf("Do = %v, want errDown", err)
 	}
 }
 
-func nodeOf(t *testing.T, s *Session, name string) Node {
+// nodeOf returns the fake behind the node of the session with the given name.
+func nodeOf(t *testing.T, session *Session, name string) *fakeNode {
 	t.Helper()
-	nodes, err := s.Nodes(context.Background())
+	nodes, err := session.Nodes(context.Background())
 	if err != nil {
 		t.Fatalf("Nodes: %v", err)
 	}
 	for _, n := range nodes {
-		if n.Name() == name {
-			return n
+		if n.Name() != name {
+			continue
 		}
+		fake, ok := n.(*fakeNode)
+		if !ok {
+			t.Fatalf("node %q is a %T, want a *fakeNode", name, n)
+		}
+		return fake
 	}
 	t.Fatalf("no node %q", name)
 	return nil

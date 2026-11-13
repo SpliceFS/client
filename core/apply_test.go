@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,15 +22,13 @@ import (
 func cloneConfig(cfg *config.Config) *config.Config {
 	clone := *cfg
 	clone.Clusters = make(map[string]config.Cluster, len(cfg.Clusters))
-	for name, cl := range cfg.Clusters {
-		clone.Clusters[name] = cl
-	}
+	maps.Copy(clone.Clusters, cfg.Clusters)
 	clone.Mounts = append([]config.Mount(nil), cfg.Mounts...)
 	return &clone
 }
 
 func clusterClosed(cl *cluster) bool {
-	_, _, err := cl.nodes(context.Background())
+	_, err := cl.nodes(context.Background())
 	return errors.Is(err, session.ErrClosed)
 }
 
@@ -39,8 +38,10 @@ func cacheClosed(d *cacheDir) bool { return errors.Is(d.Evict(), cache.ErrClosed
 
 // withMount adds a mount of cluster name at target, with its own cache directory.
 func (h *harness) withMount(cluster, target string) config.Mount {
-	m := config.Mount{Cluster: cluster, Path: "/", Target: target, Offline: true,
-		Cache: testCache(h.t.TempDir())}
+	m := config.Mount{
+		Cluster: cluster, Path: "/", Target: target, Offline: true,
+		Cache: testCache(h.t.TempDir()),
+	}
 	h.cfg.Mounts = append(h.cfg.Mounts, m)
 	return m
 }
@@ -54,32 +55,32 @@ func (h *harness) apply(cfg *config.Config) {
 
 func TestApplyKeepsWhatIsUnchanged(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, "a")
-	h.fc.put("media/file", pattern(1, 10), fileTime)
-	fsys := h.view(0)
+	env := newHarness(t, "a")
+	env.fc.put("media/file", pattern(1, 10), fileTime())
+	fsys := env.view(0)
 	if _, err := fsys.ReadDir(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
-	cl, dir := h.client.clusters[testCluster], h.client.caches[h.cfg.Cache.Dir]
+	cl, dir := env.client.clusters[testCluster], env.client.caches[env.cfg.Cache.Dir]
 
-	h.apply(cloneConfig(h.cfg))
-	if h.client.clusters[testCluster] != cl || h.client.caches[h.cfg.Cache.Dir] != dir {
+	env.apply(cloneConfig(env.cfg))
+	if env.client.clusters[testCluster] != cl || env.client.caches[env.cfg.Cache.Dir] != dir {
 		t.Error("Apply replaced a cluster or a cache that had not changed")
 	}
-	if !h.client.Current(fsys) {
+	if !env.client.Current(fsys) {
 		t.Error("Current = false after an Apply that changed nothing")
 	}
 	if _, err := fsys.ReadDir(context.Background(), "media"); err != nil {
 		t.Fatal(err)
 	}
-	if n := h.fc.count("login"); n != 1 {
+	if n := env.fc.count("login"); n != 1 {
 		t.Errorf("%d logins, want the one of the first listing: the session was replaced", n)
 	}
 }
 
 func TestApplyReplacesChangedCluster(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
+	for _, testCase := range []struct {
 		name string
 		edit func(h *harness, cfg *config.Config)
 	}{
@@ -115,103 +116,131 @@ func TestApplyReplacesChangedCluster(t *testing.T) {
 			cfg.Mounts[0].Cache.ListingTTL = units.Duration(time.Minute)
 		}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			h := newHarness(t, "a", "b")
-			fsys := h.view(0)
-			old := h.client.clusters[testCluster]
-			cfg := cloneConfig(h.cfg)
-			tc.edit(h, cfg)
-
-			h.apply(cfg)
-			if h.client.clusters[testCluster] == old {
-				t.Fatal("the cluster was kept")
-			}
-			if h.client.Current(fsys) {
-				t.Error("Current = true for a view of the replaced cluster")
-			}
-			if clusterClosed(old) {
-				t.Error("the replaced cluster was closed while a view holds it")
-			}
-			h.client.Release(fsys)
-			if !clusterClosed(old) {
-				t.Error("the replaced cluster stayed open after its last view was released")
-			}
-			if clusterClosed(h.client.clusters[testCluster]) {
-				t.Error("the new cluster is closed")
-			}
+			checkClusterReplaced(t, testCase.edit)
 		})
 	}
 }
 
+// checkClusterReplaced applies the configuration that edit makes and checks that the
+// cluster is replaced, and that the old one stays open until its last view is released.
+func checkClusterReplaced(t *testing.T, edit func(env *harness, cfg *config.Config)) {
+	t.Helper()
+	env := newHarness(t, "a", "b")
+	fsys := env.view(0)
+	old := env.client.clusters[testCluster]
+	cfg := cloneConfig(env.cfg)
+	edit(env, cfg)
+
+	env.apply(cfg)
+	if env.client.clusters[testCluster] == old {
+		t.Fatal("the cluster was kept")
+	}
+	if env.client.Current(fsys) {
+		t.Error("Current = true for a view of the replaced cluster")
+	}
+	if clusterClosed(old) {
+		t.Error("the replaced cluster was closed while a view holds it")
+	}
+	env.client.Release(fsys)
+	if !clusterClosed(old) {
+		t.Error("the replaced cluster stayed open after its last view was released")
+	}
+	if clusterClosed(env.client.clusters[testCluster]) {
+		t.Error("the new cluster is closed")
+	}
+}
+
+// viewUse says whether a view of a mount is still in use when the mount is removed.
+type viewUse int
+
+const (
+	viewReleased viewUse = iota
+	viewHeld
+)
+
 func TestApplyRemovesClusterAndCache(t *testing.T) {
 	t.Parallel()
-	for _, held := range []bool{false, true} {
-		h := newHarness(t, "a")
-		h.cfg.Clusters["other"] = h.cfg.Clusters[testCluster]
-		other := h.withMount("other", "/mnt/other")
-		h.start()
-		fsys, err := h.client.View(other)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cl, dir := h.client.clusters["other"], h.client.caches[other.Cache.Dir]
-		if !held {
-			h.client.Release(fsys)
-		}
-		cfg := cloneConfig(h.cfg)
-		delete(cfg.Clusters, "other")
-		cfg.Mounts = cfg.Mounts[:1]
+	for _, testCase := range []struct {
+		name string
+		use  viewUse
+	}{{"released", viewReleased}, {"held", viewHeld}} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			checkRemovedMount(t, testCase.use)
+		})
+	}
+}
 
-		h.apply(cfg)
-		if h.client.Current(fsys) {
-			t.Errorf("held %v: Current = true for a view of a removed mount", held)
-		}
-		if s := h.client.Status(); len(s.Clusters) != 1 || len(s.Caches) != 1 {
-			t.Errorf("held %v: Status = %+v, want the one remaining cluster and cache", held, s)
-		}
-		if clusterClosed(cl) == held || cacheClosed(dir) == held {
-			t.Errorf("held %v: removed cluster closed %v, cache closed %v at Apply",
-				held, clusterClosed(cl), cacheClosed(dir))
-		}
-		h.client.Release(fsys)
-		if !clusterClosed(cl) || !cacheClosed(dir) {
-			t.Errorf("held %v: removed cluster or cache still open after the release", held)
-		}
+// checkRemovedMount removes a mount with its own cluster and cache. A view that still
+// holds the mount keeps them open until it is released.
+func checkRemovedMount(t *testing.T, use viewUse) {
+	t.Helper()
+	held := use == viewHeld
+	env := newHarness(t, "a")
+	env.cfg.Clusters["other"] = env.cfg.Clusters[testCluster]
+	other := env.withMount("other", "/mnt/other")
+	env.start()
+	fsys, err := env.client.View(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clus, dir := env.client.clusters["other"], env.client.caches[other.Cache.Dir]
+	if !held {
+		env.client.Release(fsys)
+	}
+	cfg := cloneConfig(env.cfg)
+	delete(cfg.Clusters, "other")
+	cfg.Mounts = cfg.Mounts[:1]
+
+	env.apply(cfg)
+	if env.client.Current(fsys) {
+		t.Error("Current = true for a view of a removed mount")
+	}
+	if status := env.client.Status(); len(status.Clusters) != 1 || len(status.Caches) != 1 {
+		t.Errorf("Status = %+v, want the one remaining cluster and cache", status)
+	}
+	if clusterClosed(clus) == held || cacheClosed(dir) == held {
+		t.Errorf("removed cluster closed %v, cache closed %v at Apply", clusterClosed(clus), cacheClosed(dir))
+	}
+	env.client.Release(fsys)
+	if !clusterClosed(clus) || !cacheClosed(dir) {
+		t.Error("removed cluster or cache still open after the release")
 	}
 }
 
 func TestApplyKeepsCacheWithNewLimits(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, "a")
-	h.fc.put("media/file", pattern(1, testSize), fileTime)
-	readFile(t, h.view(0), "media/file")
-	dir := h.client.caches[h.cfg.Cache.Dir]
-	cfg := cloneConfig(h.cfg)
+	env := newHarness(t, "a")
+	env.fc.put("media/file", pattern(1, testSize), fileTime())
+	readFile(t, env.view(0), "media/file")
+	dir := env.client.caches[env.cfg.Cache.Dir]
+	cfg := cloneConfig(env.cfg)
 	cfg.Mounts[0].Cache.MaxSize = 1
-	newDir := h.withMount(testCluster, "/mnt/new").Cache.Dir
-	cfg.Mounts = append(cfg.Mounts, h.cfg.Mounts[1])
+	newDir := env.withMount(testCluster, "/mnt/new").Cache.Dir
+	cfg.Mounts = append(cfg.Mounts, env.cfg.Mounts[1])
 
-	if err := h.cache(0).Evict(); err != nil || h.client.Status().Caches[0].Entries != 1 {
-		t.Fatalf("Evict with the old limits = %v, entries %+v", err, h.client.Status().Caches)
+	if err := env.cache(0).Evict(); err != nil || env.client.Status().Caches[0].Entries != 1 {
+		t.Fatalf("Evict with the old limits = %v, entries %+v", err, env.client.Status().Caches)
 	}
-	h.apply(cfg)
-	if h.client.caches[h.cfg.Cache.Dir] != dir {
+	env.apply(cfg)
+	if env.client.caches[env.cfg.Cache.Dir] != dir {
 		t.Error("the cache folder was reopened")
 	}
-	if h.client.caches[newDir] == nil {
+	if env.client.caches[newDir] == nil {
 		t.Error("the new cache folder was not opened")
 	}
 	if err := dir.Evict(); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range h.client.Status().Caches {
-		if c.Dir == h.cfg.Cache.Dir && c.Entries != 0 {
+	for _, c := range env.client.Status().Caches {
+		if c.Dir == env.cfg.Cache.Dir && c.Entries != 0 {
 			t.Errorf("%d entries left: the new max_size was not applied", c.Entries)
 		}
 	}
-	if len(h.client.Status().Caches) != 2 {
-		t.Errorf("Status caches = %+v, want both folders", h.client.Status().Caches)
+	if len(env.client.Status().Caches) != 2 {
+		t.Errorf("Status caches = %+v, want both folders", env.client.Status().Caches)
 	}
 }
 
@@ -221,7 +250,7 @@ func TestApplyFailureChangesNothing(t *testing.T) {
 	if err := os.WriteFile(notADir, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct {
+	for _, testCase := range []struct {
 		name string
 		edit func(h *harness, cfg *config.Config)
 		want string
@@ -243,182 +272,212 @@ func TestApplyFailureChangesNothing(t *testing.T) {
 				config.Mount{Cluster: testCluster, Path: "/", Target: "/mnt/b", Cache: other})
 		}, "share the cache directory"},
 	} {
-		h := newHarness(t, "a", "b")
-		h.fc.put("media/file", pattern(1, testSize), fileTime)
-		fsys := h.view(0)
-		readFile(t, fsys, "media/file")
-		cl, dir := h.client.clusters[testCluster], h.client.caches[h.cfg.Cache.Dir]
-		cfg := cloneConfig(h.cfg)
-		c := cfg.Clusters[testCluster]
-		c.URL = h.fc.nodes[1].url() // a cluster that would be built new
-		cfg.Clusters[testCluster] = c
-		cfg.Mounts[0].Cache.MaxSize = 1 // limits that must not be applied
-		tc.edit(h, cfg)
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			checkFailedApplyChangesNothing(t, testCase.edit, testCase.want)
+		})
+	}
+}
 
-		err := h.client.Apply(cfg)
-		if err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Fatalf("%s: Apply = %v, want an error containing %q", tc.name, err, tc.want)
-		}
-		if h.client.clusters[testCluster] != cl || h.client.caches[h.cfg.Cache.Dir] != dir ||
-			len(h.client.caches) != 1 {
-			t.Errorf("%s: the client changed", tc.name)
-		}
-		if !h.client.Current(fsys) || clusterClosed(cl) || cacheClosed(dir) {
-			t.Errorf("%s: the old cluster or cache was retired or closed", tc.name)
-		}
-		if err := dir.Evict(); err != nil || h.client.Status().Caches[0].Entries != 1 {
-			t.Errorf("%s: Evict = %v, entries %+v: the new limits were applied",
-				tc.name, err, h.client.Status().Caches)
-		}
+// checkFailedApplyChangesNothing applies a configuration that edit makes invalid and
+// checks that the error contains want and that the old clusters and caches stay in use.
+func checkFailedApplyChangesNothing(t *testing.T, edit func(env *harness, cfg *config.Config), want string) {
+	t.Helper()
+	env := newHarness(t, "a", "b")
+	env.fc.put("media/file", pattern(1, testSize), fileTime())
+	fsys := env.view(0)
+	readFile(t, fsys, "media/file")
+	clus, dir := env.client.clusters[testCluster], env.client.caches[env.cfg.Cache.Dir]
+	cfg := cloneConfig(env.cfg)
+	clusterCfg := cfg.Clusters[testCluster]
+	clusterCfg.URL = env.fc.nodes[1].url() // a cluster that would be built new
+	cfg.Clusters[testCluster] = clusterCfg
+	cfg.Mounts[0].Cache.MaxSize = 1 // limits that must not be applied
+	edit(env, cfg)
+
+	err := env.client.Apply(cfg)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("Apply = %v, want an error containing %q", err, want)
+	}
+	checkOldGenerationInUse(t, env, fsys, clus, dir)
+}
+
+// checkOldGenerationInUse checks that the client still uses the cluster and cache it had
+// before a failed Apply, and that the old cache limits are in force.
+func checkOldGenerationInUse(t *testing.T, env *harness, fsys FS, clus *cluster, dir *cacheDir) {
+	t.Helper()
+	if env.client.clusters[testCluster] != clus || env.client.caches[env.cfg.Cache.Dir] != dir ||
+		len(env.client.caches) != 1 {
+		t.Error("the client changed")
+	}
+	if !env.client.Current(fsys) || clusterClosed(clus) || cacheClosed(dir) {
+		t.Error("the old cluster or cache was retired or closed")
+	}
+	if err := dir.Evict(); err != nil || env.client.Status().Caches[0].Entries != 1 {
+		t.Errorf("Evict = %v, entries %+v: the new limits were applied", err, env.client.Status().Caches)
 	}
 }
 
 func TestCurrentAndReleaseIgnoreOtherValues(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, "a")
+	env := newHarness(t, "a")
 	other := newHarness(t, "a")
-	fsys, foreign := h.view(0), other.view(0)
-	cl := h.client.clusters[testCluster]
+	fsys, foreign := env.view(0), other.view(0)
+	clus := env.client.clusters[testCluster]
 
-	if h.client.Current(foreign) || h.client.Current(nil) || h.client.Current(struct{ FS }{}) {
+	if env.client.Current(foreign) || env.client.Current(nil) || env.client.Current(struct{ FS }{}) {
 		t.Error("Current = true for a value that is not a view of this client")
 	}
-	h.client.Release(foreign)
-	h.client.Release(nil)
-	h.client.Release(struct{ FS }{})
-	if cl.holds != 1 || other.client.clusters[testCluster].holds != 1 {
+	env.client.Release(foreign)
+	env.client.Release(nil)
+	env.client.Release(struct{ FS }{})
+	if clus.holds != 1 || other.client.clusters[testCluster].holds != 1 {
 		t.Errorf("holds %d and %d, want 1 and 1: a foreign value was released",
-			cl.holds, other.client.clusters[testCluster].holds)
+			clus.holds, other.client.clusters[testCluster].holds)
 	}
-	h.client.Release(fsys)
-	h.client.Release(fsys)
-	if cl.holds != 0 || h.client.caches[h.cfg.Cache.Dir].holds != 0 {
+	env.client.Release(fsys)
+	env.client.Release(fsys)
+	if clus.holds != 0 || env.client.caches[env.cfg.Cache.Dir].holds != 0 {
 		t.Errorf("holds %d and %d after releasing twice, want 0 and 0",
-			cl.holds, h.client.caches[h.cfg.Cache.Dir].holds)
+			clus.holds, env.client.caches[env.cfg.Cache.Dir].holds)
 	}
 }
 
 func TestCloseClosesReplacedAndApplyAfterCloseFails(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, "a")
-	other := h.withMount(testCluster, "/mnt/other")
-	fsys, err := func() (FS, error) { h.start(); return h.client.View(other) }()
+	env := newHarness(t, "a")
+	other := env.withMount(testCluster, "/mnt/other")
+	fsys, err := func() (FS, error) { env.start(); return env.client.View(other) }()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cl, dir := h.client.clusters[testCluster], h.client.caches[other.Cache.Dir]
-	cfg := cloneConfig(h.cfg)
+	clus, dir := env.client.clusters[testCluster], env.client.caches[other.Cache.Dir]
+	cfg := cloneConfig(env.cfg)
 	cfg.Mounts = cfg.Mounts[:1]
 	changed := cfg.Clusters[testCluster]
 	changed.User = "bob"
 	cfg.Clusters[testCluster] = changed
-	h.apply(cfg)
+	env.apply(cfg)
 
-	if err := h.client.Close(); err != nil {
+	if err := env.client.Close(); err != nil {
 		t.Errorf("Close = %v", err)
 	}
-	if !clusterClosed(cl) || !cacheClosed(dir) {
+	if !clusterClosed(clus) || !cacheClosed(dir) {
 		t.Error("Close left a replaced cluster or cache open")
 	}
-	h.client.Release(fsys) // must not close them a second time
-	if strings.Contains(h.logs.String(), "close replaced cache") {
+	env.client.Release(fsys) // must not close them a second time
+	if strings.Contains(env.logs.String(), "close replaced cache") {
 		t.Error("Release closed a cache that Close had closed")
 	}
-	if err := h.client.Apply(cfg); err == nil {
+	if err := env.client.Apply(cfg); err == nil {
 		t.Error("Apply succeeded on a closed client")
 	}
 }
 
 func TestApplyLogsCacheThatFailsToClose(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, "a")
-	other := h.withMount(testCluster, "/mnt/other")
-	h.start()
-	if err := h.client.caches[other.Cache.Dir].Close(); err != nil {
+	env := newHarness(t, "a")
+	other := env.withMount(testCluster, "/mnt/other")
+	env.start()
+	if err := env.client.caches[other.Cache.Dir].Close(); err != nil {
 		t.Fatal(err)
 	}
-	cfg := cloneConfig(h.cfg)
+	cfg := cloneConfig(env.cfg)
 	cfg.Mounts = cfg.Mounts[:1]
 
-	h.apply(cfg)
-	if !strings.Contains(h.logs.String(), "close replaced cache") {
-		t.Errorf("no warning in the log: %s", h.logs.String())
+	env.apply(cfg)
+	if !strings.Contains(env.logs.String(), "close replaced cache") {
+		t.Errorf("no warning in the log: %s", env.logs.String())
 	}
 }
 
 func TestEachClusterHasItsOwnHTTPClient(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, "a")
-	wide := h.cfg.Clusters[testCluster]
+	env := newHarness(t, "a")
+	wide := env.cfg.Clusters[testCluster]
 	wide.StreamsPerNode = 8
-	h.cfg.Clusters["wide"] = wide
-	h.cfg.Mounts = append(h.cfg.Mounts, config.Mount{Cluster: "wide", Path: "/", Target: "/mnt/wide",
-		Offline: true, Cache: h.cfg.Cache})
-	opts := h.options()
+	env.cfg.Clusters["wide"] = wide
+	env.cfg.Mounts = append(env.cfg.Mounts, config.Mount{
+		Cluster: "wide", Path: "/", Target: "/mnt/wide",
+		Offline: true, Cache: env.cfg.Cache,
+	})
+	opts := env.options()
 	opts.HTTPClient = nil
-	c, err := newClient(h.cfg, opts, h.clock)
+	client, err := newClient(env.cfg, opts, env.clock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = c.Close() }()
+	closeAfter(t, client)
 
-	narrow, wide8 := c.clusters[testCluster], c.clusters["wide"]
-	if narrow.opts.HTTPClient == wide8.opts.HTTPClient || !narrow.ownHTTP || c.opts.HTTPClient != nil {
+	narrow, wide8 := client.clusters[testCluster], client.clusters["wide"]
+	if narrow.opts.HTTPClient == wide8.opts.HTTPClient || !narrow.ownHTTP || client.opts.HTTPClient != nil {
 		t.Fatal("the clusters share an HTTP client")
 	}
-	for cl, streams := range map[*cluster]int{narrow: 2, wide8: 8} {
-		got := cl.opts.HTTPClient.Transport.(*http.Transport).MaxConnsPerHost
-		if want := streams + connHeadroom; got != want {
-			t.Errorf("cluster %s: MaxConnsPerHost = %d, want %d", cl.name, got, want)
+	for clus, streams := range map[*cluster]int{narrow: 2, wide8: 8} {
+		transport, ok := clus.opts.HTTPClient.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("cluster %s: the transport is a %T, want an *http.Transport", clus.name, clus.opts.HTTPClient.Transport)
+		}
+		if want := streams + connHeadroom; transport.MaxConnsPerHost != want {
+			t.Errorf("cluster %s: MaxConnsPerHost = %d, want %d", clus.name, transport.MaxConnsPerHost, want)
 		}
 	}
 
 	shared := newHarness(t, "a")
 	shared.start()
-	cl := shared.client.clusters[testCluster]
-	if cl.ownHTTP || cl.opts.HTTPClient != shared.client.opts.HTTPClient {
+	clus := shared.client.clusters[testCluster]
+	if clus.ownHTTP || clus.opts.HTTPClient != shared.client.opts.HTTPClient {
 		t.Error("a cluster did not use the HTTP client that was passed in")
 	}
 }
 
 func TestViewApplyReleaseStatusConcurrently(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, "a", "b")
-	h.start()
-	cfgs := [2]*config.Config{cloneConfig(h.cfg), cloneConfig(h.cfg)}
-	c := cfgs[1].Clusters[testCluster]
-	c.URL = h.fc.nodes[1].url()
-	cfgs[1].Clusters[testCluster] = c
+	env := newHarness(t, "a", "b")
+	env.start()
+	cfgs := [2]*config.Config{cloneConfig(env.cfg), cloneConfig(env.cfg)}
+	clusterCfg := cfgs[1].Clusters[testCluster]
+	clusterCfg.URL = env.fc.nodes[1].url()
+	cfgs[1].Clusters[testCluster] = clusterCfg
 	cfgs[1].Mounts[0].Cache.MaxSize = 1 << 30
 
-	var wg sync.WaitGroup
-	for g := range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range 40 {
-				if g == 0 {
-					if err := h.client.Apply(cfgs[i%2]); err != nil {
-						t.Errorf("Apply: %v", err)
-					}
-					continue
-				}
-				fsys, err := h.client.View(h.cfg.Mounts[0])
-				if err != nil {
-					t.Errorf("View: %v", err)
-					return
-				}
-				h.client.Current(fsys)
-				_ = h.client.Status()
-				_, _ = fsys.ReadDir(context.Background(), "")
-				h.client.Release(fsys)
-			}
-		}()
+	var group sync.WaitGroup
+	group.Go(func() { applyRepeatedly(t, env, cfgs) })
+	for range 3 {
+		group.Go(func() { viewRepeatedly(t, env) })
 	}
-	wg.Wait()
-	cl := h.client.clusters[testCluster]
-	if cl.holds != 0 || len(h.client.retiredClusters) != 0 || len(h.client.retiredCaches) != 0 {
+	group.Wait()
+	clus := env.client.clusters[testCluster]
+	if clus.holds != 0 || len(env.client.retiredClusters) != 0 || len(env.client.retiredCaches) != 0 {
 		t.Errorf("holds %d, retired %d clusters and %d caches, want none",
-			cl.holds, len(h.client.retiredClusters), len(h.client.retiredCaches))
+			clus.holds, len(env.client.retiredClusters), len(env.client.retiredCaches))
+	}
+}
+
+// concurrentRounds is how often each goroutine of the concurrency test repeats its work.
+const concurrentRounds = 40
+
+func applyRepeatedly(t *testing.T, env *harness, cfgs [2]*config.Config) {
+	t.Helper()
+	for round := range concurrentRounds {
+		if err := env.client.Apply(cfgs[round%2]); err != nil {
+			t.Errorf("Apply: %v", err)
+		}
+	}
+}
+
+func viewRepeatedly(t *testing.T, env *harness) {
+	t.Helper()
+	for range concurrentRounds {
+		fsys, err := env.client.View(env.cfg.Mounts[0])
+		if err != nil {
+			t.Errorf("View: %v", err)
+			return
+		}
+		env.client.Current(fsys)
+		_ = env.client.Status()
+		//nolint:errcheck // Only the race detector matters here; the listing may fail while Apply replaces the cluster.
+		_, _ = fsys.ReadDir(context.Background(), "")
+		env.client.Release(fsys)
 	}
 }

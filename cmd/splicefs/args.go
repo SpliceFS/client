@@ -22,6 +22,15 @@ const (
 	configShow  = "show"
 )
 
+// The errors of a command line. Each message is completed with the offending value.
+var (
+	errInvalidLogLevel    = errors.New("invalid --log-level")
+	errMissingCommand     = errors.New("missing command")
+	errUnknownCommand     = errors.New("unknown command")
+	errUnexpectedArgument = errors.New("unexpected argument")
+	errConfigWord         = errors.New("config needs one of: check, show")
+)
+
 // invocation is a parsed command line.
 type invocation struct {
 	configDir   string
@@ -48,21 +57,32 @@ func parseArgs(args []string) (invocation, error) {
 	fs.StringVar(&inv.configDir, "config", "", "")
 	fs.StringVar(&level, "log-level", "info", "")
 	fs.BoolVar(&inv.showVersion, "version", false, "")
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return invocation{}, err
 	}
 	var ok bool
 	if inv.logLevel, ok = parseLevel(level); !ok {
-		return invocation{}, fmt.Errorf("invalid --log-level %q: use debug, info, warn or error", level)
+		return invocation{}, fmt.Errorf("%w %q: use debug, info, warn or error", errInvalidLogLevel, level)
 	}
 	if inv.showVersion {
 		return inv, nil
 	}
 	if fs.NArg() == 0 {
-		return invocation{}, errors.New("missing command")
+		return invocation{}, errMissingCommand
 	}
 	inv.command = fs.Arg(0)
-	return inv, inv.parseCommand(fs.Args()[1:])
+	err := inv.parseCommand(fs.Args()[1:])
+	return inv, err
+}
+
+// parseFlags reads the flags of fs from args. The message is the flag package's own, which
+// already says what is wrong and is shown to the user as it is, so the wrapping adds no
+// words; it only keeps flag.ErrHelp recognizable for errors.Is.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("%w", err)
+	}
+	return nil
 }
 
 // parseLevel accepts exactly the four names the usage text lists. slog would also take
@@ -91,21 +111,21 @@ func newFlagSet(name string) *flag.FlagSet {
 func (inv *invocation) parseCommand(args []string) error {
 	fs := newFlagSet(inv.command)
 	switch inv.command {
-	case commandMount:
+	case commandMount, commandConfig:
+		// These take no flags.
 	case commandUmount:
 		fs.BoolVar(&inv.force, "force", false, "")
 	case commandStatus:
 		fs.BoolVar(&inv.asJSON, "json", false, "")
-	case commandConfig:
 	default:
-		return fmt.Errorf("unknown command %q", inv.command)
+		return fmt.Errorf("%w %q", errUnknownCommand, inv.command)
 	}
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	inv.targets = fs.Args()
 	if inv.command == commandStatus && len(inv.targets) > 0 {
-		return fmt.Errorf("unexpected argument %q", inv.targets[0])
+		return fmt.Errorf("%w %q", errUnexpectedArgument, inv.targets[0])
 	}
 	if inv.command == commandConfig {
 		return inv.parseConfigCommand()
@@ -116,7 +136,7 @@ func (inv *invocation) parseCommand(args []string) error {
 // parseConfigCommand reads the word after "config", which is held in targets.
 func (inv *invocation) parseConfigCommand() error {
 	if len(inv.targets) != 1 || (inv.targets[0] != configCheck && inv.targets[0] != configShow) {
-		return errors.New("config needs one of: check, show")
+		return errConfigWord
 	}
 	inv.configCommand = inv.targets[0]
 	inv.targets = nil

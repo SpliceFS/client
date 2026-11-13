@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -55,8 +56,36 @@ func (w want) check(t *testing.T, r *http.Request) {
 	}
 }
 
-func writeJSON(w http.ResponseWriter, status int, body string) {
+func writeJSON(t *testing.T, w http.ResponseWriter, status int, body string) {
+	t.Helper()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_, _ = w.Write([]byte(body))
+	// An answer of status 204 has no body by definition, and the server refuses to send one.
+	if status != http.StatusNoContent {
+		writeBody(t, w, []byte(body))
+	}
+}
+
+// writeBody writes a response body. It uses Errorf because handlers run on the server's
+// goroutines.
+func writeBody(t *testing.T, w io.Writer, body []byte) {
+	t.Helper()
+	if _, err := w.Write(body); err != nil {
+		t.Errorf("write response body: %v", err)
+	}
+}
+
+// closeLater closes c when the test ends and reports a failed close.
+func closeLater(t *testing.T, c io.Closer) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+}
+
+// bearerHeader is the request header a handler expects from a logged-in client.
+func bearerHeader() map[string]string {
+	return map[string]string{"Authorization": "Bearer " + testToken}
 }

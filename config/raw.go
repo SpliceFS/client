@@ -60,12 +60,14 @@ type rawMount struct {
 	Cache      rawCache `yaml:"cache"`
 }
 
-// orDefault returns *p, or def when the key was absent.
-func orDefault[T any](p *T, def T) T {
-	if p == nil {
+// orDefault returns *set, or def when the key was absent.
+//
+//nolint:ireturn // T is the type of the value the caller passes in, not an interface chosen here.
+func orDefault[T any](set *T, def T) T {
+	if set == nil {
 		return def
 	}
-	return *p
+	return *set
 }
 
 // build applies the defaults and resolves relative paths against dir. The mounts are
@@ -132,14 +134,14 @@ func (r rawMount) build(name string, cache Cache, dir string) Mount {
 	}
 }
 
-// resolve makes p relative to dir unless it is absolute, and cleans it. An
+// resolve makes file relative to dir unless it is absolute, and cleans it. An
 // empty path stays empty so that validation can report it as missing.
-func resolve(dir, p string) string {
-	if p == "" {
+func resolve(dir, file string) string {
+	if file == "" {
 		return ""
 	}
-	if !filepath.IsAbs(p) {
-		p = filepath.Join(dir, p)
+	if !filepath.IsAbs(file) {
+		file = filepath.Join(dir, file)
 	}
-	return filepath.Clean(p)
+	return filepath.Clean(file)
 }

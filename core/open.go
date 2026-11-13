@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -34,72 +35,82 @@ type choice struct {
 
 // Open opens the file at name. The version it reads is fixed at open: the cached one
 // when it was confirmed recently enough, otherwise the one most nodes hold now.
+//
+//nolint:ireturn // File is the interface that FS.Open returns.
 func (v *view) Open(ctx context.Context, name string) (File, error) {
-	const op = "open"
+	const operation = "open"
 	// Deferred, so that the entry this open pins is safe from the pass.
 	defer v.cache.maybeEvict()
-	e, err := v.stat(ctx, op, name)
+	treeEntry, err := v.lookup(ctx, operation, name)
 	if err != nil {
 		return nil, err
 	}
-	if e.Dir {
-		return nil, fmt.Errorf("%s %q: %w", op, name, ErrIsDir)
+	if treeEntry.Dir {
+		return nil, fmt.Errorf("%s %q: %w", operation, name, ErrIsDir)
 	}
 	full := v.full(name)
 	key := cache.Key{Cluster: v.c.name, Path: full}
-	cacheable := e.Size >= int64(v.mount.Cache.MinFileSize)
-	ch, err := v.choose(ctx, key, e, cacheable)
+	chosen, err := v.choose(ctx, key, treeEntry)
 	if err != nil {
 		return nil, v.openError(ctx, name, full, err)
 	}
-	entry := v.acquire(key, ch, cacheable)
+	var entry *cache.Entry
+	if v.cacheable(treeEntry) {
+		entry = v.acquire(key, chosen)
+	}
 	reader, err := v.client.newReader(fetch.Options{
-		Size:      ch.version.Size,
-		BlockSize: ch.version.BlockSize,
+		Size:      chosen.version.Size,
+		BlockSize: chosen.version.BlockSize,
 		Streams:   v.c.cfg.StreamsPerNode,
 		ReadAhead: int64(v.c.cfg.ReadAhead),
 		Clock:     v.client.clock,
-	}, v.sources(full, ch), storeOf(entry), v.c.meter)
+	}, v.sources(full, chosen), storeOf(entry), v.c.meter)
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("%s %q: %w", op, name, err), release(entry))
+		return nil, errors.Join(fmt.Errorf("%s %q: %w", operation, name, err), release(entry))
 	}
-	attr := v.attr(name, e)
-	attr.Size, attr.MTime = ch.version.Size, ch.mtime
+	attr := v.attr(name, treeEntry)
+	attr.Size, attr.MTime = chosen.version.Size, chosen.mtime
 	return &file{attr: attr, reader: reader, entry: entry, cache: v.cache}, nil
 }
 
+// cacheable reports whether the mount caches a file of this size: a file below the
+// mount's minimum is read through without touching the cache.
+func (v *view) cacheable(treeEntry tree.Entry) bool {
+	return treeEntry.Size >= int64(v.mount.Cache.MinFileSize)
+}
+
 // choose picks the version to open, asking the nodes unless the cache vouches for it.
-func (v *view) choose(ctx context.Context, key cache.Key, e tree.Entry, cacheable bool) (choice, error) {
-	all, _, err := v.c.nodes(ctx)
+func (v *view) choose(ctx context.Context, key cache.Key, treeEntry tree.Entry) (choice, error) {
+	nodes, err := v.c.nodes(ctx)
 	if err != nil {
 		return choice{}, err
 	}
-	listed := holding(all, e.Nodes)
-	info, cached := v.cachedVersion(key, e, cacheable)
+	listed := holding(nodes.all, treeEntry.Nodes)
+	info, cached := v.cachedVersion(key, treeEntry)
 	if cached && v.client.opts.Now().Sub(info.Validated) < v.mount.Cache.Revalidate.Std() {
 		// Without the nodes of the last HEAD round, as after a restart, the tree's
 		// nodes could include one with the same tag and other bytes: ask instead.
-		if nodes, ok := v.c.held.recall(key, info.Version); ok {
-			return choice{version: info.Version, mtime: e.MTime, sources: holding(listed, nodes)}, nil
+		if heldNodes, ok := v.c.held.recall(key, info.Version); ok {
+			return choice{version: info.Version, mtime: treeEntry.MTime, sources: holding(listed, heldNodes)}, nil
 		}
 	}
-	ch, err := v.ask(ctx, key, listed, e.ETag)
+	chosen, err := v.ask(ctx, key, listed, treeEntry.ETag)
 	if errors.Is(err, errNoAnswer) && ctx.Err() == nil && v.mount.Offline && cached && info.Complete {
 		// With no node reachable the tree's entry is the best knowledge of the file
 		// there is, and the complete cached copy is that version.
-		return choice{version: info.Version, mtime: e.MTime}, nil
+		return choice{version: info.Version, mtime: treeEntry.MTime}, nil
 	}
-	return ch, err
+	return chosen, err
 }
 
 // cachedVersion reports the cache entry of the file when it holds the version the
 // tree lists.
-func (v *view) cachedVersion(key cache.Key, e tree.Entry, cacheable bool) (cache.Info, bool) {
-	if !cacheable {
+func (v *view) cachedVersion(key cache.Key, treeEntry tree.Entry) (cache.Info, bool) {
+	if !v.cacheable(treeEntry) {
 		return cache.Info{}, false
 	}
 	info, ok := v.cache.Peek(key)
-	return info, ok && info.Version.ETag == e.ETag
+	return info, ok && info.Version.ETag == treeEntry.ETag
 }
 
 // openError translates the failure to choose a version. A file that every answering
@@ -111,39 +122,38 @@ func (v *view) openError(ctx context.Context, name, full string, err error) erro
 		v.c.tree.Forget(full[:max(strings.LastIndexByte(full, '/'), 0)])
 		return notExist("open", name)
 	case ctx.Err() != nil:
-		return ctx.Err()
+		return fmt.Errorf("open %q: %w", name, ctx.Err())
 	}
 	return fmt.Errorf("open %q: %w: %w", name, ErrUnavailable, err)
 }
 
 // acquire pins the cache entry of the chosen version. The cache is an optimization: a
 // broken cache disk is logged and the file is read without it.
-func (v *view) acquire(key cache.Key, ch choice, cacheable bool) *cache.Entry {
-	if !cacheable {
-		return nil
-	}
-	entry, err := v.cache.Acquire(key, ch.version)
+func (v *view) acquire(key cache.Key, chosen choice) *cache.Entry {
+	entry, err := v.cache.Acquire(key, chosen.version)
 	if err != nil {
 		v.client.opts.Logger.Warn("cache unusable, reading without it",
-			"cluster", key.Cluster, "path", key.Path, "error", err)
+			slog.String("cluster", key.Cluster), slog.String("path", key.Path), slog.Any("error", err))
 		return nil
 	}
-	if ch.validated {
+	if chosen.validated {
 		v.cache.MarkValidated(key)
 	}
 	return entry
 }
 
-func (v *view) sources(full string, ch choice) []fetch.Source {
-	out := make([]fetch.Source, len(ch.sources))
-	for i, n := range ch.sources {
-		out[i] = source{c: v.c, node: n, file: full, etag: ch.version.ETag}
+func (v *view) sources(full string, chosen choice) []fetch.Source {
+	out := make([]fetch.Source, len(chosen.sources))
+	for i, n := range chosen.sources {
+		out[i] = source{c: v.c, node: n, file: full, etag: chosen.version.ETag}
 	}
 	return out
 }
 
 // storeOf returns the entry as a Store, or an untyped nil when there is none: a nil
 // *cache.Entry in the interface would look like a cache to the reader.
+//
+//nolint:ireturn // The interface is the point: only an interface value can be a true nil.
 func storeOf(entry *cache.Entry) fetch.Store {
 	if entry == nil {
 		return nil
@@ -155,7 +165,10 @@ func release(entry *cache.Entry) error {
 	if entry == nil {
 		return nil
 	}
-	return entry.Release()
+	if err := entry.Release(); err != nil {
+		return fmt.Errorf("release cache entry: %w", err)
+	}
+	return nil
 }
 
 // holding returns the nodes among all whose names are in names.
@@ -180,25 +193,21 @@ type headAnswer struct {
 // remembers which nodes hold it.
 func (v *view) ask(ctx context.Context, key cache.Key, nodes []*remote.Node, treeETag string) (choice, error) {
 	answers := fanOut(ctx, nodes, func(ctx context.Context, n *remote.Node) headAnswer {
-		var meta remote.Meta
-		err := v.c.session.Do(ctx, n, func(ctx context.Context, token string) (err error) {
-			meta, err = n.Head(ctx, token, key.Path)
-			return err
-		})
+		meta, err := callNode(ctx, v.c, n, n.Head, key.Path)
 		return headAnswer{node: n, meta: meta, err: err}
 	})
-	g, err := chooseVersion(answers, treeETag)
+	group, err := chooseVersion(answers, treeETag)
 	if err != nil {
 		return choice{}, err
 	}
 	version := cache.Version{
-		Size:       g.meta.Size,
-		ETag:       g.meta.ETag,
-		HeadDigest: g.meta.HeadDigest,
+		Size:       group.meta.Size,
+		ETag:       group.meta.ETag,
+		HeadDigest: group.meta.HeadDigest,
 		BlockSize:  int64(v.c.cfg.BlockSize),
 	}
-	v.c.held.remember(key, version, names(g.nodes))
-	return choice{version: version, mtime: g.meta.MTime, sources: g.nodes, validated: true}, nil
+	v.c.held.remember(key, version, names(group.nodes))
+	return choice{version: version, mtime: group.meta.MTime, sources: group.nodes, validated: true}, nil
 }
 
 // versionGroup is the nodes that hold one version of a file.
@@ -216,20 +225,20 @@ func chooseVersion(answers []headAnswer, treeETag string) (versionGroup, error) 
 	groups := make(map[versionKey]*versionGroup)
 	var missing bool
 	var failures []error
-	for _, a := range answers {
+	for _, answer := range answers {
 		switch {
-		case a.err == nil:
-			k := versionKey{a.meta.ETag, a.meta.HeadDigest}
-			g, ok := groups[k]
+		case answer.err == nil:
+			groupKey := versionKey{answer.meta.ETag, answer.meta.HeadDigest}
+			group, ok := groups[groupKey]
 			if !ok {
-				g = &versionGroup{meta: a.meta}
-				groups[k] = g
+				group = &versionGroup{meta: answer.meta}
+				groups[groupKey] = group
 			}
-			g.nodes = append(g.nodes, a.node)
-		case errors.Is(a.err, remote.ErrNotFound):
+			group.nodes = append(group.nodes, answer.node)
+		case errors.Is(answer.err, remote.ErrNotFound):
 			missing = true
 		default:
-			failures = append(failures, a.err)
+			failures = append(failures, answer.err)
 		}
 	}
 	switch {
@@ -249,8 +258,8 @@ func chooseVersion(answers []headAnswer, treeETag string) (versionGroup, error) 
 }
 
 // matches is 1 when the group holds the version with the given tag, else 0.
-func (g *versionGroup) matches(etag string) int {
-	if g.meta.ETag == etag {
+func (group *versionGroup) matches(etag string) int {
+	if group.meta.ETag == etag {
 		return 1
 	}
 	return 0
@@ -272,6 +281,7 @@ func (f *file) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
 	if errors.Is(err, fetch.ErrUnavailable) {
 		return n, fmt.Errorf("read %q: %w: %w", f.attr.Name, ErrUnavailable, err)
 	}
+	//nolint:wrapcheck // File.ReadAt has io.ReaderAt semantics: callers compare the error with io.EOF.
 	return n, err
 }
 

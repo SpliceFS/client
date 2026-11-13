@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"reflect"
 	"strings"
@@ -14,13 +15,11 @@ import (
 	"github.com/SpliceFS/common/wire"
 )
 
-var bearer = map[string]string{"Authorization": "Bearer " + testToken}
-
 func TestHealth(t *testing.T) {
 	t.Parallel()
 	n := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		want{method: "GET", uri: "/api/v1/health", absent: []string{"Authorization"}}.check(t, r)
-		writeJSON(w, 200, `{"status":"ok","version":"v1.0.0","node":"east"}`)
+		writeJSON(t, w, 200, `{"status":"ok","version":"v1.0.0","node":"east"}`)
 	})
 	got, err := n.Health(context.Background())
 	if err != nil {
@@ -28,6 +27,28 @@ func TestHealth(t *testing.T) {
 	}
 	if want := (wire.Health{Status: "ok", Version: "v1.0.0", Node: "east"}); got != want {
 		t.Errorf("Health = %+v, want %+v", got, want)
+	}
+}
+
+// loginHandler checks that a login request carries the credentials as JSON and answers
+// with body.
+func loginHandler(t *testing.T, body string) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		want{
+			method: "POST",
+			uri:    "/api/v1/login",
+			header: map[string]string{"Content-Type": "application/json"},
+			absent: []string{"Authorization"},
+		}.check(t, r)
+		var req wire.LoginRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if req != (wire.LoginRequest{User: "ann", Password: "p\"w"}) {
+			t.Errorf("request = %+v", req)
+		}
+		writeJSON(t, w, 200, body)
 	}
 }
 
@@ -45,22 +66,7 @@ func TestLogin(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			n := serve(t, func(w http.ResponseWriter, r *http.Request) {
-				want{
-					method: "POST",
-					uri:    "/api/v1/login",
-					header: map[string]string{"Content-Type": "application/json"},
-					absent: []string{"Authorization"},
-				}.check(t, r)
-				var req wire.LoginRequest
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					t.Errorf("decode request: %v", err)
-				}
-				if req != (wire.LoginRequest{User: "ann", Password: "p\"w"}) {
-					t.Errorf("request = %+v", req)
-				}
-				writeJSON(w, 200, tt.body)
-			})
+			n := serve(t, loginHandler(t, tt.body))
 			got, err := n.Login(context.Background(), "ann", "p\"w")
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Login error = %v, want %v", err, tt.wantErr)
@@ -75,7 +81,8 @@ func TestLogin(t *testing.T) {
 func TestSendRejectsUnencodablePayload(t *testing.T) {
 	t.Parallel()
 	n := serve(t, func(http.ResponseWriter, *http.Request) { t.Error("request must not be sent") })
-	resp, err := n.send(context.Background(), call{op: "x", method: http.MethodPost, path: "/", payload: make(chan int)}, 200)
+	request := call{operation: "x", method: http.MethodPost, path: "/", payload: make(chan int)}
+	resp, err := n.send(context.Background(), request, 200)
 	if err == nil {
 		closeBody(resp)
 		t.Fatal("send with a channel payload succeeded")
@@ -85,8 +92,8 @@ func TestSendRejectsUnencodablePayload(t *testing.T) {
 func TestNodes(t *testing.T) {
 	t.Parallel()
 	n := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		want{method: "GET", uri: "/api/v1/nodes", header: bearer}.check(t, r)
-		writeJSON(w, 200, `{"cluster":"c","nodes":[{"name":"east","url":"https://east.example.com/api"}]}`)
+		want{method: "GET", uri: "/api/v1/nodes", header: bearerHeader()}.check(t, r)
+		writeJSON(t, w, 200, `{"cluster":"c","nodes":[{"name":"east","url":"https://east.example.com/api"}]}`)
 	})
 	got, err := n.Nodes(context.Background(), testToken)
 	if err != nil {
@@ -101,8 +108,8 @@ func TestNodes(t *testing.T) {
 func TestSpace(t *testing.T) {
 	t.Parallel()
 	n := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		want{method: "GET", uri: "/api/v1/space/my%20share", header: bearer}.check(t, r)
-		writeJSON(w, 200, `{"total":1000,"free":400}`)
+		want{method: "GET", uri: "/api/v1/space/my%20share", header: bearerHeader()}.check(t, r)
+		writeJSON(t, w, 200, `{"total":1000,"free":400}`)
 	})
 	got, err := n.Space(context.Background(), testToken, "my share")
 	if err != nil {
@@ -116,9 +123,17 @@ func TestSpace(t *testing.T) {
 func TestSpaceRejectsBadShares(t *testing.T) {
 	t.Parallel()
 	n := serve(t, func(http.ResponseWriter, *http.Request) { t.Error("request must not be sent") })
-	for _, share := range []string{"", "..", "a/b"} {
-		if _, err := n.Space(context.Background(), testToken, share); err == nil {
-			t.Errorf("Space(%q) succeeded", share)
+	tests := []struct {
+		share   string
+		wantErr error
+	}{
+		{share: "", wantErr: ErrInvalidPath},
+		{share: "..", wantErr: ErrInvalidPath},
+		{share: "a/b", wantErr: errSlashInShare},
+	}
+	for _, tt := range tests {
+		if _, err := n.Space(context.Background(), testToken, tt.share); !errors.Is(err, tt.wantErr) {
+			t.Errorf("Space(%q) error = %v, want %v", tt.share, err, tt.wantErr)
 		}
 	}
 }
@@ -134,14 +149,18 @@ func TestList(t *testing.T) {
 	}{
 		{name: "shares", dir: "", uri: "/api/v1/tree/"},
 		{name: "share", dir: "media", uri: "/api/v1/tree/media/"},
-		{name: "special characters", dir: "my share/a#b/100%/caf\u00e9?", uri: "/api/v1/tree/my%20share/a%23b/100%25/caf%C3%A9%3F/"},
+		{
+			name: "special characters",
+			dir:  "my share/a#b/100%/caf\u00e9?",
+			uri:  "/api/v1/tree/my%20share/a%23b/100%25/caf%C3%A9%3F/",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			n := serve(t, func(w http.ResponseWriter, r *http.Request) {
-				want{method: "GET", uri: tt.uri, header: bearer}.check(t, r)
-				writeJSON(w, 200, entry)
+				want{method: "GET", uri: tt.uri, header: bearerHeader()}.check(t, r)
+				writeJSON(t, w, 200, entry)
 			})
 			got, err := n.List(context.Background(), testToken, tt.dir)
 			if err != nil {
@@ -163,7 +182,7 @@ func TestListDecodesGzip(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Encoding", "gzip")
-		_, _ = w.Write(gzipBytes(t, body))
+		writeBody(t, w, gzipBytes(t, body))
 	})
 	got, err := n.List(context.Background(), testToken, "media")
 	if err != nil {
@@ -187,7 +206,7 @@ func TestListRejectsBadDir(t *testing.T) {
 func TestHead(t *testing.T) {
 	t.Parallel()
 	n := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		want{method: "HEAD", uri: "/api/v1/file/my%20share/a%23b/100%25/caf%C3%A9%3F.bin", header: bearer}.check(t, r)
+		want{method: "HEAD", uri: "/api/v1/file/my%20share/a%23b/100%25/caf%C3%A9%3F.bin", header: bearerHeader()}.check(t, r)
 		w.Header().Set("Content-Length", "12345")
 		w.Header().Set("Last-Modified", "Wed, 02 Jan 2030 03:04:05 GMT")
 		w.Header().Set("ETag", `"abc"`)
@@ -212,26 +231,28 @@ func TestHeadProtocolViolations(t *testing.T) {
 		wire.HeaderHeadDigest: "deadbeef",
 	}
 	tests := []struct {
-		name    string
-		mutate  func(h map[string]string)
-		wantMsg string
+		name   string
+		header string
+		// value replaces the header; an empty value removes it.
+		value string
 	}{
-		{name: "no content length", mutate: func(h map[string]string) { delete(h, "Content-Length") }, wantMsg: "Content-Length"},
-		{name: "no last modified", mutate: func(h map[string]string) { delete(h, "Last-Modified") }, wantMsg: "Last-Modified"},
-		{name: "bad last modified", mutate: func(h map[string]string) { h["Last-Modified"] = "yesterday" }, wantMsg: "Last-Modified"},
-		{name: "no etag", mutate: func(h map[string]string) { delete(h, "ETag") }, wantMsg: "ETag"},
-		{name: "no digest", mutate: func(h map[string]string) { delete(h, wire.HeaderHeadDigest) }, wantMsg: wire.HeaderHeadDigest},
+		{name: "no content length", header: "Content-Length"},
+		{name: "no last modified", header: "Last-Modified"},
+		{name: "bad last modified", header: "Last-Modified", value: "yesterday"},
+		{name: "no etag", header: "ETag"},
+		{name: "no digest", header: wire.HeaderHeadDigest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := map[string]string{}
-			for k, v := range full {
-				h[k] = v
+			headers := maps.Clone(full)
+			if tt.value == "" {
+				delete(headers, tt.header)
+			} else {
+				headers[tt.header] = tt.value
 			}
-			tt.mutate(h)
 			n := serve(t, func(w http.ResponseWriter, _ *http.Request) {
-				for k, v := range h {
+				for k, v := range headers {
 					w.Header().Set(k, v)
 				}
 			})
@@ -239,8 +260,8 @@ func TestHeadProtocolViolations(t *testing.T) {
 			if !errors.Is(err, ErrProtocol) {
 				t.Fatalf("Head error = %v, want ErrProtocol", err)
 			}
-			if !strings.Contains(err.Error(), tt.wantMsg) {
-				t.Errorf("error %q does not mention %q", err, tt.wantMsg)
+			if !strings.Contains(err.Error(), tt.header) {
+				t.Errorf("error %q does not mention %q", err, tt.header)
 			}
 		})
 	}
@@ -275,13 +296,13 @@ func TestRange(t *testing.T) {
 		}.check(t, r)
 		rangeHeaders("100", "109", "5000")(w)
 		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write([]byte("0123456789"))
+		writeBody(t, w, []byte("0123456789"))
 	})
 	rc, err := n.Range(context.Background(), testToken, "my share/a#b/100%/caf\u00e9?.bin", `"abc"`, 100, 10)
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
-	t.Cleanup(func() { _ = rc.Close() })
+	closeLater(t, rc)
 	got, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatalf("read: %v", err)
@@ -296,13 +317,13 @@ func TestRangeIgnoresBytesBeyondLength(t *testing.T) {
 	n := serve(t, func(w http.ResponseWriter, _ *http.Request) {
 		rangeHeaders("0", "3", "*")(w)
 		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write([]byte("abcdefgh"))
+		writeBody(t, w, []byte("abcdefgh"))
 	})
 	rc, err := n.Range(context.Background(), testToken, "s/f", "e", 0, 4)
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
-	t.Cleanup(func() { _ = rc.Close() })
+	closeLater(t, rc)
 	got, err := io.ReadAll(rc)
 	if err != nil || string(got) != "abcd" {
 		t.Errorf("ReadAll = %q, %v; want abcd, nil", got, err)
@@ -314,13 +335,13 @@ func TestRangeShortBody(t *testing.T) {
 	n := serve(t, func(w http.ResponseWriter, _ *http.Request) {
 		rangeHeaders("0", "9", "10")(w)
 		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write([]byte("0123"))
+		writeBody(t, w, []byte("0123"))
 	})
 	rc, err := n.Range(context.Background(), testToken, "s/f", "e", 0, 10)
 	if err != nil {
 		t.Fatalf("Range: %v", err)
 	}
-	t.Cleanup(func() { _ = rc.Close() })
+	closeLater(t, rc)
 	got, err := io.ReadAll(rc)
 	if !errors.Is(err, io.ErrUnexpectedEOF) {
 		t.Errorf("read error = %v, want io.ErrUnexpectedEOF", err)
@@ -352,7 +373,7 @@ func TestRangeContentRangeMismatch(t *testing.T) {
 					w.Header().Set("Content-Range", tt.header)
 				}
 				w.WriteHeader(tt.status)
-				_, _ = w.Write([]byte("0123456789"))
+				writeBody(t, w, []byte("0123456789"))
 			})
 			rc, err := n.Range(context.Background(), testToken, "s/f", "e", 100, 10)
 			if !errors.Is(err, ErrProtocol) {
@@ -369,24 +390,26 @@ func TestRangeRejectsBadArguments(t *testing.T) {
 	t.Parallel()
 	n := serve(t, func(http.ResponseWriter, *http.Request) { t.Error("request must not be sent") })
 	tests := []struct {
-		name   string
-		file   string
-		etag   string
-		off    int64
-		length int64
+		name    string
+		file    string
+		etag    string
+		off     int64
+		length  int64
+		wantErr error
 	}{
-		{name: "empty etag", file: "s/f", etag: "", off: 0, length: 1},
-		{name: "negative offset", file: "s/f", etag: "e", off: -1, length: 1},
-		{name: "zero length", file: "s/f", etag: "e", off: 0, length: 0},
-		{name: "negative length", file: "s/f", etag: "e", off: 0, length: -5},
-		{name: "overflow", file: "s/f", etag: "e", off: 1<<63 - 1, length: 2},
-		{name: "bad path", file: "s/../f", etag: "e", off: 0, length: 1},
+		{name: "empty etag", file: "s/f", etag: "", off: 0, length: 1, wantErr: ErrEmptyETag},
+		{name: "negative offset", file: "s/f", etag: "e", off: -1, length: 1, wantErr: ErrNegativeOffset},
+		{name: "zero length", file: "s/f", etag: "e", off: 0, length: 0, wantErr: errNotPositive},
+		{name: "negative length", file: "s/f", etag: "e", off: 0, length: -5, wantErr: errNotPositive},
+		{name: "overflow", file: "s/f", etag: "e", off: 1<<63 - 1, length: 2, wantErr: errRangeOverflow},
+		{name: "bad path", file: "s/../f", etag: "e", off: 0, length: 1, wantErr: ErrInvalidPath},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := n.Range(context.Background(), testToken, tt.file, tt.etag, tt.off, tt.length); err == nil {
-				t.Error("Range succeeded")
+			_, err := n.Range(context.Background(), testToken, tt.file, tt.etag, tt.off, tt.length)
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("Range error = %v, want %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -410,9 +433,10 @@ func TestParseContentRange(t *testing.T) {
 		{in: "bytes */10", ok: false},
 	}
 	for _, tt := range tests {
-		first, last, ok := parseContentRange(tt.in)
-		if ok != tt.ok || (ok && (first != tt.first || last != tt.last)) {
-			t.Errorf("parseContentRange(%q) = %d, %d, %v; want %d, %d, %v", tt.in, first, last, ok, tt.first, tt.last, tt.ok)
+		got, ok := parseContentRange(tt.in)
+		want := byteRange{first: tt.first, last: tt.last}
+		if ok != tt.ok || (ok && got != want) {
+			t.Errorf("parseContentRange(%q) = %+v, %v; want %+v, %v", tt.in, got, ok, want, tt.ok)
 		}
 	}
 }

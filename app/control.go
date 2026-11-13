@@ -42,23 +42,25 @@ type control struct {
 	// Nil when this server cannot mount.
 	requests chan<- mountRequest
 
-	// ctx ends when the server is told to stop; it only interrupts connections that
+	// cancel ends the context of the server. That context only interrupts connections that
 	// have not yet sent a request.
-	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
-// startControl serves ln until stop is called.
-func startControl(ln net.Listener, set *mountSet, status statusSource, log *slog.Logger,
-	requests chan<- mountRequest) *control {
-	ctx, cancel := context.WithCancel(context.Background())
-	c := &control{
-		listener: ln, set: set, status: status, log: log, requests: requests,
-		ctx: ctx, cancel: cancel,
+// startControl serves listener until stop is called. The server keeps the values of parent
+// but not its cancellation, because only stop ends it: the run ending must not cut off the
+// reply to the unmount that ended it.
+func startControl(parent context.Context, listener net.Listener, set *mountSet,
+	status statusSource, log *slog.Logger, requests chan<- mountRequest,
+) *control {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	server := &control{
+		listener: listener, set: set, status: status, log: log, requests: requests,
+		cancel: cancel,
 	}
-	c.wg.Go(c.accept)
-	return c
+	server.wg.Go(func() { server.accept(ctx) })
+	return server
 }
 
 // stop closes the listener and the connections that have not sent a request, then waits
@@ -66,44 +68,48 @@ func startControl(ln net.Listener, set *mountSet, status statusSource, log *slog
 // the last unmount of a run ends the run, and its caller must still get the reply.
 func (c *control) stop() {
 	c.cancel()
-	_ = c.listener.Close()
+	// The listener is the socket of Run, which reports a failed close itself.
+	closeQuietly(c.listener)
 	c.wg.Wait()
 }
 
-func (c *control) accept() {
+func (c *control) accept(ctx context.Context) {
 	for {
 		conn, err := c.listener.Accept()
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
-				c.log.Error("control socket stopped accepting", "err", err)
+				c.log.ErrorContext(ctx, "control socket stopped accepting", slog.Any("err", err))
 			}
 			return
 		}
-		c.wg.Go(func() { c.handle(conn) })
+		c.wg.Go(func() { c.handle(ctx, conn) })
 	}
 }
 
-func (c *control) handle(conn net.Conn) {
-	defer func() { _ = conn.Close() }()
-	reply, ok := c.serve(conn)
+func (c *control) handle(ctx context.Context, conn net.Conn) {
+	defer closeQuietly(conn)
+	reply, ok := c.serve(ctx, conn)
 	if !ok {
 		return
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(replyTimeout))
-	if err := json.NewEncoder(conn).Encode(reply); err != nil {
-		c.log.Debug("control reply not delivered", "err", err)
+	// A deadline that cannot be set means the connection is gone, and the write fails too.
+	err := errors.Join(conn.SetWriteDeadline(time.Now().Add(replyTimeout)),
+		json.NewEncoder(conn).Encode(reply))
+	if err != nil {
+		c.log.DebugContext(ctx, "control reply not delivered", slog.Any("err", err))
 	}
 }
 
 // serve reads the request from conn and returns the reply. It returns false when the
 // server was stopped while the request was still being read.
-func (c *control) serve(conn net.Conn) (Reply, bool) {
+func (c *control) serve(ctx context.Context, conn net.Conn) (Reply, bool) {
 	// Closing the connection is what wakes a read that waits for a client that says
 	// nothing, when the server stops.
-	stopReading := context.AfterFunc(c.ctx, func() { _ = conn.Close() })
-	_ = conn.SetReadDeadline(time.Now().Add(requestTimeout))
+	stopReading := context.AfterFunc(ctx, func() { closeQuietly(conn) })
+	// A deadline that cannot be set means the connection is gone, and the read fails too.
 	var req Request
-	err := json.NewDecoder(io.LimitReader(conn, maxRequest)).Decode(&req)
+	err := errors.Join(conn.SetReadDeadline(time.Now().Add(requestTimeout)),
+		json.NewDecoder(io.LimitReader(conn, maxRequest)).Decode(&req))
 	if !stopReading() {
 		return Reply{}, false
 	}
@@ -115,26 +121,26 @@ func (c *control) serve(conn net.Conn) (Reply, bool) {
 		report := c.report()
 		return Reply{Report: &report}, true
 	case OpUnmount:
-		return Reply{Results: c.unmount(req)}, true
+		return Reply{Results: c.unmount(ctx, req)}, true
 	case OpMount:
-		return c.mount(req.Mount), true
+		return c.mount(ctx, req.Mount), true
 	}
 	return Reply{Error: fmt.Sprintf("unknown op %q", req.Op)}, true
 }
 
 // mount hands the request to the run loop and waits for its answer, or for the server to be
 // told to stop.
-func (c *control) mount(m *MountRequest) Reply {
-	if m == nil {
+func (c *control) mount(ctx context.Context, mountReq *MountRequest) Reply {
+	if mountReq == nil {
 		return Reply{Error: "mount request has no mount"}
 	}
 	if c.requests == nil {
 		return Reply{Error: "this client cannot mount on request"}
 	}
-	req := mountRequest{mount: m.requested(), reply: make(chan error, 1)}
+	req := mountRequest{mount: mountReq.requested(), reply: make(chan error, 1)}
 	select {
 	case c.requests <- req:
-	case <-c.ctx.Done():
+	case <-ctx.Done():
 		return Reply{Error: errStopping.Error()}
 	}
 	select {
@@ -143,19 +149,21 @@ func (c *control) mount(m *MountRequest) Reply {
 			return Reply{Error: err.Error()}
 		}
 		return Reply{}
-	case <-c.ctx.Done():
+	case <-ctx.Done():
 		return Reply{Error: errStopping.Error()}
 	}
 }
 
-func (c *control) unmount(req Request) []UnmountResult {
+// unmount takes down the mounts a request names. The server being told to stop does not
+// cut it short, for the reason stop gives, so it has a limit of its own.
+func (c *control) unmount(ctx context.Context, req Request) []UnmountResult {
 	targets := req.Targets
 	if len(targets) == 0 {
-		for _, m := range c.set.list() {
-			targets = append(targets, m.target)
+		for _, live := range c.set.list() {
+			targets = append(targets, live.target)
 		}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), unmountTimeout)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), unmountTimeout)
 	defer cancel()
 	results := make([]UnmountResult, 0, len(targets))
 	for _, t := range targets {

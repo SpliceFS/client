@@ -142,7 +142,7 @@ func (s *Session) Usable(ctx context.Context) ([]Node, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return nodesOf(s.usable(s.opts.Now())), nil
+	return nodesOf(s.candidates(s.opts.Now())), nil
 }
 
 // Do calls call with the current token. When call fails with an unauthorized error
@@ -158,9 +158,18 @@ func (s *Session) Do(ctx context.Context, n Node, call func(ctx context.Context,
 	return err
 }
 
+// Close makes every later call fail with ErrClosed.
+func (s *Session) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
 // withToken is Do without the health bookkeeping, for calls to the cluster host, which is
-// not a member. ran is false when no token could be had and call never ran.
-func (s *Session) withToken(ctx context.Context, call func(ctx context.Context, token string) error) (ran bool, err error) {
+// not a member. The bool result is false when no token could be had and call never ran.
+func (s *Session) withToken(
+	ctx context.Context, call func(ctx context.Context, token string) error,
+) (bool, error) {
 	token, err := s.currentToken(ctx)
 	if err != nil {
 		return false, err
@@ -173,13 +182,6 @@ func (s *Session) withToken(ctx context.Context, call func(ctx context.Context, 
 		err = call(ctx, token)
 	}
 	return true, err
-}
-
-// Close makes every later call fail with ErrClosed.
-func (s *Session) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.closed = true
 }
 
 func (s *Session) prepare(ctx context.Context) error {
@@ -197,14 +199,14 @@ func (s *Session) record(n Node, err error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, m := range s.members {
-		if m.name != n.Name() {
+	for _, peer := range s.members {
+		if peer.name != n.Name() {
 			continue
 		}
 		if err == nil {
-			m.health.reset()
+			peer.health.reset()
 		} else {
-			m.health.fail(s.opts.Now(), err)
+			peer.health.fail(s.opts.Now(), err)
 		}
 		return
 	}
@@ -228,13 +230,14 @@ func (s *Session) refreshNodes(ctx context.Context) {
 	if err != nil {
 		// The list the client has stays until the next attempt; the nodes are not asked, as
 		// a cluster host that cannot be reached means no node is assumed reachable.
-		s.opts.Logger.Warn("node list refresh failed", "cluster", s.opts.Cluster,
-			"cluster_host", s.opts.EntryURL, "error", err)
+		s.opts.Logger.WarnContext(ctx, "node list refresh failed", slog.String("cluster", s.opts.Cluster),
+			slog.String("cluster_host", s.opts.EntryURL), slog.Any("error", err))
 		return
 	}
 	next := s.dialAll(s.listed(list.Nodes), known)
 	if len(next) == 0 {
-		s.opts.Logger.Warn("node list refresh returned no usable node", "cluster", s.opts.Cluster)
+		s.opts.Logger.WarnContext(ctx, "node list refresh returned no usable node",
+			slog.String("cluster", s.opts.Cluster))
 		return
 	}
 	s.mu.Lock()
@@ -243,30 +246,37 @@ func (s *Session) refreshNodes(ctx context.Context) {
 }
 
 // fetchNodeList asks the cluster host for the node list.
-func (s *Session) fetchNodeList(ctx context.Context) (list wire.Nodes, err error) {
+func (s *Session) fetchNodeList(ctx context.Context) (wire.Nodes, error) {
 	entry, err := s.entryNode()
 	if err != nil {
-		return list, err
+		return wire.Nodes{}, err
 	}
+	var list wire.Nodes
 	// Not Do: the cluster host is not a member, so its outcome is no node's health.
-	_, err = s.withToken(ctx, func(ctx context.Context, token string) (err error) {
-		list, err = entry.Nodes(ctx, token)
-		return err
+	_, err = s.withToken(ctx, func(ctx context.Context, token string) error {
+		var fetchErr error
+		list, fetchErr = entry.Nodes(ctx, token)
+		if fetchErr != nil {
+			return fmt.Errorf("fetch node list: %w", fetchErr)
+		}
+		return nil
 	})
 	return list, err
 }
 
-// usable is the members that are not cooling, or the one that stops cooling first.
+// candidates is the members that are not cooling, or the one that stops cooling first.
 // The caller holds s.mu and s.members is not empty.
-func (s *Session) usable(now time.Time) []*member {
+func (s *Session) candidates(now time.Time) []*member {
 	var ready []*member
 	var soonest *member
-	for _, m := range s.members {
+	for _, peer := range s.members {
 		switch {
-		case !m.health.active(now):
-			ready = append(ready, m)
-		case soonest == nil || m.health.until.Before(soonest.health.until):
-			soonest = m
+		case !peer.health.active(now):
+			ready = append(ready, peer)
+		case soonest == nil || peer.health.until.Before(soonest.health.until):
+			soonest = peer
+		default:
+			// Cooling for longer than the soonest member: not offered.
 		}
 	}
 	if len(ready) == 0 {
@@ -277,8 +287,8 @@ func (s *Session) usable(now time.Time) []*member {
 
 func nodesOf(members []*member) []Node {
 	nodes := make([]Node, len(members))
-	for i, m := range members {
-		nodes[i] = m.node
+	for i, peer := range members {
+		nodes[i] = peer.node
 	}
 	return nodes
 }

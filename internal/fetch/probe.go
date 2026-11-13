@@ -36,44 +36,44 @@ func (c *probeCache) put(index int64, data []byte) {
 	c.chunks = append(c.chunks, probeChunk{index: index, data: data})
 }
 
-// readProbe serves p from the probe chunks covering it, fetching missing ones
-// from the best ready source and failing over to the next on error. A chunk
-// another read is already fetching is waited for rather than fetched twice.
-// Called with r.mu held.
-func (r *Reader) readProbe(o *op, p []byte, off int64) error {
-	pending := pieces(off, off+int64(len(p)), r.opts.ProbeSize)
+// readProbe serves dest from the probe chunks covering it, fetching missing
+// ones from the best ready source and failing over to the next on error. A
+// chunk another read is already fetching is waited for rather than fetched
+// twice. Called with r.mu held.
+func (r *Reader) readProbe(operation *op, dest []byte, off int64) error {
+	pending := pieces(off, off+int64(len(dest)), r.opts.ProbeSize)
 	for {
 		before := len(pending)
-		pending = r.copyChunks(p, off, pending)
+		pending = r.copyChunks(dest, off, pending)
 		if len(pending) == 0 {
 			return nil
 		}
-		if err := r.opErr(o); err != nil {
+		if err := r.opErr(operation); err != nil {
 			return err
 		}
 		if len(pending) < before {
-			r.progressed(o)
+			r.progressed(operation)
 		}
 		c := slices.IndexFunc(pending, func(c int64) bool { return !r.probing[c] })
 		s := r.probeSource()
 		switch {
 		case c >= 0 && s != nil:
-			r.loadChunk(o, pending[c], s)
+			r.loadChunk(operation, pending[c], s)
 		case r.allGone():
 			return ErrUnavailable
 		default:
-			r.wait(o)
+			r.wait(operation)
 		}
 	}
 }
 
-// copyChunks copies the cached chunks of pending into p and returns the
+// copyChunks copies the cached chunks of pending into dest and returns the
 // chunks still missing.
-func (r *Reader) copyChunks(p []byte, off int64, pending []int64) []int64 {
+func (r *Reader) copyChunks(dest []byte, off int64, pending []int64) []int64 {
 	return slices.DeleteFunc(pending, func(c int64) bool {
 		data, ok := r.probes.get(c)
 		if ok {
-			copyOverlap(p, off, data, c*r.opts.ProbeSize)
+			copyOverlap(dest, off, data, c*r.opts.ProbeSize)
 		}
 		return ok
 	})
@@ -88,25 +88,28 @@ func (r *Reader) probeSource() *source {
 	return r.sources[order[0].index]
 }
 
-// loadChunk fetches probe chunk c from s into the probe cache. Probe fetches
-// are not reported to the Meter on success: a small fetch measures latency
-// rather than throughput and would make the node serving probes look slow.
-// Called with r.mu held; releases it during the fetch.
-func (r *Reader) loadChunk(o *op, c int64, s *source) {
-	r.probing[c] = true
-	r.armDeadline(o)
-	start, length := span(c, r.opts.ProbeSize, r.opts.Size)
-	buf := make([]byte, length)
+// loadChunk fetches probe chunk number chunk from origin into the probe
+// cache. Probe fetches are not reported to the Meter on success: a small fetch
+// measures latency rather than throughput and would make the node serving
+// probes look slow. Called with r.mu held; releases it during the fetch.
+func (r *Reader) loadChunk(operation *op, chunk int64, origin *source) {
+	r.probing[chunk] = true
+	r.armDeadline(operation)
+	piece := span(chunk, r.opts.ProbeSize, r.opts.Size)
+	buf := make([]byte, piece.length)
 	r.mu.Unlock()
-	err := s.src.Fetch(o.ctx, start, buf)
+	err := origin.src.Fetch(operation.ctx, piece.start, buf)
 	r.mu.Lock()
-	delete(r.probing, c)
+	delete(r.probing, chunk)
 	r.broadcast()
 	switch {
 	case err == nil:
-		s.failures = 0
-		r.probes.put(c, buf)
-	case o.ctx.Err() == nil:
-		r.sourceFailed(s, err)
+		origin.failures = 0
+		r.probes.put(chunk, buf)
+	case operation.ctx.Err() == nil:
+		r.sourceFailed(origin, err)
+	default:
+		// The read ended while the fetch ran, so the error says nothing about
+		// the source.
 	}
 }

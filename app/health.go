@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,11 +24,17 @@ const (
 	defaultProbeFailures = 3
 )
 
+// tickSource delivers the ticks of the health round and is stopped when the round ends.
+type tickSource struct {
+	ticks <-chan time.Time
+	stop  func()
+}
+
 // systemTicker is the default source of ticks, shaped as a function so that tests can
 // replace it with ticks they send by hand.
-func systemTicker(d time.Duration) (<-chan time.Time, func()) {
-	t := time.NewTicker(d)
-	return t.C, t.Stop
+func systemTicker(interval time.Duration) tickSource {
+	ticker := time.NewTicker(interval)
+	return tickSource{ticks: ticker.C, stop: ticker.Stop}
 }
 
 // startCheck asks for the probe name in the root of target in a goroutine of its own, so
@@ -53,7 +60,8 @@ func (r *reloader) healthRound(ctx context.Context) {
 	// The heartbeat proves the run loop is running, not that every mount is healthy, so it
 	// is sent whatever the round found.
 	if err := r.opts.Notify("WATCHDOG=1"); err != nil {
-		r.opts.Logger.Debug("could not send the heartbeat to the service manager", "err", err)
+		r.opts.Logger.DebugContext(ctx, "could not send the heartbeat to the service manager",
+			slog.Any("err", err))
 	}
 }
 
@@ -61,23 +69,25 @@ func (r *reloader) healthRound(ctx context.Context) {
 // failed too many checks in a row. It returns whether any was found hung, which is when
 // the missing mounts are to be made. It stops early when ctx ends, because an answer not
 // waited for is no failure of the mount.
-func (r *reloader) checkMounts(ctx context.Context) (hung bool) {
-	for _, m := range r.set.list() {
-		passed := r.check(ctx, m)
+func (r *reloader) checkMounts(ctx context.Context) bool {
+	hung := false
+	for _, live := range r.set.list() {
+		passed := r.check(ctx, live)
 		if ctx.Err() != nil {
 			return hung
 		}
 		if passed {
-			m.failures = 0
+			live.failures = 0
 			continue
 		}
-		m.failures++
-		if m.failures >= r.opts.probeFailures {
+		live.failures++
+		if live.failures >= r.opts.probeFailures {
 			hung = true
-			r.opts.Logger.Error("mount does not answer, mounting it again", "target", m.target)
+			r.opts.Logger.ErrorContext(ctx, "mount does not answer, mounting it again",
+				slog.String("target", live.target))
 			// detach marks the mount, so that a requested mount stays on the requested list.
-			r.detach(ctx, m)
-			r.abortHung(m)
+			r.detach(ctx, live)
+			r.abortHung(live)
 		}
 	}
 	return hung
@@ -89,38 +99,38 @@ func (r *reloader) checkMounts(ctx context.Context) (hung bool) {
 // or a stop detaches working mounts too, and their open files must be able to finish. A
 // mount still in the set was not detached, so it is left as it is. A failed abort changes
 // nothing else, because the mount is detached and is made again either way.
-func (r *reloader) abortHung(m *liveMount) {
-	aborter, ok := m.mounted.(mount.Aborter)
-	if !ok || slices.Contains(r.set.list(), m) {
+func (r *reloader) abortHung(live *liveMount) {
+	aborter, ok := live.mounted.(mount.Aborter)
+	if !ok || slices.Contains(r.set.list(), live) {
 		return
 	}
 	if err := aborter.Abort(); err != nil {
 		r.opts.Logger.Warn("could not abort the connection of a hung mount",
-			"target", m.target, "err", err)
+			slog.String("target", live.target), slog.Any("err", err))
 	}
 }
 
-// check reports whether m answered "does not exist" for the probe name in time. Any
+// check reports whether live answered "does not exist" for the probe name in time. Any
 // other answer, or none, is a failure. A check that is still waiting from an earlier
 // round fails the mount without a second one, so that a hung mount does not collect a
 // goroutine per round.
-func (r *reloader) check(ctx context.Context, m *liveMount) bool {
-	if m.pending != nil {
+func (r *reloader) check(ctx context.Context, live *liveMount) bool {
+	if live.pending != nil {
 		select {
-		case <-m.pending: //nolint:errcheck // an old answer, discarded on purpose
+		case <-live.pending: //nolint:errcheck // an old answer, discarded on purpose
 			// It answered after its round stopped waiting. That answer is old, so a new
 			// check is made.
-			m.pending = nil
+			live.pending = nil
 		default:
 			return false
 		}
 	}
-	m.pending = startCheck(r.opts.lstat, m.target)
+	live.pending = startCheck(r.opts.lstat, live.target)
 	timer := time.NewTimer(r.opts.probeTimeout)
 	defer timer.Stop()
 	select {
-	case err := <-m.pending:
-		m.pending = nil
+	case err := <-live.pending:
+		live.pending = nil
 		return errors.Is(err, fs.ErrNotExist)
 	case <-timer.C:
 	case <-ctx.Done():
@@ -134,7 +144,7 @@ func (r *reloader) check(ctx context.Context, m *liveMount) bool {
 func (r *reloader) mountAgain(ctx context.Context) {
 	eff, err := r.effective(r.last, r.store.list())
 	if err != nil {
-		r.opts.Logger.Error("hung mounts not made again", "err", err)
+		r.opts.Logger.ErrorContext(ctx, "hung mounts not made again", slog.Any("err", err))
 		return
 	}
 	r.mountMissing(ctx, r.wanted(eff))

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"syscall"
 )
 
@@ -26,7 +25,7 @@ var _ host = kernelHost{}
 func newKernelHost() kernelHost { return kernelHost{} }
 
 // Stat implements host.
-func (kernelHost) Stat(path string) (fs.FileInfo, error) { return os.Stat(path) }
+func (kernelHost) Stat(path string) (fs.FileInfo, error) { return statPath(path) }
 
 // ConnectionID implements host. FreeBSD has no equivalent of the Linux control directory.
 func (kernelHost) ConnectionID(string) (uint32, error) { return 0, errNoConnectionControl }
@@ -36,6 +35,8 @@ func (kernelHost) AbortConnection(uint32) error { return errNoConnectionControl 
 
 // Unmount implements host. FreeBSD has no lazy unmount, so detach means MNT_FORCE, which
 // also makes open files fail. A mount that is in use is refused with EBUSY otherwise.
+//
+//nolint:revive // host.Unmount fixes this signature.
 func (kernelHost) Unmount(_ context.Context, target string, detach bool) error {
 	flags := 0
 	if detach {

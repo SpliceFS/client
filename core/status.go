@@ -50,19 +50,20 @@ func (c *Client) Status() Status {
 	c.mu.Lock()
 	clusters, caches := c.clusters, c.caches
 	c.mu.Unlock()
-	var s Status
+	var status Status
 	for _, name := range slices.Sorted(maps.Keys(clusters)) {
-		cl := clusters[name]
-		cs := ClusterStatus{Name: name}
-		for _, node := range cl.knownNodes() {
-			rate, known := cl.meter.Rate(node)
-			cs.Nodes = append(cs.Nodes, NodeStatus{Name: node, BytesPerSecond: rate, Measured: known})
+		clus := clusters[name]
+		clusterStatus := ClusterStatus{Name: name}
+		for _, node := range clus.knownNodes() {
+			rate, known := clus.meter.Rate(node)
+			clusterStatus.Nodes = append(clusterStatus.Nodes,
+				NodeStatus{Name: node, BytesPerSecond: rate, Measured: known})
 		}
-		s.Clusters = append(s.Clusters, cs)
+		status.Clusters = append(status.Clusters, clusterStatus)
 	}
 	for _, dir := range slices.Sorted(maps.Keys(caches)) {
-		u := caches[dir].Usage()
-		s.Caches = append(s.Caches, CacheStatus{Dir: dir, Entries: u.Entries, Bytes: u.Bytes})
+		usage := caches[dir].Usage()
+		status.Caches = append(status.Caches, CacheStatus{Dir: dir, Entries: usage.Entries, Bytes: usage.Bytes})
 	}
-	return s
+	return status
 }

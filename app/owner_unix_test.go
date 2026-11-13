@@ -13,7 +13,7 @@ func TestClaimRefusesADirectoryOfAnotherUser(t *testing.T) {
 	sys := systemHost()
 	euid := sys.geteuid
 	sys.geteuid = func() int { return euid() + 1 }
-	_, err := sys.claim(filepath.Join(shortDir(t), "c.sock"))
+	_, err := sys.claim(t.Context(), filepath.Join(shortDir(t), "c.sock"))
 	if err == nil || !strings.Contains(err.Error(), "belongs to another user") {
 		t.Fatalf("claim = %v", err)
 	}

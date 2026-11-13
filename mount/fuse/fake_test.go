@@ -10,7 +10,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"path"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +25,8 @@ const (
 	fakeContent = "hello, world\n"
 )
 
-var fakeMTime = time.Date(2025, 3, 4, 5, 6, 7, 891_000_000, time.UTC)
+// fakeMTime is the modification time of every node of the fake tree.
+func fakeMTime() time.Time { return time.Date(2025, 3, 4, 5, 6, 7, 891000000, time.UTC) }
 
 // fakeFS is a core.FS over an in-memory tree whose behavior a test can steer.
 type fakeFS struct {
@@ -84,6 +85,75 @@ func fakeInode(name string) uint64 {
 	return h.Sum64() | 1<<40
 }
 
+func (f *fakeFS) Stat(_ context.Context, name string) (core.Attr, error) {
+	f.calls.Add(1)
+	f.statCalls.Add(1)
+	if err := f.failure(name); err != nil {
+		return core.Attr{}, err
+	}
+	return f.attr(name)
+}
+
+func (f *fakeFS) ReadDir(_ context.Context, name string) ([]core.Attr, error) {
+	f.calls.Add(1)
+	if err := f.failure(name); err != nil {
+		return nil, err
+	}
+	if _, isFile := f.files[name]; isFile {
+		return nil, fmt.Errorf("fake: %q: %w", name, core.ErrNotDir)
+	}
+	if !f.dirs[name] {
+		return nil, fmt.Errorf("fake: %q: %w", name, core.ErrNotExist)
+	}
+	var out []core.Attr
+	for _, child := range f.children(name) {
+		a, err := f.attr(child)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, nil
+}
+
+func parentOf(p string) string {
+	if dir := path.Dir(p); dir != "." {
+		return dir
+	}
+	return ""
+}
+
+//nolint:ireturn // core.FS fixes this signature.
+func (f *fakeFS) Open(_ context.Context, name string) (core.File, error) {
+	f.calls.Add(1)
+	if err := f.failure(name); err != nil {
+		return nil, err
+	}
+	if f.dirs[name] {
+		return nil, fmt.Errorf("fake: %q: %w", name, core.ErrIsDir)
+	}
+	data, ok := f.files[name]
+	if !ok {
+		return nil, fmt.Errorf("fake: %q: %w", name, core.ErrNotExist)
+	}
+	f.open.Add(1)
+	a, err := f.attr(name)
+	if err != nil {
+		return nil, err
+	}
+	return &fakeFile{fs: f, name: name, data: data, attr: a}, nil
+}
+
+func (f *fakeFS) StatFS(context.Context) (core.Space, error) {
+	f.calls.Add(1)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failAll != nil {
+		return core.Space{}, f.failAll
+	}
+	return f.space, f.spaceErr
+}
+
 func (f *fakeFS) setFailAll(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -131,50 +201,19 @@ func (f *fakeFS) failure(name string) error {
 }
 
 func (f *fakeFS) attr(name string) (core.Attr, error) {
-	a := core.Attr{Name: path.Base(name), MTime: fakeMTime, Inode: fakeInode(name)}
+	result := core.Attr{Name: path.Base(name), MTime: fakeMTime(), Inode: fakeInode(name)}
 	switch data, isFile := f.files[name]; {
 	case isFile:
-		a.Size = int64(len(data))
+		result.Size = int64(len(data))
 	case f.dirs[name]:
-		a.Dir = true
+		result.Dir = true
 	default:
 		return core.Attr{}, fmt.Errorf("fake: %q: %w", name, core.ErrNotExist)
 	}
 	if name == "" {
-		a.Name = ""
+		result.Name = ""
 	}
-	return a, nil
-}
-
-func (f *fakeFS) Stat(_ context.Context, name string) (core.Attr, error) {
-	f.calls.Add(1)
-	f.statCalls.Add(1)
-	if err := f.failure(name); err != nil {
-		return core.Attr{}, err
-	}
-	return f.attr(name)
-}
-
-func (f *fakeFS) ReadDir(_ context.Context, name string) ([]core.Attr, error) {
-	f.calls.Add(1)
-	if err := f.failure(name); err != nil {
-		return nil, err
-	}
-	if _, isFile := f.files[name]; isFile {
-		return nil, fmt.Errorf("fake: %q: %w", name, core.ErrNotDir)
-	}
-	if !f.dirs[name] {
-		return nil, fmt.Errorf("fake: %q: %w", name, core.ErrNotExist)
-	}
-	var out []core.Attr
-	for _, child := range f.children(name) {
-		a, err := f.attr(child)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, nil
+	return result, nil
 }
 
 // children lists the full paths directly below dir, sorted by name.
@@ -190,45 +229,8 @@ func (f *fakeFS) children(dir string) []string {
 			out = append(out, p)
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
-}
-
-func parentOf(p string) string {
-	if dir := path.Dir(p); dir != "." {
-		return dir
-	}
-	return ""
-}
-
-func (f *fakeFS) Open(_ context.Context, name string) (core.File, error) {
-	f.calls.Add(1)
-	if err := f.failure(name); err != nil {
-		return nil, err
-	}
-	if f.dirs[name] {
-		return nil, fmt.Errorf("fake: %q: %w", name, core.ErrIsDir)
-	}
-	data, ok := f.files[name]
-	if !ok {
-		return nil, fmt.Errorf("fake: %q: %w", name, core.ErrNotExist)
-	}
-	f.open.Add(1)
-	a, err := f.attr(name)
-	if err != nil {
-		return nil, err
-	}
-	return &fakeFile{fs: f, name: name, data: data, attr: a}, nil
-}
-
-func (f *fakeFS) StatFS(context.Context) (core.Space, error) {
-	f.calls.Add(1)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.failAll != nil {
-		return core.Space{}, f.failAll
-	}
-	return f.space, f.spaceErr
 }
 
 type fakeFile struct {
@@ -240,7 +242,7 @@ type fakeFile struct {
 
 func (ff *fakeFile) Attr() core.Attr { return ff.attr }
 
-func (ff *fakeFile) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+func (ff *fakeFile) ReadAt(ctx context.Context, buf []byte, off int64) (int, error) {
 	ff.fs.calls.Add(1)
 	ff.fs.readCalls.Add(1)
 	ff.fs.mu.Lock()
@@ -253,13 +255,13 @@ func (ff *fakeFile) ReadAt(ctx context.Context, p []byte, off int64) (int, error
 		return 0, ctx.Err()
 	}
 	if fault != nil {
-		return copy(p[:min(fault.n, len(p))], ff.data[off:]), fault.err
+		return copy(buf[:min(fault.n, len(buf))], ff.data[off:]), fault.err
 	}
 	if off >= int64(len(ff.data)) {
 		return 0, io.EOF
 	}
-	n := copy(p, ff.data[off:])
-	if n < len(p) {
+	n := copy(buf, ff.data[off:])
+	if n < len(buf) {
 		return n, io.EOF
 	}
 	return n, nil

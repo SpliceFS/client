@@ -75,12 +75,18 @@ func newHandler(fsys *billyFS, handleLimit, verifierLimit int) *handler {
 // request is ignored: the client puts the name of the filesystem there, and there is
 // only one filesystem to give. Who may connect is decided when the connection is
 // accepted.
-func (h *handler) Mount(context.Context, net.Conn, gonfs.MountRequest) (gonfs.MountStatus, billy.Filesystem, []gonfs.AuthFlavor) {
+//
+//nolint:ireturn // The signature is fixed by gonfs.Handler.
+func (h *handler) Mount(
+	context.Context, net.Conn, gonfs.MountRequest,
+) (gonfs.MountStatus, billy.Filesystem, []gonfs.AuthFlavor) {
 	return gonfs.MountStatusOk, h.fs, []gonfs.AuthFlavor{gonfs.AuthFlavorNull}
 }
 
 // Change returns nil, which tells go-nfs that attributes cannot be changed.
-func (h *handler) Change(billy.Filesystem) billy.Change {
+//
+//nolint:ireturn // The signature is fixed by gonfs.Handler.
+func (*handler) Change(billy.Filesystem) billy.Change {
 	return nil
 }
 
@@ -103,6 +109,8 @@ func (h *handler) ToHandle(_ billy.Filesystem, p []string) []byte {
 
 // FromHandle returns the path a handle stands for, or NFS3ERR_STALE when the handle is
 // unknown, which the client answers by looking the name up again.
+//
+//nolint:ireturn // The signature is fixed by gonfs.Handler.
 func (h *handler) FromHandle(fh []byte) (billy.Filesystem, []string, error) {
 	if len(fh) == len(handleKey{}) {
 		if joined, ok := h.handles.get(handleKey(fh)); ok {
@@ -138,16 +146,16 @@ func (h *handler) HandleLimit() int {
 // VerifierFor remembers a directory listing and returns its cookie verifier. The
 // verifier is derived from the path and the names, so it changes when the directory
 // changes, and it is never 0, which NFS reserves for "no verifier".
-func (h *handler) VerifierFor(p string, contents []fs.FileInfo) uint64 {
-	sum := sha256.New()
-	sum.Write(binary.BigEndian.AppendUint64(nil, uint64(len(p))))
-	sum.Write([]byte(p))
-	for _, c := range contents {
-		sum.Write([]byte(c.Name()))
-		sum.Write([]byte{0})
+func (h *handler) VerifierFor(dirPath string, contents []fs.FileInfo) uint64 {
+	hashed := binary.BigEndian.AppendUint64(nil, uint64(len(dirPath)))
+	hashed = append(hashed, dirPath...)
+	for _, entry := range contents {
+		hashed = append(hashed, entry.Name()...)
+		hashed = append(hashed, 0)
 	}
-	id := reserveZero(binary.BigEndian.Uint64(sum.Sum(nil)[:8]))
-	h.verifiers.add(id, listing{path: p, entries: contents})
+	sum := sha256.Sum256(hashed)
+	id := reserveZero(binary.BigEndian.Uint64(sum[:8]))
+	h.verifiers.add(id, listing{path: dirPath, entries: contents})
 	return id
 }
 
@@ -160,10 +168,10 @@ func reserveZero(id uint64) uint64 {
 }
 
 // DataForVerifier returns the listing remembered for a verifier, or nil.
-func (h *handler) DataForVerifier(p string, verifier uint64) []fs.FileInfo {
-	l, ok := h.verifiers.get(verifier)
-	if !ok || l.path != p {
+func (h *handler) DataForVerifier(dirPath string, verifier uint64) []fs.FileInfo {
+	remembered, ok := h.verifiers.get(verifier)
+	if !ok || remembered.path != dirPath {
 		return nil
 	}
-	return l.entries
+	return remembered.entries
 }

@@ -1,10 +1,12 @@
 package nfs
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -17,16 +19,22 @@ func (a fakeAddr) String() string { return string(a) }
 // addrConn is a connection that claims to come from a given address.
 type addrConn struct {
 	net.Conn
+
 	remote net.Addr
 }
 
 func (c addrConn) RemoteAddr() net.Addr { return c.remote }
 
-// pipeFrom returns a server-side connection that claims to come from remote, and the
-// client side of it.
-func pipeFrom(remote string) (net.Conn, net.Conn) {
+// pipeEnds are the two ends of a connection made by pipeFrom.
+type pipeEnds struct {
+	server net.Conn // claims to come from the address given to pipeFrom
+	client net.Conn
+}
+
+// pipeFrom returns a connection whose server side claims to come from remote.
+func pipeFrom(remote string) pipeEnds {
 	server, client := net.Pipe()
-	return addrConn{Conn: server, remote: fakeAddr(remote)}, client
+	return pipeEnds{server: addrConn{Conn: server, remote: fakeAddr(remote)}, client: client}
 }
 
 type accepted struct {
@@ -36,10 +44,11 @@ type accepted struct {
 
 // scriptedListener hands out what a test queues and fails with net.ErrClosed once closed.
 type scriptedListener struct {
-	addr   net.Addr
-	queue  chan accepted
-	closed chan struct{}
-	once   sync.Once
+	addr     net.Addr
+	queue    chan accepted
+	closed   chan struct{}
+	once     sync.Once
+	closeErr error // what Close returns
 }
 
 func newScriptedListener(addr string) *scriptedListener {
@@ -57,13 +66,13 @@ func (l *scriptedListener) Accept() (net.Conn, error) {
 
 func (l *scriptedListener) Close() error {
 	l.once.Do(func() { close(l.closed) })
-	return nil
+	return l.closeErr
 }
 
 func (l *scriptedListener) Addr() net.Addr { return l.addr }
 
-func newTestGuard(ln net.Listener) *guardListener {
-	return &guardListener{Listener: ln, log: slog.New(slog.DiscardHandler), conns: map[*trackedConn]struct{}{}}
+func newTestGuard(listener net.Listener) *guardListener {
+	return &guardListener{Listener: listener, log: slog.New(slog.DiscardHandler), conns: map[*trackedConn]struct{}{}}
 }
 
 func TestIsLoopback(t *testing.T) {
@@ -91,15 +100,15 @@ func TestIsLoopback(t *testing.T) {
 
 func TestGuardListenerRefusesConnectionsFromOtherAddresses(t *testing.T) {
 	t.Parallel()
-	ln := newScriptedListener("127.0.0.1:1")
-	g := newTestGuard(ln)
-	foreign, foreignPeer := pipeFrom("192.0.2.7:4000")
-	local, localPeer := pipeFrom("127.0.0.1:4001")
-	closeAfter(t, localPeer)
-	ln.queue <- accepted{conn: foreign}
-	ln.queue <- accepted{conn: local}
+	listener := newScriptedListener("127.0.0.1:1")
+	guard := newTestGuard(listener)
+	foreign := pipeFrom("192.0.2.7:4000")
+	local := pipeFrom("127.0.0.1:4001")
+	closeAfter(t, local.client)
+	listener.queue <- accepted{conn: foreign.server}
+	listener.queue <- accepted{conn: local.server}
 
-	got, err := g.Accept()
+	got, err := guard.Accept()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +116,7 @@ func TestGuardListenerRefusesConnectionsFromOtherAddresses(t *testing.T) {
 		t.Errorf("Accept returned the connection from %v", got.RemoteAddr())
 	}
 	// The refused connection was closed, which its peer sees as end of file.
-	if _, err := foreignPeer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+	if _, err := foreign.client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Errorf("read on the refused connection = %v, want EOF", err)
 	}
 }
@@ -115,68 +124,68 @@ func TestGuardListenerRefusesConnectionsFromOtherAddresses(t *testing.T) {
 func TestGuardListenerReturnsAcceptErrors(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("boom")
-	ln := newScriptedListener("127.0.0.1:1")
-	ln.queue <- accepted{err: boom}
-	if _, err := newTestGuard(ln).Accept(); !errors.Is(err, boom) {
+	listener := newScriptedListener("127.0.0.1:1")
+	listener.queue <- accepted{err: boom}
+	if _, err := newTestGuard(listener).Accept(); !errors.Is(err, boom) {
 		t.Errorf("Accept = %v, want boom", err)
 	}
 }
 
 func TestGuardListenerCloseClosesConnections(t *testing.T) {
 	t.Parallel()
-	ln := newScriptedListener("127.0.0.1:1")
-	g := newTestGuard(ln)
-	local, peer := pipeFrom("127.0.0.1:4001")
-	ln.queue <- accepted{conn: local}
-	if _, err := g.Accept(); err != nil {
+	listener := newScriptedListener("127.0.0.1:1")
+	guard := newTestGuard(listener)
+	local := pipeFrom("127.0.0.1:4001")
+	listener.queue <- accepted{conn: local.server}
+	if _, err := guard.Accept(); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := g.Close(); err != nil {
+	if err := guard.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Close(); err != nil { // idempotent: go-nfs closes it when it stops, too
+	if err := guard.Close(); err != nil { // idempotent: go-nfs closes it when it stops, too
 		t.Fatal(err)
 	}
-	if _, err := peer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+	if _, err := local.client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Errorf("read on a tracked connection after Close = %v, want EOF", err)
 	}
-	if _, err := g.Accept(); !errors.Is(err, net.ErrClosed) {
+	if _, err := guard.Accept(); !errors.Is(err, net.ErrClosed) {
 		t.Errorf("Accept after Close = %v, want net.ErrClosed", err)
 	}
 }
 
 func TestGuardListenerRefusesToTrackAfterClose(t *testing.T) {
 	t.Parallel()
-	g := newTestGuard(newScriptedListener("127.0.0.1:1"))
-	if err := g.Close(); err != nil {
+	guard := newTestGuard(newScriptedListener("127.0.0.1:1"))
+	if err := guard.Close(); err != nil {
 		t.Fatal(err)
 	}
-	local, peer := pipeFrom("127.0.0.1:4001")
-	if _, err := g.track(local); !errors.Is(err, net.ErrClosed) {
+	local := pipeFrom("127.0.0.1:4001")
+	if _, err := guard.track(local.server); !errors.Is(err, net.ErrClosed) {
 		t.Errorf("track = %v, want net.ErrClosed", err)
 	}
-	if _, err := peer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+	if _, err := local.client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Errorf("the connection was not closed: %v", err)
 	}
 }
 
 func TestTrackedConnForgetsItselfWhenClosed(t *testing.T) {
 	t.Parallel()
-	g := newTestGuard(newScriptedListener("127.0.0.1:1"))
-	local, peer := pipeFrom("127.0.0.1:4001")
-	closeAfter(t, peer)
-	conn, err := g.track(local)
+	guard := newTestGuard(newScriptedListener("127.0.0.1:1"))
+	local := pipeFrom("127.0.0.1:4001")
+	closeAfter(t, local.client)
+	conn, err := guard.track(local.server)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if len(g.conns) != 0 {
-		t.Errorf("%d connections still tracked", len(g.conns))
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	if len(guard.conns) != 0 {
+		t.Errorf("%d connections still tracked", len(guard.conns))
 	}
 }
 
@@ -189,24 +198,25 @@ func TestListenFailure(t *testing.T) {
 
 func TestListenLoopbackUsesAFreePortOnTheLoopbackInterface(t *testing.T) {
 	t.Parallel()
-	ln, err := listenLoopback(t.Context())
+	listener, err := listenLoopback(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	closeAfter(t, ln)
-	if !isLoopback(ln.Addr()) || ln.Addr().(*net.TCPAddr).Port == 0 {
-		t.Errorf("listening on %v", ln.Addr())
+	closeAfter(t, listener)
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok || !isLoopback(tcpAddr) || tcpAddr.Port == 0 {
+		t.Errorf("listening on %v", listener.Addr())
 	}
 }
 
 func TestStartServerRejectsAListenerWithoutAnAddressPort(t *testing.T) {
 	t.Parallel()
-	ln := newScriptedListener("a pipe")
-	if _, err := startServer(newFakeFS(), ln, serverConfig{}); err == nil {
+	listener := newScriptedListener("a pipe")
+	if _, err := startServer(newFakeFS(), listener, serverConfig{}); err == nil {
 		t.Fatal("no error")
 	}
 	select {
-	case <-ln.closed:
+	case <-listener.closed:
 	default:
 		t.Error("the listener was left open")
 	}
@@ -214,44 +224,59 @@ func TestStartServerRejectsAListenerWithoutAnAddressPort(t *testing.T) {
 
 func TestServerCloseStopsEverything(t *testing.T) {
 	t.Parallel()
-	s := startTest(t, newFakeFS())
-	conn, err := dialTCP(t, s.guard.Addr().String())
+	srv := startTest(t, newFakeFS())
+	conn, err := dialTCP(t, srv.guard.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
 	closeAfter(t, conn)
 
-	s.Close()
-	s.Close() // safe to call twice
+	srv.Close()
+	srv.Close() // safe to call twice
 	select {
-	case <-s.Done():
+	case <-srv.Done():
 	default:
 		t.Fatal("Done is not closed after Close")
 	}
-	if s.Err() != nil {
-		t.Errorf("Err() = %v after a clean Close", s.Err())
+	if srv.Err() != nil {
+		t.Errorf("Err() = %v after a clean Close", srv.Err())
 	}
 	if _, err := conn.Read(make([]byte, 1)); err == nil {
 		t.Error("a client connection survived Close")
 	}
-	wantClosed(t, s.guard.Listener)
+	wantClosed(t, srv.guard.Listener)
+}
+
+func TestServerCloseLogsAListenerThatFailsToClose(t *testing.T) {
+	t.Parallel()
+	listener := newScriptedListener("127.0.0.1:2049")
+	listener.closeErr = errors.New("boom")
+	var logged bytes.Buffer
+	srv, err := startServer(newFakeFS(), listener, serverConfig{logger: slog.New(slog.NewTextHandler(&logged, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Close()
+	if !strings.Contains(logged.String(), "close listener") || !strings.Contains(logged.String(), "boom") {
+		t.Errorf("the failed close of the listener was not logged: %q", logged.String())
+	}
 }
 
 func TestServerReportsAListenerFailure(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("boom")
-	ln := newScriptedListener("127.0.0.1:2049")
-	ln.queue <- accepted{err: boom}
-	s, err := startServer(newFakeFS(), ln, serverConfig{})
+	listener := newScriptedListener("127.0.0.1:2049")
+	listener.queue <- accepted{err: boom}
+	srv, err := startServer(newFakeFS(), listener, serverConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	<-s.Done()
-	if !errors.Is(s.Err(), boom) {
-		t.Errorf("Err() = %v, want boom", s.Err())
+	<-srv.Done()
+	if !errors.Is(srv.Err(), boom) {
+		t.Errorf("Err() = %v, want boom", srv.Err())
 	}
-	s.Close()
-	if s.Port() != 2049 {
-		t.Errorf("Port() = %d", s.Port())
+	srv.Close()
+	if srv.Port() != 2049 {
+		t.Errorf("Port() = %d", srv.Port())
 	}
 }

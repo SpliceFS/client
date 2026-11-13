@@ -1,6 +1,8 @@
 package fetch
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"io"
 	"testing"
@@ -28,7 +30,8 @@ func FuzzReadAt(f *testing.F) {
 			seed.reads[0].n, seed.reads[1].off, seed.reads[1].n, seed.reads[2].off, seed.reads[2].n)
 	}
 	f.Fuzz(func(t *testing.T, size, blockSize, readAhead uint16, useStore bool,
-		off1 int64, n1 uint16, off2 int64, n2 uint16, off3 int64, n3 uint16) {
+		off1 int64, len1 uint16, off2 int64, len2 uint16, off3 int64, len3 uint16,
+	) {
 		opts := baseOptions(int64(size))
 		opts.BlockSize = int64(blockSize)%512 + 1
 		opts.ReadAhead = int64(readAhead)
@@ -38,14 +41,14 @@ func FuzzReadAt(f *testing.F) {
 			opts.BlockSize = 100
 			store = newFakeStore(int64(size))
 		}
-		h := newHarness(t, opts, store, nil, "a")
-		h.src["a"].setRespond(always(nil))
+		env := newHarness(t, opts, store, nil, "a")
+		env.src["a"].setRespond(always(nil))
 		for _, r := range []struct {
 			off int64
 			n   uint16
-		}{{off1, n1}, {off2, n2}, {off3, n3}} {
+		}{{off1, len1}, {off2, len2}, {off3, len3}} {
 			buf := make([]byte, int(r.n)%4097)
-			got, err := h.r.ReadAt(bg, buf, r.off)
+			got, err := env.r.ReadAt(context.Background(), buf, r.off)
 			checkRead(t, int64(size), r.off, len(buf), got, err, buf)
 		}
 		if store != nil {
@@ -75,7 +78,7 @@ func checkRead(t *testing.T, size, off int64, want, got int, err error, buf []by
 	if wantEOF != errors.Is(err, io.EOF) || (!wantEOF && err != nil) {
 		t.Fatalf("read %d at %d of %d bytes returned %d, %v", want, off, size, got, err)
 	}
-	if string(buf[:got]) != string(fileBytes(off, int64(got))) {
+	if !bytes.Equal(buf[:got], fileBytes(off, int64(got))) {
 		t.Fatalf("read %d at %d of %d bytes returned the wrong bytes", want, off, size)
 	}
 }
@@ -101,14 +104,21 @@ func FuzzPieces(f *testing.F) {
 		if len(got) == 0 || got[0]*unit > off || (got[len(got)-1]+1)*unit < end {
 			t.Fatalf("pieces(%d, %d, %d) = %v does not cover the range", off, end, unit, got)
 		}
-		for i, p := range got {
-			if p < 0 || (i > 0 && p != got[i-1]+1) {
-				t.Fatalf("pieces(%d, %d, %d) = %v is not consecutive and non-negative", off, end, unit, got)
-			}
-			start, n := span(p, unit, size)
-			if start < 0 || n < 1 || n > unit || start+n > size {
-				t.Fatalf("span(%d, %d, %d) = %d, %d is outside the file", p, unit, size, start, n)
-			}
-		}
+		checkPieceSpans(t, got, off, end, unit, size)
 	})
+}
+
+// checkPieceSpans checks that the pieces are consecutive and non-negative and
+// that each lies inside the file.
+func checkPieceSpans(t *testing.T, got []int64, off, end, unit, size int64) {
+	t.Helper()
+	for i, index := range got {
+		if index < 0 || (i > 0 && index != got[i-1]+1) {
+			t.Fatalf("pieces(%d, %d, %d) = %v is not consecutive and non-negative", off, end, unit, got)
+		}
+		piece := span(index, unit, size)
+		if piece.start < 0 || piece.length < 1 || piece.length > unit || piece.start+piece.length > size {
+			t.Fatalf("span(%d, %d, %d) = %d, %d is outside the file", index, unit, size, piece.start, piece.length)
+		}
+	}
 }

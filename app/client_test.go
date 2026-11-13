@@ -17,7 +17,7 @@ import (
 func serveReplies(t *testing.T, handler func(conn net.Conn, request string)) string {
 	t.Helper()
 	path := filepath.Join(shortDir(t), "c.sock")
-	ln, err := listenUnixSocket(path)
+	listener, err := listenUnixSocket(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,16 +25,16 @@ func serveReplies(t *testing.T, handler func(conn net.Conn, request string)) str
 	go func() {
 		defer close(done)
 		for {
-			conn, err := ln.Accept()
+			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
 			handler(conn, readRequest(conn))
-			_ = conn.Close()
+			closeQuietly(conn)
 		}
 	}()
 	t.Cleanup(func() {
-		_ = ln.Close()
+		closeQuietly(listener)
 		<-done
 	})
 	return path
@@ -49,7 +49,7 @@ func readRequest(conn net.Conn) string {
 }
 
 func reply(text string) func(net.Conn, string) {
-	return func(conn net.Conn, _ string) { _, _ = io.WriteString(conn, text) }
+	return func(conn net.Conn, _ string) { say(conn, text) }
 }
 
 func TestNoClientRunning(t *testing.T) {
@@ -60,7 +60,8 @@ func TestNoClientRunning(t *testing.T) {
 	for name, path := range map[string]string{"no socket file": missing, "nothing behind the file": stale} {
 		_, err := Status(context.Background(), path)
 		errIs(t, err, ErrNotRunning)
-		if !strings.Contains(err.Error(), "no client is running for this configuration") || !strings.Contains(err.Error(), path) {
+		msg := err.Error()
+		if !strings.Contains(msg, "no client is running for this configuration") || !strings.Contains(msg, path) {
 			t.Errorf("%s: status error = %v", name, err)
 		}
 		errIs(t, Unmount(context.Background(), path, []string{"/mnt/a"}, false), ErrNotRunning)
@@ -75,7 +76,7 @@ func TestRequestsOnTheWire(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		got = append(got, request)
-		_, _ = io.WriteString(conn, `{"results":[{"target":"/mnt/a","result":"unmounted"}],"report":{}}`)
+		say(conn, `{"results":[{"target":"/mnt/a","result":"unmounted"}],"report":{}}`)
 	})
 	if err := Unmount(context.Background(), path, []string{"/mnt/a"}, true); err != nil {
 		t.Fatal(err)
@@ -96,7 +97,7 @@ func TestUnmountResolvesRelativeTargets(t *testing.T) {
 	requests := make(chan string, 1)
 	path := serveReplies(t, func(conn net.Conn, request string) {
 		requests <- request
-		_, _ = io.WriteString(conn, `{"results":[]}`)
+		say(conn, `{"results":[]}`)
 	})
 	sys := fakeSystem(nil, 1)
 	sys.dial = systemHost().dial
@@ -108,7 +109,8 @@ func TestUnmountResolvesRelativeTargets(t *testing.T) {
 	}
 
 	sys.abs = func(string) (string, error) { return "", errors.New("no cwd") }
-	if err := sys.unmount(context.Background(), path, []string{"mnt/a"}, false); err == nil || !strings.Contains(err.Error(), "no cwd") {
+	err := sys.unmount(context.Background(), path, []string{"mnt/a"}, false)
+	if err == nil || !strings.Contains(err.Error(), "no cwd") {
 		t.Errorf("unmount with an unresolvable target = %v", err)
 	}
 }
@@ -122,7 +124,11 @@ func TestUnmountNamesEveryFailedTarget(t *testing.T) {
 		`{"target":"/mnt/d","result":"failed","error":"device is stuck"}]}`))
 	err := Unmount(context.Background(), path, nil, false)
 	errIs(t, err, ErrBusy)
-	for _, want := range []string{"/mnt/b: mount is in use", "/mnt/c is not a mount of the running client", "/mnt/d: device is stuck"} {
+	for _, want := range []string{
+		"/mnt/b: mount is in use",
+		"/mnt/c is not a mount of the running client",
+		"/mnt/d: device is stuck",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q lacks %q", err, want)
 		}
@@ -163,7 +169,8 @@ func TestCallFailures(t *testing.T) {
 		sys := systemHost()
 		sys.dial = func(context.Context, string) (net.Conn, error) { return nil, errors.New("permission denied") }
 		_, err := sys.call(context.Background(), "/x.sock", Request{Op: OpStatus})
-		if err == nil || !strings.Contains(err.Error(), "connect to the client: permission denied") || errors.Is(err, ErrNotRunning) {
+		if err == nil || !strings.Contains(err.Error(), "connect to the client: permission denied") ||
+			errors.Is(err, ErrNotRunning) {
 			t.Errorf("call = %v", err)
 		}
 	})
@@ -172,7 +179,7 @@ func TestCallFailures(t *testing.T) {
 		sys := systemHost()
 		sys.dial = func(context.Context, string) (net.Conn, error) {
 			server, client := net.Pipe()
-			_ = server.Close()
+			closeQuietly(server)
 			return client, nil
 		}
 		_, err := sys.call(context.Background(), "/x.sock", Request{Op: OpStatus})
@@ -185,7 +192,8 @@ func TestCallFailures(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		path := serveReplies(t, func(conn net.Conn, _ string) {
 			cancel()
-			_, _ = io.Copy(io.Discard, conn) // never answers; ends when the caller hangs up
+			// It never answers and ends when the caller hangs up, with an error nobody reads.
+			io.Copy(io.Discard, conn) //nolint:errcheck // see above
 		})
 		_, err := Status(ctx, path)
 		errIs(t, err, context.Canceled)
@@ -209,10 +217,18 @@ func TestRequestMount(t *testing.T) {
 		{"every field", MountRequest{
 			Cluster: "east", Path: "/m", Target: "/mnt/a", AllowOther: true, Offline: &yes,
 		}, `{}`, full, ""},
-		{"refused", MountRequest{Cluster: "x", Target: "/mnt/a"}, `{"error":"unknown cluster \"x\""}`,
-			minimal, `the client refused the request: unknown cluster "x"`},
-		{"malformed reply", MountRequest{Cluster: "x", Target: "/mnt/a"}, `<html>`,
-			minimal, "read reply: invalid character '<'"},
+		{
+			"refused",
+			MountRequest{Cluster: "x", Target: "/mnt/a"},
+			`{"error":"unknown cluster \"x\""}`,
+			minimal, `the client refused the request: unknown cluster "x"`,
+		},
+		{
+			"malformed reply",
+			MountRequest{Cluster: "x", Target: "/mnt/a"},
+			`<html>`,
+			minimal, "read reply: invalid character '<'",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -220,7 +236,7 @@ func TestRequestMount(t *testing.T) {
 			requests := make(chan string, 1)
 			path := serveReplies(t, func(conn net.Conn, request string) {
 				requests <- request
-				_, _ = io.WriteString(conn, tt.reply)
+				say(conn, tt.reply)
 			})
 			err := RequestMount(context.Background(), path, tt.req)
 			if (err == nil) != (tt.wantErr == "") ||

@@ -51,6 +51,7 @@ const (
 // with the cluster unreachable they would otherwise refuse the mount and delay even the
 // probe name, which is meant to be answered without the cluster.
 type billyFS struct {
+	//nolint:containedctx // billy has no contexts: the call context of every method comes from here.
 	base    context.Context
 	fsys    core.FS
 	timeout time.Duration
@@ -77,13 +78,13 @@ type rootAttr struct {
 }
 
 func newBillyFS(
-	base context.Context, fsys core.FS, timeout time.Duration, o owner, log *slog.Logger,
+	base context.Context, fsys core.FS, timeout time.Duration, fileOwner owner, log *slog.Logger,
 ) *billyFS {
 	return &billyFS{
 		base:       base,
 		fsys:       fsys,
 		timeout:    timeout,
-		owner:      o,
+		owner:      fileOwner,
 		log:        log,
 		rootBudget: rootAttrBudget,
 		created:    time.Now(),
@@ -98,52 +99,30 @@ var (
 // Capabilities reports a read-only filesystem. Not having billy.WriteCapability is what
 // makes go-nfs answer NFS3ERR_ROFS to create, write, remove, rename, setattr, link and
 // symlink requests.
-func (b *billyFS) Capabilities() billy.Capability {
+func (*billyFS) Capabilities() billy.Capability {
 	return billy.ReadCapability | billy.SeekCapability
-}
-
-func (b *billyFS) callContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(b.base, b.timeout)
 }
 
 // corePath converts a billy path to a core name. Paths come from Join, which cleans
 // them, so the only unusable ones are those that climb out of the root. The probe name
 // directly in the root never exists and is refused here, before any call into the core
 // could be made for it; below the root it is an ordinary name.
-func corePath(op, name string) (string, error) {
+func corePath(operation, name string) (string, error) {
 	if name == "" || name == "." {
 		return "", nil
 	}
 	if !fs.ValidPath(name) || name == mount.ProbeName {
-		return "", &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
+		return "", &fs.PathError{Op: operation, Path: name, Err: fs.ErrNotExist}
 	}
 	return name, nil
 }
 
-// mapError turns a core error into the error go-nfs expects. go-nfs tests errors with
-// os.IsNotExist, which does not unwrap, so a not-exist error must be a *fs.PathError
-// around fs.ErrNotExist itself. Everything that is not a precise answer, and above all
-// core.ErrUnavailable, becomes an I/O error: an outage must not look like missing files.
-func (b *billyFS) mapError(op, name string, err error) error {
-	switch {
-	case errors.Is(err, core.ErrNotExist):
-		return &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
-	case errors.Is(err, core.ErrNotDir):
-		return &fs.PathError{Op: op, Path: name, Err: syscall.ENOTDIR}
-	case errors.Is(err, core.ErrIsDir):
-		return &fs.PathError{Op: op, Path: name, Err: syscall.EISDIR}
-	default:
-		b.log.Warn("core call failed", "op", op, "name", name, "err", err)
-		return &fs.PathError{Op: op, Path: name, Err: fmt.Errorf("%w: %w", syscall.EIO, err)}
-	}
-}
-
-func readOnly(op, name string) error {
-	return &fs.PathError{Op: op, Path: name, Err: billy.ErrReadOnly}
+func readOnly(operation, name string) error {
+	return &fs.PathError{Op: operation, Path: name, Err: billy.ErrReadOnly}
 }
 
 // Join joins path elements with slashes and cleans the result.
-func (b *billyFS) Join(elem ...string) string {
+func (*billyFS) Join(elem ...string) string {
 	return path.Join(elem...)
 }
 
@@ -163,6 +142,139 @@ func (b *billyFS) Stat(name string) (os.FileInfo, error) {
 		return nil, b.mapError("stat", name, err)
 	}
 	return fileInfo{attr: attr, owner: b.owner}, nil
+}
+
+// Lstat is Stat: there are no symbolic links.
+func (b *billyFS) Lstat(name string) (os.FileInfo, error) {
+	return b.Stat(name)
+}
+
+// ReadDir lists the directory at name.
+func (b *billyFS) ReadDir(name string) ([]os.FileInfo, error) {
+	cname, err := corePath("readdir", name)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := b.callContext()
+	defer cancel()
+	attrs, err := b.fsys.ReadDir(ctx, cname)
+	if err != nil {
+		return nil, b.mapError("readdir", name, err)
+	}
+	infos := make([]os.FileInfo, len(attrs))
+	for i, attr := range attrs {
+		infos[i] = fileInfo{attr: attr, owner: b.owner}
+	}
+	return infos, nil
+}
+
+// Open opens the file at name for reading.
+//
+//nolint:ireturn // the signature is fixed by billy.Filesystem.
+func (b *billyFS) Open(name string) (billy.File, error) {
+	cname, err := corePath("open", name)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := b.callContext()
+	defer cancel()
+	f, err := b.fsys.Open(ctx, cname)
+	if err != nil {
+		return nil, b.mapError("open", name, err)
+	}
+	return &billyFile{fs: b, name: name, file: f}, nil
+}
+
+// OpenFile opens name for reading and refuses every flag that could change it.
+//
+//nolint:ireturn // the signature is fixed by billy.Filesystem.
+func (b *billyFS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, error) {
+	const mutating = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREATE | os.O_TRUNC
+	if flag&mutating != 0 {
+		return nil, readOnly("open", name)
+	}
+	return b.Open(name)
+}
+
+// Create is refused: the filesystem is read-only.
+//
+//nolint:ireturn // The signature is fixed by billy.Filesystem.
+func (*billyFS) Create(name string) (billy.File, error) {
+	return nil, readOnly("create", name)
+}
+
+// Rename is refused: the filesystem is read-only.
+func (*billyFS) Rename(oldpath, _ string) error {
+	return readOnly("rename", oldpath)
+}
+
+// Remove is refused: the filesystem is read-only.
+func (*billyFS) Remove(name string) error {
+	return readOnly("remove", name)
+}
+
+// TempFile is refused: the filesystem is read-only.
+//
+//nolint:ireturn // The signature is fixed by billy.Filesystem.
+func (*billyFS) TempFile(dir, _ string) (billy.File, error) {
+	return nil, readOnly("tempfile", dir)
+}
+
+// MkdirAll is refused: the filesystem is read-only.
+func (*billyFS) MkdirAll(name string, _ os.FileMode) error {
+	return readOnly("mkdir", name)
+}
+
+// Symlink is refused: the filesystem is read-only.
+func (*billyFS) Symlink(_, link string) error {
+	return readOnly("symlink", link)
+}
+
+// Readlink fails because nothing is a symbolic link.
+func (b *billyFS) Readlink(link string) (string, error) {
+	if _, err := b.Stat(link); err != nil {
+		return "", err
+	}
+	return "", &fs.PathError{Op: "readlink", Path: link, Err: syscall.EINVAL}
+}
+
+// Chroot is not supported: the whole view is always served.
+//
+//nolint:ireturn // The signature is fixed by billy.Filesystem.
+func (*billyFS) Chroot(string) (billy.Filesystem, error) {
+	return nil, billy.ErrNotSupported
+}
+
+// Root is the root of the view.
+func (*billyFS) Root() string {
+	return "/"
+}
+
+func (b *billyFS) callContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(b.base, b.timeout)
+}
+
+// mapError turns a core error into the error go-nfs expects. go-nfs tests errors with
+// os.IsNotExist, which does not unwrap, so a not-exist error must be a *fs.PathError
+// around fs.ErrNotExist itself. Everything that is not a precise answer, and above all
+// core.ErrUnavailable, becomes an I/O error: an outage must not look like missing files.
+func (b *billyFS) mapError(operation, name string, err error) error {
+	switch {
+	case errors.Is(err, core.ErrNotExist):
+		return &fs.PathError{Op: operation, Path: name, Err: fs.ErrNotExist}
+	case errors.Is(err, core.ErrNotDir):
+		return &fs.PathError{Op: operation, Path: name, Err: syscall.ENOTDIR}
+	case errors.Is(err, core.ErrIsDir):
+		return &fs.PathError{Op: operation, Path: name, Err: syscall.EISDIR}
+	default:
+		b.warnCoreFailure(operation, name, err)
+		return &fs.PathError{Op: operation, Path: name, Err: fmt.Errorf("%w: %w", syscall.EIO, err)}
+	}
+}
+
+func (b *billyFS) warnCoreFailure(operation, name string, err error) {
+	b.log.Warn("core call failed",
+		slog.String("op", operation), slog.String("name", name), slog.Any("err", err))
 }
 
 // rootAttr answers within rootBudget whatever the core does. It asks the core and
@@ -209,7 +321,8 @@ func (b *billyFS) refreshRoot(done chan struct{}) {
 	if err != nil {
 		// The kernel asks for the root many times a second. The session already warns
 		// that the cluster cannot be reached, so this line is for debugging only.
-		b.log.Debug("core call failed, answering with the last known root", "err", err)
+		b.log.DebugContext(ctx, "core call failed, answering with the last known root",
+			slog.Any("err", err))
 	}
 	r := &b.root
 	r.mu.Lock()
@@ -222,118 +335,23 @@ func (b *billyFS) refreshRoot(done chan struct{}) {
 	close(done)
 }
 
-// Lstat is Stat: there are no symbolic links.
-func (b *billyFS) Lstat(name string) (os.FileInfo, error) {
-	return b.Stat(name)
-}
-
-// ReadDir lists the directory at name.
-func (b *billyFS) ReadDir(name string) ([]os.FileInfo, error) {
-	cname, err := corePath("readdir", name)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := b.callContext()
-	defer cancel()
-	attrs, err := b.fsys.ReadDir(ctx, cname)
-	if err != nil {
-		return nil, b.mapError("readdir", name, err)
-	}
-	infos := make([]os.FileInfo, len(attrs))
-	for i, attr := range attrs {
-		infos[i] = fileInfo{attr: attr, owner: b.owner}
-	}
-	return infos, nil
-}
-
-// Open opens the file at name for reading.
-func (b *billyFS) Open(name string) (billy.File, error) {
-	cname, err := corePath("open", name)
-	if err != nil {
-		return nil, err
-	}
-	ctx, cancel := b.callContext()
-	defer cancel()
-	f, err := b.fsys.Open(ctx, cname)
-	if err != nil {
-		return nil, b.mapError("open", name, err)
-	}
-	return &billyFile{fs: b, name: name, file: f}, nil
-}
-
-// OpenFile opens name for reading and refuses every flag that could change it.
-func (b *billyFS) OpenFile(name string, flag int, _ os.FileMode) (billy.File, error) {
-	const mutating = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREATE | os.O_TRUNC
-	if flag&mutating != 0 {
-		return nil, readOnly("open", name)
-	}
-	return b.Open(name)
-}
-
-// Create is refused: the filesystem is read-only.
-func (b *billyFS) Create(name string) (billy.File, error) {
-	return nil, readOnly("create", name)
-}
-
-// Rename is refused: the filesystem is read-only.
-func (b *billyFS) Rename(oldpath, _ string) error {
-	return readOnly("rename", oldpath)
-}
-
-// Remove is refused: the filesystem is read-only.
-func (b *billyFS) Remove(name string) error {
-	return readOnly("remove", name)
-}
-
-// TempFile is refused: the filesystem is read-only.
-func (b *billyFS) TempFile(dir, _ string) (billy.File, error) {
-	return nil, readOnly("tempfile", dir)
-}
-
-// MkdirAll is refused: the filesystem is read-only.
-func (b *billyFS) MkdirAll(name string, _ os.FileMode) error {
-	return readOnly("mkdir", name)
-}
-
-// Symlink is refused: the filesystem is read-only.
-func (b *billyFS) Symlink(_, link string) error {
-	return readOnly("symlink", link)
-}
-
-// Readlink fails because nothing is a symbolic link.
-func (b *billyFS) Readlink(link string) (string, error) {
-	if _, err := b.Stat(link); err != nil {
-		return "", err
-	}
-	return "", &fs.PathError{Op: "readlink", Path: link, Err: syscall.EINVAL}
-}
-
-// Chroot is not supported: the whole view is always served.
-func (b *billyFS) Chroot(string) (billy.Filesystem, error) {
-	return nil, billy.ErrNotSupported
-}
-
-// Root is the root of the view.
-func (b *billyFS) Root() string {
-	return "/"
-}
-
 // space reports the capacity of the view. It never fails: the kernel asks for it while it
 // mounts, and a mount must succeed while no node can be reached. When the core cannot
 // answer, the last capacity it reported is given, which is zero before the first answer.
 func (b *billyFS) space(ctx context.Context) core.Space {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
-	sp, err := b.fsys.StatFS(ctx)
+	capacity, err := b.fsys.StatFS(ctx)
 	b.spaceMu.Lock()
 	defer b.spaceMu.Unlock()
 	if err != nil {
-		// mapError is called for its log line; the error itself is not passed on.
-		_ = b.mapError("statfs", "", err)
+		// mapError is called for its log line, which only an answer that is not precise gets;
+		// the error itself is not passed on.
+		_ = b.mapError("statfs", "", err) //nolint:errcheck // See above, the error is not passed on.
 		return b.lastSpace
 	}
-	b.lastSpace = sp
-	return sp
+	b.lastSpace = capacity
+	return capacity
 }
 
 // fileInfo presents a core.Attr as an os.FileInfo with the attributes the mount
@@ -381,10 +399,14 @@ func (f *billyFile) ReadAt(p []byte, off int64) (int, error) {
 	ctx, cancel := f.fs.callContext()
 	defer cancel()
 	n, err := f.file.ReadAt(ctx, p, off)
-	if err != nil && !errors.Is(err, io.EOF) {
+	switch {
+	case err == nil:
+		return n, nil
+	case errors.Is(err, io.EOF):
+		return n, io.EOF
+	default:
 		return n, f.fs.mapError("read", f.name, err)
 	}
-	return n, err
 }
 
 func (f *billyFile) Read(p []byte) (int, error) {
@@ -433,7 +455,7 @@ func (f *billyFile) Truncate(int64) error {
 }
 
 // Lock does nothing: the file cannot change, so there is nothing to protect.
-func (f *billyFile) Lock() error { return nil }
+func (*billyFile) Lock() error { return nil }
 
 // Unlock does nothing; see Lock.
-func (f *billyFile) Unlock() error { return nil }
+func (*billyFile) Unlock() error { return nil }

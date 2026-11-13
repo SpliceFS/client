@@ -14,6 +14,9 @@ import (
 	"testing"
 )
 
+// fakeWorkDir is the working directory the fake system resolves relative paths against.
+const fakeWorkDir = "/work"
+
 func fakeSystem(env map[string]string, euid int) system {
 	sys := systemHost()
 	sys.getenv = func(key string) string { return env[key] }
@@ -23,32 +26,59 @@ func fakeSystem(env map[string]string, euid int) system {
 		if filepath.IsAbs(p) {
 			return filepath.Clean(p), nil
 		}
-		return filepath.Join("/work", p), nil
+		return filepath.Join(fakeWorkDir, p), nil
 	}
 	return sys
 }
 
 func TestSocketPath(t *testing.T) {
 	t.Parallel()
-	sum := func(dir string) string {
-		h := sha256.Sum256([]byte(dir))
-		return hex.EncodeToString(h[:8])
+	socketUnder := func(base, dir string) string {
+		sum := sha256.Sum256([]byte(dir))
+		return base + "/splicefs/" + hex.EncodeToString(sum[:8]) + ".sock"
 	}
+	const configDir = "/etc/splicefs/client"
+	runtimeEnv := map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}
 	tests := []struct {
 		name string
 		sys  system
 		dir  string
 		want string
 	}{
-		{"runtime directory", fakeSystem(map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}, 1000), "/etc/splicefs/client", "/run/user/1000/splicefs/" + sum("/etc/splicefs/client") + ".sock"},
-		{"root without runtime directory", fakeSystem(nil, 0), "/etc/splicefs/client", rootRuntimeDir + "/splicefs/" + sum("/etc/splicefs/client") + ".sock"},
-		{"ordinary user without runtime directory", fakeSystem(nil, 1000), "/etc/splicefs/client", "/tmp/example/splicefs/" + sum("/etc/splicefs/client") + ".sock"},
-		{"relative directory is made absolute", fakeSystem(nil, 0), "conf/", rootRuntimeDir + "/splicefs/" + sum("/work/conf") + ".sock"},
-		{"unresolvable directory is cleaned", func() system {
-			s := fakeSystem(nil, 0)
-			s.abs = func(string) (string, error) { return "", errors.New("no cwd") }
-			return s
-		}(), "/etc//x/", rootRuntimeDir + "/splicefs/" + sum("/etc/x") + ".sock"},
+		{
+			name: "runtime directory",
+			sys:  fakeSystem(runtimeEnv, 1000),
+			dir:  configDir,
+			want: socketUnder("/run/user/1000", configDir),
+		},
+		{
+			name: "root without runtime directory",
+			sys:  fakeSystem(nil, 0),
+			dir:  configDir,
+			want: socketUnder(rootRuntimeDir, configDir),
+		},
+		{
+			name: "ordinary user without runtime directory",
+			sys:  fakeSystem(nil, 1000),
+			dir:  configDir,
+			want: socketUnder("/tmp/example", configDir),
+		},
+		{
+			name: "relative directory is made absolute",
+			sys:  fakeSystem(nil, 0),
+			dir:  "conf/",
+			want: socketUnder(rootRuntimeDir, fakeWorkDir+"/conf"),
+		},
+		{
+			name: "unresolvable directory is cleaned",
+			sys: func() system {
+				sys := fakeSystem(nil, 0)
+				sys.abs = func(string) (string, error) { return "", errors.New("no cwd") }
+				return sys
+			}(),
+			dir:  "/etc//x/",
+			want: socketUnder(rootRuntimeDir, "/etc/x"),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -66,7 +96,8 @@ func TestSocketPathUsesTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := SocketPath("conf"), fakeSystem(map[string]string{"XDG_RUNTIME_DIR": "/run/user/4242"}, 1).socketPath(abs); got != want {
+	want := fakeSystem(map[string]string{"XDG_RUNTIME_DIR": "/run/user/4242"}, 1).socketPath(abs)
+	if got := SocketPath("conf"); got != want {
 		t.Errorf("SocketPath = %q, want %q", got, want)
 	}
 }
@@ -88,17 +119,13 @@ func answers(path string) bool {
 	if err != nil {
 		return false
 	}
-	_ = conn.Close()
+	closeQuietly(conn)
 	return true
 }
 
-func TestClaimCreatesAPrivateSocket(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(shortDir(t), "run", "c.sock")
-	sock, err := systemHost().claim(path)
-	if err != nil {
-		t.Fatal(err)
-	}
+// wantPrivateSocket fails the test unless path is a socket only its owner can use, in a folder only its owner can use.
+func wantPrivateSocket(t *testing.T, path string) {
+	t.Helper()
 	info, err := os.Lstat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -113,6 +140,16 @@ func TestClaimCreatesAPrivateSocket(t *testing.T) {
 	if dir.Mode().Perm() != 0o700 {
 		t.Errorf("directory mode = %o, want 700", dir.Mode().Perm())
 	}
+}
+
+func TestClaimCreatesAPrivateSocket(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(shortDir(t), "run", "c.sock")
+	sock, err := systemHost().claim(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPrivateSocket(t, path)
 	if !answers(path) {
 		t.Error("nothing answers on the socket")
 	}
@@ -160,11 +197,11 @@ func TestClaimReplacesAStaleSocket(t *testing.T) {
 			if tt.dial != nil {
 				sys.dial = tt.dial
 			}
-			sock, err := sys.claim(path)
+			sock, err := sys.claim(t.Context(), path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() { _ = sock.Close() }()
+			defer closeQuietly(sock)
 			if !answers(path) {
 				t.Error("the new socket does not answer")
 			}
@@ -175,13 +212,13 @@ func TestClaimReplacesAStaleSocket(t *testing.T) {
 func TestClaimRefusesALiveSocket(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(shortDir(t), "c.sock")
-	first, err := systemHost().claim(path)
+	first, err := systemHost().claim(t.Context(), path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = first.Close() }()
+	defer closeQuietly(first)
 
-	_, err = systemHost().claim(path)
+	_, err = systemHost().claim(t.Context(), path)
 	errIs(t, err, ErrAlreadyRunning)
 	if !strings.Contains(err.Error(), path) {
 		t.Errorf("error does not name the socket: %v", err)
@@ -191,61 +228,88 @@ func TestClaimRefusesALiveSocket(t *testing.T) {
 	}
 }
 
+// claimSetup prepares a failing claim in a fresh directory and returns the socket path to claim.
+type claimSetup func(t *testing.T, dir string, sys *system) string
+
+func setupDirectoryUnderAFile(t *testing.T, dir string, _ *system) string {
+	t.Helper()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(file, "sub", "c.sock")
+}
+
+func setupDirectoryCannotBeExamined(t *testing.T, dir string, sys *system) string {
+	t.Helper()
+	sys.lstat = func(string) (fs.FileInfo, error) { return nil, errors.New("io error") }
+	return filepath.Join(dir, "c.sock")
+}
+
+func setupDirectoryIsALink(t *testing.T, dir string, _ *system) string {
+	t.Helper()
+	target := filepath.Join(dir, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, "link", "c.sock")
+}
+
+func setupDirectoryWritableByOthers(t *testing.T, dir string, _ *system) string {
+	t.Helper()
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(dir, "c.sock")
+}
+
+func setupPathTooLong(t *testing.T, dir string, _ *system) string {
+	t.Helper()
+	return filepath.Join(dir, strings.Repeat("x", 300)+".sock")
+}
+
+func setupLeftoverCannotBeChecked(t *testing.T, dir string, sys *system) string {
+	t.Helper()
+	path := filepath.Join(dir, "c.sock")
+	staleSocket(t, path)
+	sys.dial = func(context.Context, string) (net.Conn, error) { return nil, syscall.EAGAIN }
+	return path
+}
+
+func setupLeftoverCannotBeRemoved(t *testing.T, dir string, sys *system) string {
+	t.Helper()
+	path := filepath.Join(dir, "c.sock")
+	if err := os.MkdirAll(filepath.Join(path, "inside"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sys.dial = func(context.Context, string) (net.Conn, error) { return nil, syscall.ECONNREFUSED }
+	return path
+}
+
+func setupModeCannotBeSet(t *testing.T, dir string, sys *system) string {
+	t.Helper()
+	sys.chmod = func(string, fs.FileMode) error { return errors.New("not permitted") }
+	return filepath.Join(dir, "c.sock")
+}
+
 func TestClaimFailures(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		setup func(t *testing.T, dir string, sys *system) string // returns the socket path
+		setup claimSetup
 		want  string
 	}{
-		{"directory cannot be created", func(t *testing.T, dir string, _ *system) string {
-			file := filepath.Join(dir, "file")
-			if err := os.WriteFile(file, nil, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			return filepath.Join(file, "sub", "c.sock")
-		}, "create socket directory"},
-		{"directory cannot be examined", func(_ *testing.T, dir string, sys *system) string {
-			sys.lstat = func(string) (fs.FileInfo, error) { return nil, errors.New("io error") }
-			return filepath.Join(dir, "c.sock")
-		}, "check socket directory: io error"},
-		{"directory is a symbolic link", func(t *testing.T, dir string, _ *system) string {
-			target := filepath.Join(dir, "target")
-			if err := os.Mkdir(target, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(target, filepath.Join(dir, "link")); err != nil {
-				t.Fatal(err)
-			}
-			return filepath.Join(dir, "link", "c.sock")
-		}, "is not a directory"},
-		{"directory is writable by others", func(t *testing.T, dir string, _ *system) string {
-			if err := os.Chmod(dir, 0o777); err != nil { //nolint:gosec // the test needs an unsafe directory
-				t.Fatal(err)
-			}
-			return filepath.Join(dir, "c.sock")
-		}, "can be written by other users"},
-		{"path cannot be bound", func(_ *testing.T, dir string, _ *system) string {
-			return filepath.Join(dir, strings.Repeat("x", 300)+".sock")
-		}, "listen on"},
-		{"a leftover cannot be checked", func(t *testing.T, dir string, sys *system) string {
-			path := filepath.Join(dir, "c.sock")
-			staleSocket(t, path)
-			sys.dial = func(context.Context, string) (net.Conn, error) { return nil, syscall.EAGAIN }
-			return path
-		}, "check for a running client"},
-		{"a leftover cannot be removed", func(t *testing.T, dir string, sys *system) string {
-			path := filepath.Join(dir, "c.sock")
-			if err := os.MkdirAll(filepath.Join(path, "inside"), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			sys.dial = func(context.Context, string) (net.Conn, error) { return nil, syscall.ECONNREFUSED }
-			return path
-		}, "remove stale socket"},
-		{"the mode cannot be set", func(_ *testing.T, dir string, sys *system) string {
-			sys.chmod = func(string, fs.FileMode) error { return errors.New("not permitted") }
-			return filepath.Join(dir, "c.sock")
-		}, "restrict"},
+		{"directory cannot be created", setupDirectoryUnderAFile, "create socket directory"},
+		{"directory cannot be examined", setupDirectoryCannotBeExamined, "check socket directory: io error"},
+		{"directory is a symbolic link", setupDirectoryIsALink, "is not a directory"},
+		{"directory is writable by others", setupDirectoryWritableByOthers, "can be written by other users"},
+		{"path cannot be bound", setupPathTooLong, "listen on"},
+		{"a leftover cannot be checked", setupLeftoverCannotBeChecked, "check for a running client"},
+		{"a leftover cannot be removed", setupLeftoverCannotBeRemoved, "remove stale socket"},
+		{"the mode cannot be set", setupModeCannotBeSet, "restrict"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -253,12 +317,12 @@ func TestClaimFailures(t *testing.T) {
 			dir := shortDir(t)
 			sys := systemHost()
 			path := tt.setup(t, dir, &sys)
-			sock, err := sys.claim(path)
+			sock, err := sys.claim(t.Context(), path)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("claim = %v, want an error containing %q", err, tt.want)
 			}
 			if sock != nil {
-				t.Errorf("claim returned a socket with an error")
+				t.Error("claim returned a socket with an error")
 			}
 		})
 	}

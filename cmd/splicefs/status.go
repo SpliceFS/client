@@ -5,9 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/SpliceFS/client/app"
+)
+
+const (
+	// tableColumnGap is the number of spaces between the columns of a status table.
+	tableColumnGap = 2
+	// bytesPerMegabyte converts the measured speed of a node to the unit shown, decimal like
+	// formatBytes.
+	bytesPerMegabyte = 1e6
 )
 
 // printStatus asks the running client for its report and prints it, as a table or as the
@@ -20,6 +30,7 @@ func (b backend) printStatus(ctx context.Context, inv invocation, stdout io.Writ
 	if inv.asJSON {
 		enc := json.NewEncoder(stdout)
 		enc.SetIndent("", "  ")
+		//nolint:wrapcheck // The error of the write already names the file, and the command prints it as it is.
 		return enc.Encode(report)
 	}
 	return writeReport(stdout, report)
@@ -28,30 +39,23 @@ func (b backend) printStatus(ctx context.Context, inv invocation, stdout io.Writ
 // writeReport prints a report as a few short tables: the mounts, then for each cluster
 // its nodes with their measured speed, then the cache directories.
 func writeReport(w io.Writer, r app.Report) error {
-	mounts := [][]string{{"MOUNT", "STATE", "SOURCE"}}
-	for _, m := range r.Mounts {
-		mounts = append(mounts, []string{m.Target, m.State, m.Source})
-	}
-	sections := [][][]string{mounts}
+	tables := [][][]string{mountRows(r.Mounts)}
 	for _, c := range r.Clusters {
-		sections = append(sections, clusterRows(c))
+		tables = append(tables, clusterRows(c))
 	}
 	if len(r.Caches) > 0 {
-		caches := [][]string{{"CACHE", "FILES", "SIZE"}}
-		for _, c := range r.Caches {
-			caches = append(caches, []string{c.Dir, fmt.Sprint(c.Entries), formatBytes(float64(c.Bytes))})
-		}
-		sections = append(sections, caches)
+		tables = append(tables, cacheRows(r.Caches))
 	}
-	for i, rows := range sections {
-		if i > 0 {
-			_, _ = fmt.Fprintln(w)
-		}
-		if err := writeTable(w, rows); err != nil {
-			return err
-		}
+	return writeTables(w, tables)
+}
+
+func mountRows(mounts []app.MountReport) [][]string {
+	rows := make([][]string, 0, 1+len(mounts))
+	rows = append(rows, []string{"MOUNT", "STATE", "SOURCE"})
+	for _, m := range mounts {
+		rows = append(rows, []string{m.Target, m.State, m.Source})
 	}
-	return nil
+	return rows
 }
 
 func clusterRows(c app.ClusterReport) [][]string {
@@ -62,25 +66,44 @@ func clusterRows(c app.ClusterReport) [][]string {
 	for _, n := range c.Nodes {
 		rate := "not measured"
 		if n.Measured {
-			rate = fmt.Sprintf("%.1f MB/s", n.BytesPerSecond/1e6)
+			rate = fmt.Sprintf("%.1f MB/s", n.BytesPerSecond/bytesPerMegabyte)
 		}
 		rows = append(rows, []string{n.Name, rate})
 	}
 	return rows
 }
 
-func writeTable(w io.Writer, rows [][]string) error {
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	for _, row := range rows {
-		for i, cell := range row {
-			if i > 0 {
-				_, _ = io.WriteString(tw, "\t")
-			}
-			_, _ = io.WriteString(tw, cell)
-		}
-		_, _ = io.WriteString(tw, "\n")
+func cacheRows(caches []app.CacheReport) [][]string {
+	rows := make([][]string, 0, 1+len(caches))
+	rows = append(rows, []string{"CACHE", "FILES", "SIZE"})
+	for _, c := range caches {
+		rows = append(rows, []string{c.Dir, strconv.Itoa(c.Entries), formatBytes(float64(c.Bytes))})
 	}
-	return tw.Flush()
+	return rows
+}
+
+// tableText joins the cells of each row with tabs, for the table writer to align.
+func tableText(rows [][]string) string {
+	lines := make([]string, len(rows))
+	for i, row := range rows {
+		lines[i] = strings.Join(row, "\t") + "\n"
+	}
+	return strings.Join(lines, "")
+}
+
+// writeTables prints the tables with a blank line between them. One writer serves all of
+// them: a blank line ends the columns of the table above it, so each is aligned on its own.
+func writeTables(w io.Writer, tables [][][]string) error {
+	texts := make([]string, len(tables))
+	for i, rows := range tables {
+		texts[i] = tableText(rows)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, tableColumnGap, ' ', 0)
+	// The errors of the writes already name the file, and the command prints them as they are.
+	if _, err := io.WriteString(tw, strings.Join(texts, "\n")); err != nil {
+		return err //nolint:wrapcheck // See above.
+	}
+	return tw.Flush() //nolint:wrapcheck // See above.
 }
 
 // formatBytes renders a size in decimal units, like the rates of the nodes.

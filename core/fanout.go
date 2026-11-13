@@ -18,9 +18,9 @@ func fanOut[T, R any](ctx context.Context, items []T, call func(context.Context,
 	var wg sync.WaitGroup
 	for i, item := range items {
 		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(ctx, nodeTimeout)
+			callCtx, cancel := context.WithTimeout(ctx, nodeTimeout)
 			defer cancel()
-			results[i] = call(ctx, item)
+			results[i] = call(callCtx, item)
 		})
 	}
 	wg.Wait()

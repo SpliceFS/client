@@ -26,31 +26,61 @@ func gzipBytes(t *testing.T, s string) []byte {
 	return buf.Bytes()
 }
 
-// operations lists every method as a function of a Node, so that error handling is tested
+// apiOperation is one method of a Node as a function, so that error handling is tested
 // identically across all of them. okStatus is the status that is a success for it.
-var operations = []struct {
+type apiOperation struct {
 	name     string
 	okStatus int
 	run      func(*Node) error
-}{
-	{"Health", 200, func(n *Node) error { _, err := n.Health(context.Background()); return err }},
-	{"Login", 200, func(n *Node) error { _, err := n.Login(context.Background(), "u", "p"); return err }},
-	{"Nodes", 200, func(n *Node) error { _, err := n.Nodes(context.Background(), testToken); return err }},
-	{"List", 200, func(n *Node) error { _, err := n.List(context.Background(), testToken, "s"); return err }},
-	{"Head", 200, func(n *Node) error { _, err := n.Head(context.Background(), testToken, "s/f"); return err }},
-	{"Range", 206, func(n *Node) error {
-		rc, err := n.Range(context.Background(), testToken, "s/f", "e", 0, 1)
-		if rc != nil {
-			_ = rc.Close()
-		}
-		return err
-	}},
-	{"Space", 200, func(n *Node) error { _, err := n.Space(context.Background(), testToken, "s"); return err }},
+}
+
+func runHealth(n *Node) error {
+	_, err := n.Health(context.Background())
+	return err
+}
+
+func runList(n *Node) error {
+	_, err := n.List(context.Background(), testToken, "s")
+	return err
+}
+
+// runRange reads no data; it reports the error of the call, or of closing the reader.
+func runRange(n *Node) error {
+	body, err := n.Range(context.Background(), testToken, "s/f", "e", 0, 1)
+	if body != nil {
+		err = errors.Join(err, body.Close())
+	}
+	return err
+}
+
+// operations lists every method of a Node.
+func operations() []apiOperation {
+	return []apiOperation{
+		{"Health", 200, runHealth},
+		{"Login", 200, func(n *Node) error { _, err := n.Login(context.Background(), "u", "p"); return err }},
+		{"Nodes", 200, func(n *Node) error { _, err := n.Nodes(context.Background(), testToken); return err }},
+		{"List", 200, runList},
+		{"Head", 200, func(n *Node) error { _, err := n.Head(context.Background(), testToken, "s/f"); return err }},
+		{"Range", 206, runRange},
+		{"Space", 200, func(n *Node) error { _, err := n.Space(context.Background(), testToken, "s"); return err }},
+	}
+}
+
+// startTruncatedJSON promises 100 bytes of JSON, sends the first ten and flushes them, so
+// that the client is in the middle of reading the body.
+func startTruncatedJSON(t *testing.T, w http.ResponseWriter) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Length", "100")
+	writeBody(t, w, []byte(`{"status":`))
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		t.Errorf("flush response: %v", err)
+	}
 }
 
 func TestStatusMapping(t *testing.T) {
 	t.Parallel()
-	statuses := []struct {
+	mappings := []struct {
 		status int
 		want   error
 	}{
@@ -68,23 +98,23 @@ func TestStatusMapping(t *testing.T) {
 		{204, ErrProtocol},
 		{301, ErrProtocol},
 	}
-	for _, op := range operations {
-		for _, st := range statuses {
+	for _, operation := range operations() {
+		for _, mapping := range mappings {
 			// A status that is the operation's success status is not an error case.
-			if st.status == op.okStatus {
+			if mapping.status == operation.okStatus {
 				continue
 			}
-			t.Run(op.name+"/"+http.StatusText(st.status), func(t *testing.T) {
+			t.Run(operation.name+"/"+http.StatusText(mapping.status), func(t *testing.T) {
 				t.Parallel()
 				n := serve(t, func(w http.ResponseWriter, _ *http.Request) {
-					writeJSON(w, st.status, `{"error":"server says no"}`)
+					writeJSON(t, w, mapping.status, `{"error":"server says no"}`)
 				})
-				err := op.run(n)
-				if !errors.Is(err, st.want) {
-					t.Fatalf("error = %v, want %v", err, st.want)
+				err := operation.run(n)
+				if !errors.Is(err, mapping.want) {
+					t.Fatalf("error = %v, want %v", err, mapping.want)
 				}
 				text := err.Error()
-				if !strings.Contains(text, "east") || !strings.Contains(text, strings.ToLower(op.name)) {
+				if !strings.Contains(text, "east") || !strings.Contains(text, strings.ToLower(operation.name)) {
 					t.Errorf("error %q lacks node name or operation", text)
 				}
 			})
@@ -102,7 +132,12 @@ func TestStatusErrorMessage(t *testing.T) {
 		maxLen   int
 	}{
 		{name: "message included", body: `{"error":"share not allowed"}`, contains: `"share not allowed"`, maxLen: 1000},
-		{name: "long message truncated at a character", body: `{"error":"` + long + `"}`, contains: "a" + strings.Repeat("\u00e9", 100), maxLen: 400},
+		{
+			name:     "long message truncated at a character",
+			body:     `{"error":"` + long + `"}`,
+			contains: "a" + strings.Repeat("\u00e9", 100),
+			maxLen:   400,
+		},
 		{name: "not json", body: `<html>gateway</html>`, contains: "HTTP 403", maxLen: 1000},
 		{name: "empty message", body: `{"error":""}`, contains: "HTTP 403", maxLen: 1000},
 	}
@@ -110,7 +145,7 @@ func TestStatusErrorMessage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			n := serve(t, func(w http.ResponseWriter, _ *http.Request) {
-				writeJSON(w, 403, tt.body)
+				writeJSON(t, w, 403, tt.body)
 			})
 			_, err := n.Nodes(context.Background(), testToken)
 			if !errors.Is(err, ErrForbidden) {
@@ -131,20 +166,31 @@ func TestStatusErrorMessage(t *testing.T) {
 
 func TestJSONProtocolViolations(t *testing.T) {
 	t.Parallel()
+	const json = "application/json"
 	tests := []struct {
 		name        string
 		contentType string
 		body        string
 		run         func(*Node) error
 	}{
-		{name: "wrong content type", contentType: "text/html", body: `{"status":"ok"}`, run: operations[0].run},
-		{name: "missing content type", contentType: "", body: `{"status":"ok"}`, run: operations[0].run},
-		{name: "malformed content type", contentType: ";;;", body: `{"status":"ok"}`, run: operations[0].run},
-		{name: "undecodable", contentType: "application/json", body: `{"status":`, run: operations[0].run},
-		{name: "wrong shape", contentType: "application/json", body: `[1,2]`, run: operations[0].run},
-		{name: "trailing data", contentType: "application/json", body: `{"status":"ok"} {}`, run: operations[0].run},
-		{name: "small body too large", contentType: "application/json", body: `{"status":"` + strings.Repeat("a", maxSmallJSON) + `"}`, run: operations[0].run},
-		{name: "listing too large", contentType: "application/json", body: `{"entries":[]}` + strings.Repeat(" ", maxListingJSON), run: operations[3].run},
+		{name: "wrong content type", contentType: "text/html", body: `{"status":"ok"}`, run: runHealth},
+		{name: "missing content type", contentType: "", body: `{"status":"ok"}`, run: runHealth},
+		{name: "malformed content type", contentType: ";;;", body: `{"status":"ok"}`, run: runHealth},
+		{name: "undecodable", contentType: json, body: `{"status":`, run: runHealth},
+		{name: "wrong shape", contentType: json, body: `[1,2]`, run: runHealth},
+		{name: "trailing data", contentType: json, body: `{"status":"ok"} {}`, run: runHealth},
+		{
+			name:        "small body too large",
+			contentType: json,
+			body:        `{"status":"` + strings.Repeat("a", maxSmallJSON) + `"}`,
+			run:         runHealth,
+		},
+		{
+			name:        "listing too large",
+			contentType: json,
+			body:        `{"entries":[]}` + strings.Repeat(" ", maxListingJSON),
+			run:         runList,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -153,7 +199,7 @@ func TestJSONProtocolViolations(t *testing.T) {
 				if tt.contentType != "" {
 					w.Header().Set("Content-Type", tt.contentType)
 				}
-				_, _ = w.Write([]byte(tt.body))
+				writeBody(t, w, []byte(tt.body))
 			})
 			if err := tt.run(n); !errors.Is(err, ErrProtocol) {
 				t.Fatalf("error = %v, want ErrProtocol", err)
@@ -166,7 +212,7 @@ func TestListingAtTheLimitIsAccepted(t *testing.T) {
 	t.Parallel()
 	body := `{"entries":[]}`
 	body += strings.Repeat(" ", maxListingJSON-len(body))
-	n := serve(t, func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, body) })
+	n := serve(t, func(w http.ResponseWriter, _ *http.Request) { writeJSON(t, w, 200, body) })
 	if _, err := n.List(context.Background(), testToken, "s"); err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -178,28 +224,29 @@ func TestTransportFailureIsUnavailable(t *testing.T) {
 	// closed server would free its port for a server of a parallel test, and the
 	// operations would then get an HTTP answer instead of a transport failure.
 	var lc net.ListenConfig
-	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
+	listener, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	go func() {
 		for {
-			conn, err := ln.Accept()
-			if err != nil {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
 				return
 			}
+			//nolint:errcheck // the connection is dropped on purpose, and a goroutine must not report to a finished test
 			_ = conn.Close()
 		}
 	}()
-	t.Cleanup(func() { _ = ln.Close() })
-	n, err := New("east", "http://"+ln.Addr().String()+"/api", &http.Client{})
+	closeLater(t, listener)
+	n, err := New("east", "http://"+listener.Addr().String()+"/api", &http.Client{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range operations {
-		t.Run(op.name, func(t *testing.T) {
+	for _, operation := range operations() {
+		t.Run(operation.name, func(t *testing.T) {
 			t.Parallel()
-			err := op.run(n)
+			err := operation.run(n)
 			if !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("error = %v, want ErrUnavailable", err)
 			}
@@ -213,10 +260,7 @@ func TestTransportFailureIsUnavailable(t *testing.T) {
 func TestBodyCutOffIsUnavailable(t *testing.T) {
 	t.Parallel()
 	n := serve(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", "100")
-		_, _ = w.Write([]byte(`{"status":`))
-		w.(http.Flusher).Flush()
+		startTruncatedJSON(t, w)
 		panic(http.ErrAbortHandler)
 	})
 	if _, err := n.Health(context.Background()); !errors.Is(err, ErrUnavailable) {
@@ -236,7 +280,7 @@ func TestClientTimeoutIsUnavailableNotContextError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = operations[0].run(n)
+	err = runHealth(n)
 	if !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("error = %v, want ErrUnavailable", err)
 	}
@@ -247,8 +291,19 @@ func TestClientTimeoutIsUnavailableNotContextError(t *testing.T) {
 
 func TestCallerCancelsDuringResponse(t *testing.T) {
 	t.Parallel()
-	for _, op := range []string{"Health", "List", "Range"} {
-		t.Run(op, func(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(context.Context, *Node) error
+	}{
+		{"Health", func(ctx context.Context, n *Node) error { _, err := n.Health(ctx); return err }},
+		{"List", func(ctx context.Context, n *Node) error { _, err := n.List(ctx, testToken, "s"); return err }},
+		{"Range", func(ctx context.Context, n *Node) error {
+			_, err := n.Range(ctx, testToken, "s/f", "e", 0, 1)
+			return err
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -258,15 +313,7 @@ func TestCallerCancelsDuringResponse(t *testing.T) {
 				<-release
 			})
 			t.Cleanup(func() { close(release) })
-			var err error
-			switch op {
-			case "Health":
-				_, err = n.Health(ctx)
-			case "List":
-				_, err = n.List(ctx, testToken, "s")
-			case "Range":
-				_, err = n.Range(ctx, testToken, "s/f", "e", 0, 1)
-			}
+			err := tt.call(ctx, n)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("error = %v, want context.Canceled", err)
 			}
@@ -283,10 +330,7 @@ func TestCallerCancelsDuringBody(t *testing.T) {
 	defer cancel()
 	release := make(chan struct{})
 	n := serve(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Content-Length", "100")
-		_, _ = w.Write([]byte(`{"status":`))
-		w.(http.Flusher).Flush()
+		startTruncatedJSON(t, w)
 		cancel()
 		<-release
 	})

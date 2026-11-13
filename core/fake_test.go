@@ -50,6 +50,7 @@ func (c *fakeClock) Now() time.Time {
 	return c.now
 }
 
+//nolint:ireturn // AfterFunc implements the fetch clock, whose method returns an interface.
 func (c *fakeClock) AfterFunc(d time.Duration, f func()) fetch.Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -97,7 +98,9 @@ const (
 	testCluster  = "example"
 )
 
-var fileTime = time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
+// fileTime is the modification time of the files the tests create, unless a test needs
+// another one.
+func fileTime() time.Time { return time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC) }
 
 // pattern is deterministic file content that differs with seed.
 func pattern(seed byte, n int) []byte {
@@ -141,6 +144,72 @@ type fakeNode struct {
 	waits  chan struct{} // receives a value whenever a request waits at the gate
 }
 
+// ServeHTTP answers one request as the switches of the node say: the request waits at
+// the gate, then the node fails it, or it is served.
+func (n *fakeNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	endpoint := route(r)
+	kind := endpoint.kind
+	state := n.admit(kind)
+	if !n.waitAtGate(r.Context(), state.gate) {
+		return
+	}
+	switch {
+	case state.down:
+		writeError(w, http.StatusServiceUnavailable)
+	case kind == "login":
+		n.login(w, r)
+	case state.rejected || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer tok-"):
+		writeError(w, http.StatusUnauthorized)
+	case state.status != 0:
+		writeError(w, state.status)
+	default:
+		n.serve(w, r, endpoint)
+	}
+}
+
+// requestState is what the switches of a node say about one request.
+type requestState struct {
+	gate     chan struct{}
+	down     bool
+	status   int
+	rejected bool
+}
+
+// admit counts the request and reads the switches that apply to it.
+func (n *fakeNode) admit(kind string) requestState {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.counts[kind]++
+	state := requestState{
+		gate:     n.gate,
+		down:     n.down,
+		status:   n.status,
+		rejected: kind != "login" && n.reject > 0,
+	}
+	if state.rejected {
+		n.reject--
+	}
+	return state
+}
+
+// waitAtGate holds the request while a test holds the node. It reports false when the
+// request ended first.
+func (n *fakeNode) waitAtGate(ctx context.Context, gate chan struct{}) bool {
+	if gate == nil {
+		return true
+	}
+	select {
+	case n.waits <- struct{}{}:
+	default:
+	}
+	select {
+	case <-gate:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func (n *fakeNode) url() string { return n.srv.URL + "/api" }
 
 func (n *fakeNode) put(path string, data []byte, mtime time.Time) {
@@ -180,7 +249,7 @@ func (n *fakeNode) rejectNext(count int) {
 }
 
 // hold makes requests wait until the returned function is called.
-func (n *fakeNode) hold() (release func()) {
+func (n *fakeNode) hold() func() {
 	gate := make(chan struct{})
 	n.mu.Lock()
 	n.gate = gate
@@ -208,65 +277,37 @@ func (n *fakeNode) loginCount() int {
 	return n.logins
 }
 
-func (n *fakeNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	kind, arg := route(r)
-	n.mu.Lock()
-	n.counts[kind]++
-	gate, down, status := n.gate, n.down, n.status
-	rejected := kind != "login" && n.reject > 0
-	if rejected {
-		n.reject--
-	}
-	n.mu.Unlock()
-	if gate != nil {
-		select {
-		case n.waits <- struct{}{}:
-		default:
-		}
-		select {
-		case <-gate:
-		case <-r.Context().Done():
-			return
-		}
-	}
-	switch {
-	case down:
-		writeError(w, http.StatusServiceUnavailable)
-	case kind == "login":
-		n.login(w, r)
-	case rejected || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer tok-"):
-		writeError(w, http.StatusUnauthorized)
-	case status != 0:
-		writeError(w, status)
-	default:
-		n.serve(w, r, kind, arg)
-	}
+// endpoint is the API endpoint a request addresses, with the request's path argument.
+type endpoint struct {
+	kind string
+	arg  string
 }
 
-// route names the endpoint of a request and returns its path argument.
-func route(r *http.Request) (kind, arg string) {
-	p := strings.TrimPrefix(r.URL.Path, "/api/v1/")
+// route names the endpoint of a request.
+func route(r *http.Request) endpoint {
+	apiPath := strings.TrimPrefix(r.URL.Path, "/api/v1/")
 	switch {
-	case p == "login":
-		return "login", ""
-	case p == "nodes":
-		return "nodes", ""
-	case strings.HasPrefix(p, "tree/"):
-		return "list", strings.TrimSuffix(strings.TrimPrefix(p, "tree/"), "/")
-	case strings.HasPrefix(p, "space/"):
-		return "space", strings.TrimPrefix(p, "space/")
-	case strings.HasPrefix(p, "file/") && r.Method == http.MethodHead:
-		return "head", strings.TrimPrefix(p, "file/")
-	case strings.HasPrefix(p, "file/"):
-		return "range", strings.TrimPrefix(p, "file/")
+	case apiPath == "login":
+		return endpoint{kind: "login"}
+	case apiPath == "nodes":
+		return endpoint{kind: "nodes"}
+	case strings.HasPrefix(apiPath, "tree/"):
+		return endpoint{kind: "list", arg: strings.TrimSuffix(strings.TrimPrefix(apiPath, "tree/"), "/")}
+	case strings.HasPrefix(apiPath, "space/"):
+		return endpoint{kind: "space", arg: strings.TrimPrefix(apiPath, "space/")}
+	case strings.HasPrefix(apiPath, "file/") && r.Method == http.MethodHead:
+		return endpoint{kind: "head", arg: strings.TrimPrefix(apiPath, "file/")}
+	case strings.HasPrefix(apiPath, "file/"):
+		return endpoint{kind: "range", arg: strings.TrimPrefix(apiPath, "file/")}
 	}
-	return "other", p
+	return endpoint{kind: "other", arg: apiPath}
 }
 
-func (n *fakeNode) serve(w http.ResponseWriter, r *http.Request, kind, arg string) {
+func (n *fakeNode) serve(w http.ResponseWriter, r *http.Request, target endpoint) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	switch kind {
+	arg := target.arg
+	switch target.kind {
 	case "nodes":
 		writeJSON(w, n.group.nodeList())
 	case "list":
@@ -279,15 +320,15 @@ func (n *fakeNode) serve(w http.ResponseWriter, r *http.Request, kind, arg strin
 		}
 		writeJSON(w, s)
 	case "head", "range":
-		f, ok := n.files[arg]
+		stored, ok := n.files[arg]
 		if !ok {
 			writeError(w, http.StatusNotFound)
 			return
 		}
-		w.Header().Set("ETag", f.etag())
+		w.Header().Set("ETag", stored.etag())
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set(wire.HeaderHeadDigest, f.digest())
-		http.ServeContent(w, r, "", f.mtime, bytes.NewReader(f.data))
+		w.Header().Set(wire.HeaderHeadDigest, stored.digest())
+		http.ServeContent(w, r, "", stored.mtime, bytes.NewReader(stored.data))
 	default:
 		writeError(w, http.StatusNotFound)
 	}
@@ -300,16 +341,16 @@ func (n *fakeNode) list(w http.ResponseWriter, dir string) {
 		prefix = ""
 	}
 	entries := make(map[string]wire.Entry)
-	for p, f := range n.files {
-		rest, ok := strings.CutPrefix(p, prefix)
+	for filePath, stored := range n.files {
+		rest, ok := strings.CutPrefix(filePath, prefix)
 		if !ok {
 			continue
 		}
 		name, _, isDir := strings.Cut(rest, "/")
 		if isDir {
-			entries[name] = wire.Entry{Name: name, Dir: true, MTime: fileTime}
+			entries[name] = wire.Entry{Name: name, Dir: true, MTime: fileTime()}
 		} else {
-			entries[name] = wire.Entry{Name: name, Size: int64(len(f.data)), MTime: f.mtime, ETag: f.etag()}
+			entries[name] = wire.Entry{Name: name, Size: int64(len(stored.data)), MTime: stored.mtime, ETag: stored.etag()}
 		}
 	}
 	if len(entries) == 0 && dir != "" {
@@ -336,15 +377,26 @@ func (n *fakeNode) login(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, wire.LoginResponse{Token: token, Expires: n.group.clock.Now().Add(time.Hour)})
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+func writeJSON(w http.ResponseWriter, value any) {
+	writeJSONStatus(w, http.StatusOK, value)
 }
 
 func writeError(w http.ResponseWriter, status int) {
+	writeJSONStatus(w, status, wire.Error{Error: http.StatusText(status)})
+}
+
+func writeJSONStatus(w http.ResponseWriter, status int, value any) {
+	body, err := json.Marshal(value)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(wire.Error{Error: http.StatusText(status)})
+	if _, err := w.Write(body); err != nil {
+		// The client is gone. Aborting the handler is the way net/http ends it without a log line.
+		panic(http.ErrAbortHandler)
+	}
 }
 
 // fakeCluster is a set of fake nodes that share one node list.
@@ -356,11 +408,11 @@ type fakeCluster struct {
 
 func newFakeCluster(t *testing.T, clock *fakeClock, names ...string) *fakeCluster {
 	t.Helper()
-	fc := &fakeCluster{clock: clock}
+	fakes := &fakeCluster{clock: clock}
 	for _, name := range names {
 		n := &fakeNode{
 			name:   name,
-			group:  fc,
+			group:  fakes,
 			files:  make(map[string]fakeFile),
 			space:  make(map[string]wire.Space),
 			counts: make(map[string]int),
@@ -368,9 +420,9 @@ func newFakeCluster(t *testing.T, clock *fakeClock, names ...string) *fakeCluste
 		}
 		n.srv = httptest.NewServer(n)
 		t.Cleanup(n.srv.Close)
-		fc.nodes = append(fc.nodes, n)
+		fakes.nodes = append(fakes.nodes, n)
 	}
-	return fc
+	return fakes
 }
 
 func (fc *fakeCluster) nodeList() wire.Nodes {
@@ -454,26 +506,28 @@ func testCache(dir string) config.Cache {
 func newHarness(t *testing.T, names ...string) *harness {
 	t.Helper()
 	clock := newFakeClock()
-	fc := newFakeCluster(t, clock, names...)
-	c := testCache(t.TempDir())
+	fakes := newFakeCluster(t, clock, names...)
+	cacheCfg := testCache(t.TempDir())
 	cfg := &config.Config{
-		Cache: c,
+		Cache: cacheCfg,
 		Clusters: map[string]config.Cluster{testCluster: {
-			URL:            fc.nodes[0].url(),
+			URL:            fakes.nodes[0].url(),
 			User:           testUser,
 			PasswordFile:   "password",
 			BlockSize:      testBlockSize,
 			StreamsPerNode: 2,
 			ReadAhead:      4 * testBlockSize,
 		}},
-		Mounts: []config.Mount{{Cluster: testCluster, Path: "/", Target: "/mnt/files", Offline: true, Cache: c}},
+		Mounts: []config.Mount{{Cluster: testCluster, Path: "/", Target: "/mnt/files", Offline: true, Cache: cacheCfg}},
 	}
-	return &harness{t: t, clock: clock, fc: fc, cfg: cfg, logs: &syncBuffer{}}
+	return &harness{t: t, clock: clock, fc: fakes, cfg: cfg, logs: &syncBuffer{}}
 }
 
 // addMount adds a mount of path with the top-level cache settings.
 func (h *harness) addMount(path, target string) {
-	h.cfg.Mounts = append(h.cfg.Mounts, config.Mount{Cluster: testCluster, Path: path, Target: target, Offline: true, Cache: h.cfg.Cache})
+	h.cfg.Mounts = append(h.cfg.Mounts, config.Mount{
+		Cluster: testCluster, Path: path, Target: target, Offline: true, Cache: h.cfg.Cache,
+	})
 }
 
 func (h *harness) options() Options {
@@ -488,15 +542,22 @@ func (h *harness) options() Options {
 // start builds the Client, which is closed when the test ends.
 func (h *harness) start() {
 	h.t.Helper()
-	c, err := newClient(h.cfg, h.options(), h.clock)
+	started, err := newClient(h.cfg, h.options(), h.clock)
 	if err != nil {
 		h.t.Fatalf("New: %v", err)
 	}
-	h.t.Cleanup(func() { _ = c.Close() })
-	h.client = c
+	h.t.Cleanup(func() {
+		// A test may close the client itself; the second Close then finds its caches closed.
+		if err := started.Close(); err != nil && !errors.Is(err, cache.ErrClosed) {
+			h.t.Errorf("Close: %v", err)
+		}
+	})
+	h.client = started
 }
 
 // view returns the FS of mount i, starting the Client if needed.
+//
+//nolint:ireturn // FS is the interface that Client.View returns and the tests exercise.
 func (h *harness) view(i int) FS {
 	h.t.Helper()
 	if h.client == nil {
@@ -524,14 +585,14 @@ func (h *harness) fill(i int, path string, data []byte) {
 // that is cached for path.
 func (h *harness) fillBlocks(i int, path string, data []byte, count int64) {
 	h.t.Helper()
-	e := h.pin(i, path)
+	entry := h.pin(i, path)
 	for b := range count {
 		block := data[b*testBlockSize : min(int64(len(data)), (b+1)*testBlockSize)]
-		if err := e.WriteBlock(b, block); err != nil {
+		if err := entry.WriteBlock(b, block); err != nil {
 			h.t.Fatal(err)
 		}
 	}
-	if err := e.Release(); err != nil {
+	if err := entry.Release(); err != nil {
 		h.t.Fatal(err)
 	}
 }
@@ -539,10 +600,14 @@ func (h *harness) fillBlocks(i int, path string, data []byte, count int64) {
 // stored returns the bytes of the complete cache entry for path.
 func (h *harness) stored(i int, path string) []byte {
 	h.t.Helper()
-	e := h.pin(i, path)
-	defer func() { _ = e.Release() }()
-	data := make([]byte, e.Version().Size)
-	if n, err := e.ReadAt(data, 0); n != len(data) {
+	entry := h.pin(i, path)
+	defer func() {
+		if err := entry.Release(); err != nil {
+			h.t.Errorf("release the cache entry of %s: %v", path, err)
+		}
+	}()
+	data := make([]byte, entry.Version().Size)
+	if n, err := entry.ReadAt(data, 0); n != len(data) {
 		h.t.Fatalf("read cache entry of %s: %d bytes, %v", path, n, err)
 	}
 	return data
@@ -556,26 +621,44 @@ func (h *harness) pin(i int, path string) *cache.Entry {
 	if !ok {
 		h.t.Fatalf("nothing cached for %s", path)
 	}
-	e, err := h.cache(i).Acquire(key, info.Version)
+	entry, err := h.cache(i).Acquire(key, info.Version)
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	return e
+	return entry
+}
+
+// closeAfter closes closer when the test ends and fails the test if that fails.
+func closeAfter(t *testing.T, closer io.Closer) {
+	t.Helper()
+	t.Cleanup(func() {
+		if err := closer.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
 }
 
 // readFile opens name and reads it to the end in small pieces.
+// closeFile closes closer and fails the test when that fails.
+func closeFile(t *testing.T, closer io.Closer) {
+	t.Helper()
+	if err := closer.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+}
+
 func readFile(t *testing.T, fsys FS, name string) []byte {
 	t.Helper()
-	f, err := fsys.Open(context.Background(), name)
+	opened, err := fsys.Open(context.Background(), name)
 	if err != nil {
 		t.Fatalf("Open %q: %v", name, err)
 	}
 	defer func() {
-		if err := f.Close(); err != nil {
+		if err := opened.Close(); err != nil {
 			t.Errorf("Close %q: %v", name, err)
 		}
 	}()
-	return readAll(t, f)
+	return readAll(t, opened)
 }
 
 func readAll(t *testing.T, f File) []byte {

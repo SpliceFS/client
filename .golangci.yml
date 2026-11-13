@@ -1,34 +1,150 @@
+# Every linter is on, at its strictest setting. A linter or a rule is switched off only in
+# this file, and each one says why. To silence one finding in the code, use
+# //nolint:<linter> // <reason>; a nolint without a linter name or without a reason fails.
 version: "2"
 
 linters:
-  default: standard
-  enable:
-    - bodyclose
-    - copyloopvar
-    - errname
-    - errorlint
-    - gocritic
-    - gosec
-    - misspell
-    - nilerr
-    - noctx
-    - revive
-    - unconvert
-    - unparam
+  default: all
+  disable:
+    # Layout taste, not quality: where blank lines go is decided by gofmt and the reader.
+    - wsl
+    - wsl_v5
+    - nlreturn
+    # Forbids "if err := f(); err != nil", the form the Go documentation itself teaches.
+    - noinlineerr
+    # Demands every field in every struct literal. Go's zero values are part of the
+    # language, and the code relies on them on purpose.
+    - exhaustruct
+    - exhaustruct_v5
+    # Replaced by gomodguard_v2, which is on. The old one only prints a deprecation notice.
+    - gomodguard
+    # Demands tests in a package of their own. The 100% coverage gate needs tests that
+    # reach unexported code.
+    - testpackage
+
   settings:
+    # Only these modules may be imported. A new dependency has to be added here, which makes
+    # it a decision and not an accident.
+    depguard:
+      rules:
+        main:
+          list-mode: strict
+          files:
+            - $all
+          allow:
+            - $gostd
+            - github.com/SpliceFS/client
+            - github.com/SpliceFS/common
+            - github.com/go-git/go-billy/v5
+            - github.com/hanwen/go-fuse/v2
+            - github.com/willscott/go-nfs
+            - github.com/willscott/go-nfs/file
+            - github.com/willscott/go-nfs-client
+            - go.yaml.in/yaml/v3
+            - golang.org/x/text
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    exhaustive:
+      check:
+        - switch
+        - mapliteral
+        - typeswitch
     gosec:
       excludes:
-        # Reading files whose paths come from the operator's configuration is the
-        # purpose of these programs.
+        # "File inclusion via variable": the client opens the files its configuration names
+        # and the cache files it made itself. No path comes from a server.
         - G304
+    # The limit SonarQube uses for the same measure.
+    gocognit:
+      min-complexity: 15
+    gocritic:
+      enable-all: true
+      settings:
+        # The check wants every argument over 80 bytes passed by pointer, for speed. An
+        # options struct is passed by value on purpose: the function gets its own copy and
+        # cannot change the caller's, and it is passed once, not in a loop. The limit is
+        # raised far enough for those and still catches a copy that would cost.
+        hugeParam:
+          sizeThreshold: 256
+    govet:
+      enable-all: true
+      disable:
+        # Orders struct fields by size to save padding. Fields are ordered for the reader,
+        # and no struct here exists often enough for the bytes to matter.
+        - fieldalignment
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+    revive:
+      enable-all-rules: true
+      rules:
+        # Each of these repeats a linter that is on and does the same job with better
+        # judgment: mnd and goconst for constants, lll for line length, gocognit, cyclop
+        # and funlen for the size and complexity of a function.
+        - name: add-constant
+          disabled: true
+        - name: line-length-limit
+          disabled: true
+        - name: cognitive-complexity
+          disabled: true
+        - name: cyclomatic
+          disabled: true
+        - name: function-length
+          disabled: true
+        # Counts the exported types of a package against a fixed number. A package of
+        # message types has as many as the protocol has messages.
+        - name: max-public-structs
+          disabled: true
+    # Log values are passed as typed attributes (slog.String, slog.Int), never as loose
+    # key and value pairs: a missing value or a key that is not a string cannot compile.
+    sloglint:
+      attr-only: true
+      no-global: all
+      context: scope
+      static-msg: true
+      key-naming-case: snake
+    staticcheck:
+      checks:
+        - all
+    # The wire format and the configuration files use snake_case keys. This keeps them so.
+    tagliatelle:
+      case:
+        rules:
+          json: snake
+          yaml: snake
+    # Names every Go programmer reads without thinking. Any other name must say what it holds.
+    varnamelen:
+      ignore-names:
+        - i
+        - n
+        - t
+        - b
+        - r
+        - w
+        - ok
+        - id
+        - tt
+        - mu
+        - wg
+        - fs
+
   exclusions:
     rules:
-      # Tests create scratch files and directories with ordinary permissions.
+      # Tests repeat themselves on purpose and build their own errors, numbers and strings.
       - path: _test\.go
         linters:
+          - dupl
+          - err113
+          - funlen
+          - goconst
           - gosec
+          - mnd
+          - wrapcheck
 
 formatters:
   enable:
     - gofmt
+    - gofumpt
     - goimports

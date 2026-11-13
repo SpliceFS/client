@@ -40,7 +40,7 @@ func (o *openFiles) closeAll() {
 	o.mu.Unlock()
 	for h := range left {
 		if err := h.file.Close(); err != nil {
-			_ = h.mapper.errno(err)
+			h.mapper.record(err)
 		}
 	}
 }
@@ -48,6 +48,7 @@ func (o *openFiles) closeAll() {
 // server is a go-fuse server that releases the files of its mount when it stops.
 type server struct {
 	*fuse.Server
+
 	files *openFiles
 }
 

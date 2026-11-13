@@ -16,7 +16,7 @@ func listenDatagrams(t *testing.T, name string) *net.UnixConn {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { closeQuietly(conn) })
 	return conn
 }
 

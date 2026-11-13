@@ -3,6 +3,7 @@ package cache
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"slices"
 	"strings"
@@ -24,9 +25,9 @@ func (c *Cache) evictLocked(need int64) error {
 	}
 	now := c.opts.Now()
 	var victims []*entry
-	for _, e := range c.entries {
-		if e.pins == 0 {
-			victims = append(victims, e)
+	for _, cached := range c.entries {
+		if cached.pins == 0 {
+			victims = append(victims, cached)
 		}
 	}
 	// Sorting by last read puts the entries that are too old first, so the first
@@ -38,11 +39,11 @@ func (c *Cache) evictLocked(need int64) error {
 		return strings.Compare(a.base, b.base)
 	})
 	var errs []error
-	for _, e := range victims {
-		if now.Sub(e.lastRead) <= c.opts.MaxAge && !c.overLimitLocked(need) {
+	for _, victim := range victims {
+		if now.Sub(victim.lastRead) <= c.opts.MaxAge && !c.overLimitLocked(need) {
 			break
 		}
-		if err := c.removeLocked(e); err != nil {
+		if err := c.removeLocked(victim); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -58,7 +59,7 @@ func (c *Cache) overLimitLocked(need int64) bool {
 	}
 	room, err := c.roomFor(need, c.opts.MinFree)
 	if err != nil {
-		c.log.Warn("read free space", "dir", c.opts.Dir, "error", err)
+		c.log.Warn("read free space", slog.String("dir", c.opts.Dir), slog.Any("error", err))
 		return false
 	}
 	return !room
@@ -86,8 +87,11 @@ func (c *Cache) reserve(size int64) error {
 	room, err := c.roomFor(size, minFree)
 	if err == nil && !room {
 		c.mu.Lock()
-		c.warn("evict for free space", c.evictLocked(size))
+		evictErr := c.evictLocked(size)
 		c.mu.Unlock()
+		if evictErr != nil {
+			c.log.Warn("evict for free space", slog.Any("error", evictErr))
+		}
 		room, err = c.roomFor(size, minFree)
 	}
 	switch {

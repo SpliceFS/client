@@ -50,8 +50,8 @@ func TestDefaultDirs(t *testing.T) {
 	t.Cleanup(func() { defaultConfigDir, defaultCacheDir = oldConfig, oldCache })
 
 	defaultConfigDir, defaultCacheDir = "", ""
-	wantConfig, _ := resolveDir("", osConfigDir, os.UserHomeDir)
-	wantCache, _ := resolveDir("", osCacheDir, os.UserHomeDir)
+	wantConfig := resolveOSDir(t, osConfigDir)
+	wantCache := resolveOSDir(t, osCacheDir)
 	if got, err := DefaultConfigDir(); err != nil || got != wantConfig {
 		t.Errorf("DefaultConfigDir = %q, %v, want %q", got, err, wantConfig)
 	}
@@ -60,10 +60,20 @@ func TestDefaultDirs(t *testing.T) {
 	}
 
 	defaultConfigDir, defaultCacheDir = "/c", "/s"
-	if got, _ := DefaultConfigDir(); got != "/c" {
-		t.Errorf("DefaultConfigDir = %q, want the build setting", got)
+	if got, err := DefaultConfigDir(); err != nil || got != "/c" {
+		t.Errorf("DefaultConfigDir = %q, %v, want the build setting", got, err)
 	}
-	if got, _ := DefaultCacheDir(); got != "/s" {
-		t.Errorf("DefaultCacheDir = %q, want the build setting", got)
+	if got, err := DefaultCacheDir(); err != nil || got != "/s" {
+		t.Errorf("DefaultCacheDir = %q, %v, want the build setting", got, err)
 	}
+}
+
+// resolveOSDir resolves the operating system default of a directory for the real home directory.
+func resolveOSDir(t *testing.T, fallback string) string {
+	t.Helper()
+	dir, err := resolveDir("", fallback, os.UserHomeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

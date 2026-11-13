@@ -51,17 +51,17 @@ func logLines(buf *bytes.Buffer) int {
 func TestErrorMapperLogsEachTextOnce(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	m := newErrorMapper(slog.New(slog.NewTextHandler(&buf, nil)))
+	mapper := newErrorMapper(slog.New(slog.NewTextHandler(&buf, nil)))
 
 	for range 3 {
-		if got := m.errno(errors.New("boom")); got != syscall.EIO {
+		if got := mapper.errno(errors.New("boom")); got != syscall.EIO {
 			t.Fatalf("errno = %v, want EIO", got)
 		}
 	}
 	if got := logLines(&buf); got != 1 {
 		t.Fatalf("logged %d lines for one repeated text, want 1:\n%s", got, buf.String())
 	}
-	_ = m.errno(errors.New("different"))
+	mapper.record(errors.New("different"))
 	if got := logLines(&buf); got != 2 {
 		t.Fatalf("logged %d lines for two texts, want 2", got)
 	}
@@ -73,9 +73,13 @@ func TestErrorMapperLogsEachTextOnce(t *testing.T) {
 func TestErrorMapperIsSilentForKnownErrors(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	m := newErrorMapper(slog.New(slog.NewTextHandler(&buf, nil)))
-	for _, err := range []error{core.ErrNotExist, core.ErrNotDir, core.ErrIsDir, core.ErrUnavailable, context.Canceled, context.DeadlineExceeded} {
-		_ = m.errno(err)
+	mapper := newErrorMapper(slog.New(slog.NewTextHandler(&buf, nil)))
+	known := []error{
+		core.ErrNotExist, core.ErrNotDir, core.ErrIsDir, core.ErrUnavailable,
+		context.Canceled, context.DeadlineExceeded,
+	}
+	for _, err := range known {
+		mapper.record(err)
 	}
 	if buf.Len() != 0 {
 		t.Fatalf("known errors were logged:\n%s", buf.String())
@@ -85,9 +89,9 @@ func TestErrorMapperIsSilentForKnownErrors(t *testing.T) {
 func TestErrorMapperRemembersBoundedNumberOfTexts(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	m := newErrorMapper(slog.New(slog.NewTextHandler(&buf, nil)))
+	mapper := newErrorMapper(slog.New(slog.NewTextHandler(&buf, nil)))
 	for i := range maxLoggedErrors + 10 {
-		_ = m.errno(fmt.Errorf("failure %d", i))
+		mapper.record(fmt.Errorf("failure %d", i))
 	}
 	if got := logLines(&buf); got != maxLoggedErrors {
 		t.Fatalf("logged %d lines, want the cap of %d", got, maxLoggedErrors)

@@ -118,22 +118,22 @@ func TestMergeRules(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			l := newLister("n3", "n1", "n2", "n4")
+			lister := newLister("n3", "n1", "n2", "n4")
 			for node, entries := range tt.nodes {
-				l.say(node, "", entries...)
+				lister.say(node, "", entries...)
 			}
-			tr, _ := newTree(l, Options{})
-			checkEntries(t, mustList(t, tr, ""), tt.want)
+			tree, _ := newTree(lister, Options{})
+			checkEntries(t, mustList(t, tree, ""), tt.want)
 		})
 	}
 }
 
 func TestAnEmptyDirectoryIsNotMissing(t *testing.T) {
 	t.Parallel()
-	l := newLister("n1", "n2")
-	l.say("n1", "empty")
-	tr, _ := newTree(l, Options{})
-	got := mustList(t, tr, "empty")
+	lister := newLister("n1", "n2")
+	lister.say("n1", "empty")
+	tree, _ := newTree(lister, Options{})
+	got := mustList(t, tree, "empty")
 	if len(got) != 0 {
 		t.Errorf("List = %+v, want no entries", got)
 	}
@@ -141,74 +141,74 @@ func TestAnEmptyDirectoryIsNotMissing(t *testing.T) {
 
 func TestKeepEntriesOfSilentNodes(t *testing.T) {
 	t.Parallel()
-	l := newLister("n1", "n2")
-	l.say("n1", "", wfile("a", 1, at(1), "e"), wdir("sub", at(1)), wfile("b", 1, at(1), "e"))
-	l.say("n2", "", wfile("b", 1, at(1), "e"), wfile("c", 1, at(1), "e"))
-	tr, _ := newTree(l, Options{})
-	checkNames(t, "first listing", mustList(t, tr, ""), "a", "b", "c", "sub")
+	lister := newLister("n1", "n2")
+	lister.say("n1", "", wfile("a", 1, at(1), "e"), wdir("sub", at(1)), wfile("b", 1, at(1), "e"))
+	lister.say("n2", "", wfile("b", 1, at(1), "e"), wfile("c", 1, at(1), "e"))
+	tree, _ := newTree(lister, Options{})
+	checkNames(t, "first listing", mustList(t, tree, ""), "a", "b", "c", "sub")
 
 	// n1 stops answering: what only n1 reported stays, what only n2 reported goes.
-	l.fail("n1", "", errDown)
-	l.say("n2", "", wfile("b", 1, at(1), "e"))
-	checkNames(t, "n1 silent", mustList(t, tr, ""), "a", "b", "sub")
+	lister.fail("n1", "", errDown)
+	lister.say("n2", "", wfile("b", 1, at(1), "e"))
+	checkNames(t, "n1 silent", mustList(t, tree, ""), "a", "b", "sub")
 
 	// n1 answering that it has no such directory is an answer: its names go.
-	l.fail("n1", "", errGone)
-	checkNames(t, "n1 answers not found", mustList(t, tr, ""), "b")
+	lister.fail("n1", "", errGone)
+	checkNames(t, "n1 answers not found", mustList(t, tree, ""), "b")
 }
 
 func TestKeptEntryIsUnchanged(t *testing.T) {
 	t.Parallel()
-	l := newLister("n1", "n2")
-	l.say("n1", "", wfile("a", 7, at(3), "tag"))
-	l.say("n2", "", wfile("a", 7, at(3), "tag"))
-	tr, _ := newTree(l, Options{})
-	first := mustList(t, tr, "")
+	lister := newLister("n1", "n2")
+	lister.say("n1", "", wfile("a", 7, at(3), "tag"))
+	lister.say("n2", "", wfile("a", 7, at(3), "tag"))
+	tree, _ := newTree(lister, Options{})
+	first := mustList(t, tree, "")
 
-	l.fail("n1", "", errDown)
-	l.say("n2", "")
-	checkEntries(t, mustList(t, tr, ""), first)
+	lister.fail("n1", "", errDown)
+	lister.say("n2", "")
+	checkEntries(t, mustList(t, tree, ""), first)
 }
 
 func TestSilentReportersOfAnEntryThatIsStillListedAreRemembered(t *testing.T) {
 	t.Parallel()
-	l := newLister("n1", "n2")
-	l.say("n1", "", wfile("a", 1, at(1), "e"))
-	l.say("n2", "", wfile("a", 1, at(1), "e"))
-	tr, _ := newTree(l, Options{})
-	mustList(t, tr, "")
+	lister := newLister("n1", "n2")
+	lister.say("n1", "", wfile("a", 1, at(1), "e"))
+	lister.say("n2", "", wfile("a", 1, at(1), "e"))
+	tree, _ := newTree(lister, Options{})
+	mustList(t, tree, "")
 
 	// n2 alone still lists a while n1 is silent.
-	l.fail("n1", "", errDown)
-	checkNames(t, "n1 silent", mustList(t, tr, ""), "a")
+	lister.fail("n1", "", errDown)
+	checkNames(t, "n1 silent", mustList(t, tree, ""), "a")
 	// n2 drops it, and n1 may still have it.
-	l.say("n2", "")
-	checkNames(t, "n2 dropped it", mustList(t, tr, ""), "a")
+	lister.say("n2", "")
+	checkNames(t, "n2 dropped it", mustList(t, tree, ""), "a")
 	// n1 answers and it is really gone.
-	l.say("n1", "")
-	checkNames(t, "n1 answered", mustList(t, tr, ""))
+	lister.say("n1", "")
+	checkNames(t, "n1 answered", mustList(t, tree, ""))
 }
 
 func TestNoNodeAnsweringReturnsThePreviousListing(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		degrade func(l *fakeLister)
+		degrade func(lister *fakeLister)
 	}{
-		{"every node silent", func(l *fakeLister) { l.fail("n1", "", errDown) }},
-		{"the node list cannot be fetched", func(l *fakeLister) { l.nodesErr = errDown }},
+		{"every node silent", func(lister *fakeLister) { lister.fail("n1", "", errDown) }},
+		{"the node list cannot be fetched", func(lister *fakeLister) { lister.nodesErr = errDown }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			l := newLister("n1")
-			l.say("n1", "", wfile("a", 1, at(1), "e"))
-			tr, clk := newTree(l, Options{TTL: time.Minute})
-			first := mustList(t, tr, "")
+			lister := newLister("n1")
+			lister.say("n1", "", wfile("a", 1, at(1), "e"))
+			tree, clk := newTree(lister, Options{TTL: time.Minute})
+			first := mustList(t, tree, "")
 
 			clk.Advance(24 * time.Hour)
-			tt.degrade(l)
-			checkEntries(t, mustList(t, tr, ""), first)
+			tt.degrade(lister)
+			checkEntries(t, mustList(t, tree, ""), first)
 		})
 	}
 }
@@ -217,19 +217,19 @@ func TestNoNodeAnsweringWithNothingRememberedIsUnavailable(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		setup func(l *fakeLister)
+		setup func(lister *fakeLister)
 	}{
-		{"every node silent", func(l *fakeLister) { l.fail("n1", "", errDown) }},
-		{"the node list cannot be fetched", func(l *fakeLister) { l.nodesErr = errDown }},
-		{"there are no nodes", func(l *fakeLister) { l.nodes = nil }},
+		{"every node silent", func(lister *fakeLister) { lister.fail("n1", "", errDown) }},
+		{"the node list cannot be fetched", func(lister *fakeLister) { lister.nodesErr = errDown }},
+		{"there are no nodes", func(lister *fakeLister) { lister.nodes = nil }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			l := newLister("n1")
-			tt.setup(l)
-			tr, _ := newTree(l, Options{})
-			if _, err := tr.List(context.Background(), ""); !errors.Is(err, ErrUnavailable) {
+			lister := newLister("n1")
+			tt.setup(lister)
+			tree, _ := newTree(lister, Options{})
+			if _, err := tree.List(context.Background(), ""); !errors.Is(err, ErrUnavailable) {
 				t.Errorf("List = %v, want ErrUnavailable", err)
 			}
 		})
@@ -238,14 +238,14 @@ func TestNoNodeAnsweringWithNothingRememberedIsUnavailable(t *testing.T) {
 
 func TestMissingDirectoryIsNotAListingToFallBackOn(t *testing.T) {
 	t.Parallel()
-	l := newLister("n1")
-	tr, clk := newTree(l, Options{})
-	if _, err := tr.List(context.Background(), "gone"); !errors.Is(err, ErrNotFound) {
+	lister := newLister("n1")
+	tree, clk := newTree(lister, Options{})
+	if _, err := tree.List(context.Background(), "gone"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("List = %v, want ErrNotFound", err)
 	}
 	clk.Advance(time.Hour)
-	l.fail("n1", "gone", errDown)
-	if _, err := tr.List(context.Background(), "gone"); !errors.Is(err, ErrUnavailable) {
+	lister.fail("n1", "gone", errDown)
+	if _, err := tree.List(context.Background(), "gone"); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("List = %v, want ErrUnavailable", err)
 	}
 }

@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"log/slog"
 	"slices"
 
 	"github.com/SpliceFS/client/config"
@@ -32,53 +33,77 @@ func (c *Client) Apply(cfg *config.Config) error {
 		c.mu.Unlock()
 		return errClosed
 	}
-	oldClusters, oldCaches := c.clusters, c.caches
+	old := generation{clusters: c.clusters, caches: c.caches}
 	c.mu.Unlock()
 
-	clusters, caches, err := build(cfg, c.opts, oldClusters, oldCaches)
+	next, err := build(cfg, c.opts, old)
 	if err != nil {
 		return err
 	}
 
-	var done retired
 	c.mu.Lock()
-	c.clusters, c.caches = clusters, caches
-	for _, m := range cfg.Mounts {
-		if d, ok := oldCaches[m.Cache.Dir]; ok {
-			d.SetLimits(int64(m.Cache.MaxSize), m.Cache.MaxAge.Std(), int64(m.Cache.MinFree))
-		}
-	}
-	for name, cl := range oldClusters {
-		if clusters[name] == cl {
-			continue
-		}
-		cl.retired = true
-		if cl.holds == 0 {
-			done.clusters = append(done.clusters, cl)
-		} else {
-			c.retiredClusters = append(c.retiredClusters, cl)
-		}
-	}
-	for dir, d := range oldCaches {
-		if caches[dir] == d {
-			continue
-		}
-		d.retired = true
-		if d.holds == 0 {
-			done.caches = append(done.caches, d)
-		} else {
-			c.retiredCaches = append(c.retiredCaches, d)
-		}
-	}
+	done := c.install(cfg, old, next)
 	c.mu.Unlock()
 
 	c.closeRetired(done)
-	for dir, d := range caches {
-		if oldCaches[dir] != d {
-			d.maybeEvict()
+	for dir, store := range next.caches {
+		if old.caches[dir] != store {
+			store.maybeEvict()
 		}
 	}
 	return nil
+}
+
+// install makes next the current generation and returns what the swap left unused. The
+// caller holds c.mu.
+func (c *Client) install(cfg *config.Config, old, next generation) retired {
+	c.clusters, c.caches = next.clusters, next.caches
+	for i := range cfg.Mounts {
+		cacheCfg := &cfg.Mounts[i].Cache
+		if store, ok := old.caches[cacheCfg.Dir]; ok {
+			store.SetLimits(int64(cacheCfg.MaxSize), cacheCfg.MaxAge.Std(), int64(cacheCfg.MinFree))
+		}
+	}
+	return retired{
+		clusters: c.retireClusters(old.clusters, next.clusters),
+		caches:   c.retireCaches(old.caches, next.caches),
+	}
+}
+
+// retireClusters marks the clusters that next dropped as retired. Those that no view holds
+// are returned to be closed; the others wait in the client until the last view is
+// released. The caller holds c.mu.
+func (c *Client) retireClusters(old, next map[string]*cluster) []*cluster {
+	var unused []*cluster
+	for name, clus := range old {
+		if next[name] == clus {
+			continue
+		}
+		clus.retired = true
+		if clus.holds == 0 {
+			unused = append(unused, clus)
+		} else {
+			c.retiredClusters = append(c.retiredClusters, clus)
+		}
+	}
+	return unused
+}
+
+// retireCaches does for cache directories what retireClusters does for clusters.
+func (c *Client) retireCaches(old, next map[string]*cacheDir) []*cacheDir {
+	var unused []*cacheDir
+	for dir, store := range old {
+		if next[dir] == store {
+			continue
+		}
+		store.retired = true
+		if store.holds == 0 {
+			unused = append(unused, store)
+		} else {
+			c.retiredCaches = append(c.retiredCaches, store)
+		}
+	}
+	return unused
 }
 
 // Release says that the mount that used fs has ended. It drops the view's hold on its
@@ -86,28 +111,28 @@ func (c *Client) Apply(cfg *config.Config) error {
 // any more. A value that is not a view of this client, or a view that was released
 // already, is ignored.
 func (c *Client) Release(fs FS) {
-	v, ok := fs.(*view)
-	if !ok || v.client != c {
+	mountView, ok := fs.(*view)
+	if !ok || mountView.client != c {
 		return
 	}
 	var done retired
 	c.mu.Lock()
-	if v.released {
+	if mountView.released {
 		c.mu.Unlock()
 		return
 	}
-	v.released = true
-	v.c.holds--
-	v.cache.holds--
-	if v.c.retired && v.c.holds == 0 && !c.closed {
+	mountView.released = true
+	mountView.c.holds--
+	mountView.cache.holds--
+	if mountView.c.retired && mountView.c.holds == 0 && !c.closed {
 		c.retiredClusters = slices.DeleteFunc(c.retiredClusters,
-			func(cl *cluster) bool { return cl == v.c })
-		done.clusters = append(done.clusters, v.c)
+			func(clus *cluster) bool { return clus == mountView.c })
+		done.clusters = append(done.clusters, mountView.c)
 	}
-	if v.cache.retired && v.cache.holds == 0 && !c.closed {
+	if mountView.cache.retired && mountView.cache.holds == 0 && !c.closed {
 		c.retiredCaches = slices.DeleteFunc(c.retiredCaches,
-			func(d *cacheDir) bool { return d == v.cache })
-		done.caches = append(done.caches, v.cache)
+			func(store *cacheDir) bool { return store == mountView.cache })
+		done.caches = append(done.caches, mountView.cache)
 	}
 	c.mu.Unlock()
 	c.closeRetired(done)
@@ -117,25 +142,27 @@ func (c *Client) Release(fs FS) {
 // would hand out for the same mount now, which is false after Apply replaced or removed
 // either of them, and for a value that is not a view of this client.
 func (c *Client) Current(fs FS) bool {
-	v, ok := fs.(*view)
-	if !ok || v.client != c {
+	mountView, ok := fs.(*view)
+	if !ok || mountView.client != c {
 		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.clusters[v.mount.Cluster] == v.c && c.caches[v.mount.Cache.Dir] == v.cache
+	return c.clusters[mountView.mount.Cluster] == mountView.c &&
+		c.caches[mountView.mount.Cache.Dir] == mountView.cache
 }
 
 // closeRetired closes what a reload retired. It runs without the client's lock, because
 // closing a cache writes its metadata. A cache that fails to close is logged: the reload
 // or the unmount that caused it has happened already and cannot be undone.
-func (c *Client) closeRetired(r retired) {
-	for _, cl := range r.clusters {
-		cl.close()
+func (c *Client) closeRetired(done retired) {
+	for _, clus := range done.clusters {
+		clus.close()
 	}
-	for _, d := range r.caches {
-		if err := d.Close(); err != nil {
-			c.opts.Logger.Warn("close replaced cache", "dir", d.dir, "error", err)
+	for _, store := range done.caches {
+		if err := store.Close(); err != nil {
+			c.opts.Logger.Warn("close replaced cache",
+				slog.String("dir", store.dir), slog.Any("error", err))
 		}
 	}
 }

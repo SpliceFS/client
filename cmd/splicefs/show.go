@@ -20,16 +20,21 @@ type shownConfig struct {
 // shownMount is a mount led by its name, which the configuration takes from the file name,
 // so that the list says which mount each entry is.
 type shownMount struct {
-	Name         string `yaml:"name"`
-	config.Mount `yaml:",inline"`
+	Name string `yaml:"name"`
+	// Mount is inlined, not embedded: embedded fields must come first, and the name has to
+	// lead the entry.
+	Mount config.Mount `yaml:",inline"`
 }
+
+// yamlIndent is the number of spaces config show indents a level by.
+const yamlIndent = 2
 
 // showConfig writes the effective configuration as YAML. A value that a file set ends with
 // a comment naming that file; a value nobody set is a default and has none.
 func showConfig(w io.Writer, cfg *config.Config) error {
 	shown := shownConfig{Cache: cfg.Cache, Clusters: cfg.Clusters}
-	for _, m := range cfg.Mounts {
-		shown.Mounts = append(shown.Mounts, shownMount{Name: m.Name, Mount: m})
+	for i := range cfg.Mounts {
+		shown.Mounts = append(shown.Mounts, shownMount{Name: cfg.Mounts[i].Name, Mount: cfg.Mounts[i]})
 	}
 	// Encoding these types cannot fail; if it ever did, the encoder below reports the empty
 	// node and this error together.
@@ -37,7 +42,7 @@ func showConfig(w io.Writer, cfg *config.Config) error {
 	encodeErr := doc.Encode(shown)
 	annotate(&doc, "", cfg.Sources)
 	enc := yaml.NewEncoder(w)
-	enc.SetIndent(2)
+	enc.SetIndent(yamlIndent)
 	return errors.Join(encodeErr, enc.Encode(&doc))
 }
 
@@ -60,6 +65,8 @@ func annotate(n *yaml.Node, prefix string, sources map[string]string) {
 			}
 		case set:
 			value.LineComment = "# " + file
+		default:
+			// A value nobody set is a default and carries no comment.
 		}
 	}
 }

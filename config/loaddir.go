@@ -25,12 +25,12 @@ type rawSettings struct {
 // that the files and directories the configuration names exist. When the configuration is
 // invalid the error lists every problem found and names the file a bad value came from.
 func LoadDir(dir string) (*Config, error) {
-	return loadDir(dir, DefaultCacheDir)
+	return loadWithCacheDir(dir, DefaultCacheDir)
 }
 
-// loadDir is LoadDir with the lookup of the default cache directory passed in, so tests
-// need not depend on the machine they run on.
-func loadDir(dir string, cacheDir func() (string, error)) (*Config, error) {
+// loadWithCacheDir is LoadDir with the lookup of the default cache directory passed in, so
+// tests need not depend on the machine they run on.
+func loadWithCacheDir(dir string, cacheDir func() (string, error)) (*Config, error) {
 	sources := make(map[string]string)
 	settings, problems := readSettings(dir, sources)
 	clusters, found := readNamed[rawCluster](dir, clustersDirName, "clusters", sources)
