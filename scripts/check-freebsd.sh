@@ -31,9 +31,12 @@ archive="$work/$machine/in.tar"
 run_tests() {
     release="$1"
     disk="$2"
-    job="$work/job-$release"
-    results="$work/results-$release"
-    rm -rf "$results"
+    # Not under $work: the container that built the test programs made that folder, as root
+    # on Linux, and this script, which runs as the user, could not create anything in it.
+    job="$out/freebsd-check-job/$release"
+    results="$out/freebsd-check-results/$release"
+    rm -rf "$results" 2>/dev/null || true
+    mkdir -p "$results"
     freebsd_job_folder "$job" freebsd-check-job.sh "${FREEBSD_ONLY:-}"
     echo "FreeBSD $release ($machine): running the tests"
     freebsd_run "$disk" "$job" "$results" "$archive" ||
