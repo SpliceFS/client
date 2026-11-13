@@ -1,3 +1,6 @@
+# shellcheck shell=sh
+# The scripts that source this file read these variables; this file reads none of them.
+# shellcheck disable=SC2034
 # Sourced by the package scripts. Says what is being packaged and what its version is
 # called in each package format.
 : "${VERSION:?VERSION is not set}"
@@ -26,6 +29,7 @@ tag="$VERSION"
 dirty=""
 case "$tag" in
     *-dirty) dirty=dirty; tag="${tag%-dirty}" ;;
+    *) ;; # a clean tree has nothing to strip
 esac
 core=0.0.0
 pre=""

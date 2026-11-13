@@ -19,6 +19,7 @@ fail() {
     exit 1
 }
 
+# shellcheck source=packaging/freebsd/check-lib.sh
 . "$in/check-lib.sh"
 
 major="$(freebsd-version -u | cut -d. -f1)"
@@ -43,7 +44,8 @@ build() {
     sed -e "s|@NAME@|$name|" -e "s|@PROGRAM@|$program|g" -e "s|@VERSION@|$version|" \
         -e "s|@ABI@|FreeBSD:$major:$abiarch|" "$in/manifest.in" > "/tmp/manifest-$goarch"
     mkdir -p "$out/FreeBSD-$major-$abiarch"
-    pkg -o ABI="FreeBSD:$major:$abiarch" -o OSVERSION="$(uname -K)" create \
+    osversion="$(uname -K)"
+    pkg -o ABI="FreeBSD:$major:$abiarch" -o OSVERSION="$osversion" create \
         -M "/tmp/manifest-$goarch" -p "$in/plist" -r "$stage" -o "$out/FreeBSD-$major-$abiarch"
 }
 build amd64 amd64
@@ -58,14 +60,20 @@ package="$mine/$name-$version.pkg"
 [ -f "$package" ] || fail "pkg create did not write $package"
 pkg info -F "$package" > "$out/info-$machine.txt"
 
-# Waits until the command given succeeds, at most $1 seconds.
+# Waits until the command given succeeds, at most $1 seconds. Sets wait_status to 0 when it
+# did and to 1 when the time ran out, and never fails itself, so that the caller reports the
+# timeout (a function used as a condition runs with set -e off).
 wait_for() {
     limit="$1"
     shift
     n=0
+    wait_status=0
     until "$@" >/dev/null 2>&1; do
         n=$((n + 1))
-        [ "$n" -lt "$limit" ] || return 1
+        if [ "$n" -ge "$limit" ]; then
+            wait_status=1
+            return 0
+        fi
         sleep 1
     done
 }
@@ -73,6 +81,8 @@ wait_for() {
 show() {
     service "$program" status || true
     ls -la "/var/run/$program" || true
+    # pgrep prints no column header and no jail column, which are what a person looks for here.
+    # shellcheck disable=SC2009
     ps axww -o pid,jid,user,command | grep -e "$program" -e '^ *PID' | grep -v grep || true
     tail -n 30 "/var/log/$program.log" 2>/dev/null || true
 }
@@ -86,18 +96,25 @@ pkg add "$package"
 # setting, so it starts at boot, and one command starts it now.
 service "$program" enabled || fail "the service is not enabled after the install"
 service "$program" start || { show; fail "the service did not start"; }
-wait_for 20 service "$program" status || { show; fail "the service is not running after its start"; }
-wait_for 20 answers || { show; fail "the service does not do its job after its start"; }
-owner="$(ps -o user= -p "$(cat "/var/run/$program/$program.pid")")"
+wait_for 20 service "$program" status
+[ "$wait_status" -eq 0 ] || { show; fail "the service is not running after its start"; }
+wait_for 20 answers
+[ "$wait_status" -eq 0 ] || { show; fail "the service does not do its job after its start"; }
+service_pid="$(cat "/var/run/$program/$program.pid")"
+owner="$(ps -o user= -p "$service_pid")"
 [ "$owner" = "$expected_user" ] || fail "the service runs as '$owner', not as $expected_user"
 service "$program" reload || fail "reload failed"
-wait_for 10 answers || { show; fail "the service does not do its job after a reload"; }
+wait_for 10 answers
+[ "$wait_status" -eq 0 ] || { show; fail "the service does not do its job after a reload"; }
 service "$program" restart >/dev/null || fail "restart failed"
-wait_for 20 answers || { show; fail "the service does not do its job after a restart"; }
+wait_for 20 answers
+[ "$wait_status" -eq 0 ] || { show; fail "the service does not do its job after a restart"; }
 echo "installed, enabled, started with one command, running as $expected_user, answering, reload and restart work"
 
 # Removing the package stops the service and leaves nothing running.
 pkg delete -y "$name" >/dev/null
+# answers is one command whose status is the answer, so running it without set -e changes nothing.
+# shellcheck disable=SC2310
 if answers; then fail "the service still answers after the package was removed"; fi
 [ ! -e "/usr/local/bin/$program" ] || fail "remove left the program behind"
 echo "removed: the service stopped"

@@ -12,14 +12,22 @@ keys="$root/dist/keys"
 files="splicefs-openpgp-signing-subkey.asc splicefs.asc splicefs.rsa splicefs.rsa.pub"
 image="${LINUX_IMAGE:-golang:1.27}"
 
-have_all() {
-    for f in $files; do [ -f "$1/$f" ] || return 1; done
+# Sets missing to the names in $files that the folder $1 lacks, empty when it has them all.
+# A function that is used as a condition runs with set -e off, so it reports in a variable.
+find_missing() {
+    missing=""
+    for f in $files; do
+        [ -f "$1/$f" ] || missing="$missing $f"
+    done
 }
 
 mkdir -p "$keys"
+find_missing "$keys"
+keys_missing="$missing"
 
 if [ -n "${SIGNING_DIR:-}" ]; then
-    have_all "$SIGNING_DIR" || {
+    find_missing "$SIGNING_DIR"
+    [ -z "$missing" ] || {
         echo "FAIL: $SIGNING_DIR must hold: $files" >&2
         exit 1
     }
@@ -27,13 +35,15 @@ if [ -n "${SIGNING_DIR:-}" ]; then
         cp "$SIGNING_DIR/$f" "$keys/$f"
     done
     echo "signing keys: real keys from SIGNING_DIR"
-elif have_all "$keys"; then
+elif [ -z "$keys_missing" ]; then
     echo "signing keys: throwaway test keys in dist/keys (never publish packages signed with them)"
 else
     # The container has gpg and openssl, so the host needs neither. The OpenPGP home lives in
     # the container's own temporary filesystem. The primary key only certifies; the secret
     # export holds just the signing subkey, the way a real signing key is kept.
-    docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$keys":/keys "$image" sh -eu -c '
+    host_uid="$(id -u)"
+    host_gid="$(id -g)"
+    docker run --rm --user "$host_uid:$host_gid" -e HOME=/tmp -v "$keys":/keys "$image" sh -eu -c '
         export GNUPGHOME="$(mktemp -d)"
         chmod 700 "$GNUPGHOME"
         uid="SpliceFS test key <test@example.invalid>"

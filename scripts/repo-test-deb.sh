@@ -45,7 +45,11 @@ grep -Eq 'BADSIG|not signed|signatures were invalid|NO_PUBKEY' /tmp/bad.log || {
     cat /tmp/bad.log
     fail "apt-get update failed, but not with a signature error"
 }
-echo "damaged repository refused: $(grep -Em1 'BADSIG|not signed|invalid|NO_PUBKEY' /tmp/bad.log)"
+refused="$(grep -Em1 'BADSIG|not signed|invalid|NO_PUBKEY' /tmp/bad.log)"
+echo "damaged repository refused: $refused"
 
+# shellcheck source=/dev/null
 . /etc/os-release
+# PRETTY_NAME comes from /etc/os-release, which ShellCheck cannot read here.
+# shellcheck disable=SC2154
 echo "repository test passed on $PRETTY_NAME"

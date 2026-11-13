@@ -5,6 +5,7 @@
 set -eu
 
 out="${1:?usage: package-binaries.sh OUTPUT_DIR}"
+# shellcheck source=package-lib.sh
 . scripts/package-lib.sh
 module="$(go list -m)"
 

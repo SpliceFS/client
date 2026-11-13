@@ -11,7 +11,8 @@ archs="amd64 arm64"
 
 mkdir -p "$repo/pool"
 set -- "$out"/*.deb
-[ -e "$1" ] || [ -n "$(find "$repo/pool" -name '*.deb' | head -n 1)" ] || {
+pooled="$(find "$repo/pool" -name '*.deb' | head -n 1)"
+[ -e "$1" ] || [ -n "$pooled" ] || {
     echo "FAIL: no .deb files in $out; run make package first" >&2
     exit 1
 }
@@ -22,7 +23,9 @@ apt-get update -qq
 apt-get install -y -qq apt-utils >/dev/null
 
 # A published version must never change, so a pool file with the same name and different
-# content stops the run. Sorted input keeps the result the same on every run.
+# content stops the run. Sorted input keeps the result the same on every run. ls prints
+# nothing when no file matches; a glob would run the loop once with the pattern itself.
+# shellcheck disable=SC2012
 for deb in $(ls "$out"/*.deb 2>/dev/null | sort); do
     file="$(basename "$deb")"
     name="${file%%_*}"
@@ -59,7 +62,8 @@ mv "$out/Release.tmp" "dists/$suite/Release"
 
 # The signing home lives in this container's temporary filesystem and dies with it. The
 # secret file holds the signing subkey only, with no passphrase.
-export GNUPGHOME="$(mktemp -d)"
+GNUPGHOME="$(mktemp -d)"
+export GNUPGHOME
 chmod 700 "$GNUPGHOME"
 gpg --batch --quiet --import /keys/splicefs-openpgp-signing-subkey.asc 2>/dev/null
 fpr="$(gpg --list-secret-keys --with-colons | awk -F: '$1=="fpr"{print $10; exit}')"
@@ -68,4 +72,5 @@ gpg --batch --yes --pinentry-mode loopback --passphrase "" --default-key "$fpr" 
 gpg --batch --yes --pinentry-mode loopback --passphrase "" --default-key "$fpr" \
     --clearsign -o "dists/$suite/InRelease" "dists/$suite/Release"
 
-echo "built apt repository: $(find pool -name '*.deb' | wc -l | tr -d ' ') packages"
+count="$(find pool -name '*.deb' | wc -l | tr -d ' ')"
+echo "built apt repository: $count packages"

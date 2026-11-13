@@ -1,0 +1,15 @@
+# Every optional check is on. A check is switched off only here, and each one says why.
+enable=all
+
+# Wants braces around every variable ($x written as ${x}). That is layout taste, not quality,
+# and the scripts follow the plain form everywhere.
+disable=SC2250
+
+# Wants [[ ]] instead of [ ]. The scripts are POSIX sh, which has no [[ ]].
+disable=SC2292
+
+# Follow files that are sourced, so that variables set there are known. The scripts source
+# their libraries by a path from the repository root, one folder above scripts/.
+external-sources=true
+source-path=SCRIPTDIR
+source-path=SCRIPTDIR/..

@@ -10,7 +10,8 @@ out="${1:?usage: repo-rpm.sh OUTPUT_DIR}"
 repo="$out/repo/rpm"
 
 set -- "$out"/*.rpm
-[ -e "$1" ] || [ -n "$(find "$repo" -name '*.rpm' 2>/dev/null | head -n 1)" ] || {
+pooled="$(find "$repo" -name '*.rpm' 2>/dev/null | head -n 1)"
+[ -e "$1" ] || [ -n "$pooled" ] || {
     echo "FAIL: no .rpm files in $out; run make package first" >&2
     exit 1
 }
@@ -20,14 +21,17 @@ dnf install -y -q createrepo_c rpm-sign gnupg2 >/dev/null
 # The signing home lives in this container's temporary filesystem and dies with it. The
 # secret file holds the signing subkey only, with no passphrase. The rpm macros are given on
 # the command line, so nothing about signing is written into the repository or the image.
-export GNUPGHOME="$(mktemp -d)"
+GNUPGHOME="$(mktemp -d)"
+export GNUPGHOME
 chmod 700 "$GNUPGHOME"
 gpg --batch --quiet --import /keys/splicefs-openpgp-signing-subkey.asc 2>/dev/null
 fpr="$(gpg --list-secret-keys --with-colons | awk -F: '$1=="fpr"{print $10; exit}')"
 sign_define="--define '_gpg_name $fpr' --define '_gpg_path $GNUPGHOME'"
 
-# Sorted input keeps the result the same on every run.
+# Sorted input keeps the result the same on every run. ls prints nothing when no file
+# matches; a glob would run the loop once with the pattern itself.
 changed=""
+# shellcheck disable=SC2012
 for rpm in $(ls "$out"/*.rpm 2>/dev/null | sort); do
     file="$(basename "$rpm")"
     arch="${file%.rpm}"

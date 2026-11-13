@@ -15,6 +15,7 @@
 !/.github/
 !/.gitignore
 !/.golangci.yml
+!/.shellcheckrc
 
 # --- Secrets -------------------------------------------------------------------
 # A committed secret stays in the history forever, so these are ignored at any

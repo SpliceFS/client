@@ -6,14 +6,13 @@
 # (required, armored secret signing key, no passphrase); DIST_DIR (default dist); KEYS_DIR
 # (default DIST_DIR/keys, must hold the public key splicefs.asc); RELEASE_DIR (default
 # DIST_DIR/release). The key is never printed.
-# shellcheck disable=SC2154 # name and the versions come from package-lib.sh
 set -eu
 
 : "${SIGNING_KEY_FILE:?SIGNING_KEY_FILE is not set}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 # package-lib.sh reads VERSION and PACKAGE_DATE and says what the files are called.
-# shellcheck disable=SC1091 # the sourced file is checked on its own
+# shellcheck source=package-lib.sh
 . scripts/package-lib.sh
 
 dist="${DIST_DIR:-$root/dist}"
@@ -51,8 +50,9 @@ done
 
 # Sorted in the C locale so the file is the same on every system.
 # The names are ours and hold no spaces, so the list is split on purpose.
-# shellcheck disable=SC2046
-(cd "$out" && sums $(LC_ALL=C ls) > SHA256SUMS)
+names="$(cd "$out" && LC_ALL=C ls)"
+# shellcheck disable=SC2086
+(cd "$out" && sums $names > SHA256SUMS)
 
 # Two homes: the signing home holds the secret key and the verifying home only the public
 # key, so the proof cannot be satisfied by the key that made the signature. Both are removed

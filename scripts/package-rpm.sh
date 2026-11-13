@@ -4,6 +4,7 @@
 set -eu
 
 out="${1:?usage: package-rpm.sh OUTPUT_DIR}"
+# shellcheck source=package-lib.sh
 . scripts/package-lib.sh
 
 dnf install -y -q rpm-build >/dev/null
@@ -12,6 +13,7 @@ for arch in amd64 arm64; do
     case "$arch" in
         amd64) rpmarch=x86_64 ;;
         arm64) rpmarch=aarch64 ;;
+        *) fail "no rpm CPU type for $arch" ;;
     esac
     top="$(mktemp -d)"
     rpmbuild -bb --quiet --target "$rpmarch" \

@@ -21,6 +21,7 @@ apt-get update -qq >/dev/null
 case "$machine" in
     amd64) apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils >/dev/null 2>&1 ;;
     arm64) apt-get install -y -qq --no-install-recommends qemu-system-arm qemu-efi-aarch64 qemu-utils >/dev/null 2>&1 ;;
+    *) echo "unknown machine $machine" >&2; exit 1 ;;
 esac
 
 work="$(mktemp -d)"
@@ -42,6 +43,7 @@ fi
 case "$machine" in
     amd64) set -- qemu-system-x86_64 -machine q35 ;;
     arm64) set -- qemu-system-aarch64 -machine virt -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd ;;
+    *) echo "unknown machine $machine" >&2; exit 1 ;;
 esac
 
 mkdir -p "$results"

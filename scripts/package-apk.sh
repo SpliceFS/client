@@ -7,6 +7,7 @@
 set -eu
 
 out="${1:?usage: package-apk.sh OUTPUT_DIR}"
+# shellcheck source=package-lib.sh
 . scripts/package-lib.sh
 
 apk add -q abuild >/dev/null
@@ -20,6 +21,7 @@ for arch in amd64 arm64; do
     case "$arch" in
         amd64) apkarch=x86_64 ;;
         arm64) apkarch=aarch64 ;;
+        *) fail "no Alpine CPU type for $arch" ;;
     esac
     # abuild names the repository after the directory above the one holding the APKBUILD.
     work="$(mktemp -d)/splicefs/$name"

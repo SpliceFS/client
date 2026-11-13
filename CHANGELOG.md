@@ -70,6 +70,17 @@ notable ones.
   real service manager (systemd or OpenRC as process 1 of a container) and the service must
   start by itself, answer `splicefs status`, come back after a reboot and stop when the
   package is removed.
+- FreeBSD: the client runs on FreeBSD 14 and 15, with the same FUSE mounts as on Linux.
+  `make check-freebsd` runs the tests in a FreeBSD virtual machine, and `make package-freebsd`
+  builds, installs and tests the package there. The package is not published yet.
+- `make lint` also runs ShellCheck, with every optional check on; the two that are off say why
+  in `.shellcheckrc`. `make check` fails when a compiled program or a file over 1 MiB is
+  tracked. The FreeBSD scripts are the same files as the server's again.
+- Code quality checks at their strictest: every linter is on, and each one that is off says
+  why in `.golangci.yml`. The code declares its errors, so callers can test for them.
+  Behavior, the configuration keys and the messages are unchanged, with one exception: when
+  the answer to `--help` or `--version` cannot be written, the program now says so and exits
+  with status 1.
 
 ### Changed
 
@@ -101,14 +112,6 @@ notable ones.
 - Entry names that a node lists are checked. A name that is empty, a dot segment, or holds a
   slash or a NUL byte is dropped, so a hostile node cannot make an entry point outside the
   directory it was listed in. Found by the new fuzz tests.
-- FreeBSD: the client runs on FreeBSD 14 and 15, with the same FUSE mounts as on Linux.
-  `make check-freebsd` runs the tests in a FreeBSD virtual machine, and `make package-freebsd`
-  builds, installs and tests the package there. The package is not published yet.
-- Code quality checks at their strictest: every linter is on, and each one that is off says
-  why in `.golangci.yml`. The code declares its errors, so callers can test for them.
-  Behavior, the configuration keys and the messages are unchanged, with one exception: when
-  the answer to `--help` or `--version` cannot be written, the program now says so and exits
-  with status 1.
 
 ### Removed
 
