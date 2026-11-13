@@ -40,8 +40,9 @@ script-modes:
 	@bad="$$(git ls-files -s -- 'scripts/*.sh' 'packaging/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ {print $$4}')"; \
 	if [ -n "$$bad" ]; then echo "not executable in git:"; echo "$$bad"; exit 1; fi
 
-# A compiled program or a very large file must never be committed: a program built on a
-# developer's machine carries the folder names of that machine.
+# Nothing that must stay private may be tracked: no compiled program (it carries the folder
+# names of the machine it was built on), no file over 1 MiB, no name of a private machine,
+# account or place. The ignore rules help; this check is what stops a mistake.
 .PHONY: tracked-files
 tracked-files:
 	scripts/tracked-files.sh
