@@ -25,10 +25,12 @@ var (
 )
 
 const (
-	defaultRefreshNodes = 5 * time.Minute
+	// The node list is asked for again this often. The call goes to the cluster host and is
+	// cheap, and a node that was added or removed should be noticed quickly.
+	defaultRefreshNodes = time.Minute
 	defaultRenewBefore  = 2 * time.Minute
 
-	// entryName is the name the entry URL is dialed with; it is a way in, not a node.
+	// entryName is the name the cluster host is dialed with; it is a way in, not a node.
 	entryName = "entry"
 )
 
@@ -48,14 +50,17 @@ type Dial func(name, baseURL string) (Node, error)
 // Options configures a Session. Dial, User, Password and EntryURL are required;
 // every other zero value selects a default.
 type Options struct {
-	Cluster  string // the config name of the cluster, for messages
+	Cluster string // the config name of the cluster, for messages
+	// EntryURL is the cluster host: one name for the whole cluster, which resolves to as many of
+	// its servers as possible. Logins and node list requests go there; file requests go to the
+	// node hosts it lists.
 	EntryURL string
 	User     string
 	Password string
 	Dial     Dial
 	// Now is the clock; the default is time.Now.
 	Now func() time.Time
-	// RefreshNodes is how often the node list is fetched again; the default is 5m.
+	// RefreshNodes is how often the node list is fetched again; the default is 1m.
 	RefreshNodes time.Duration
 	// RenewBefore makes the token be renewed when it expires within this time;
 	// the default is 2m.
@@ -79,6 +84,7 @@ type Session struct {
 	mu           sync.Mutex
 	closed       bool
 	connected    bool
+	entry        Node // the cluster host, dialed once; it is not a member and has no health
 	token        string
 	expires      time.Time
 	members      []*member
@@ -142,19 +148,28 @@ func (s *Session) Usable(ctx context.Context) ([]Node, error) {
 // it. The error of call is returned unchanged, except that a failed replacement of
 // the token is returned instead.
 func (s *Session) Do(ctx context.Context, n Node, call func(ctx context.Context, token string) error) error {
+	ran, err := s.withToken(ctx, call)
+	if ran {
+		s.record(n, err)
+	}
+	return err
+}
+
+// withToken is Do without the health bookkeeping, for calls to the cluster host, which is
+// not a member. ran is false when no token could be had and call never ran.
+func (s *Session) withToken(ctx context.Context, call func(ctx context.Context, token string) error) (ran bool, err error) {
 	token, err := s.currentToken(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	err = call(ctx, token)
 	if err != nil && s.opts.IsUnauthorized(err) {
 		if token, err = s.renew(ctx, token); err != nil {
-			return err
+			return false, err
 		}
 		err = call(ctx, token)
 	}
-	s.record(n, err)
-	return err
+	return true, err
 }
 
 // Close makes every later call fail with ErrClosed.
@@ -203,17 +218,15 @@ func (s *Session) refreshNodes(ctx context.Context) {
 		return
 	}
 	s.fetched = now
-	pick := s.usable(now)[0]
 	known := s.members
 	s.mu.Unlock()
 
-	var list wire.Nodes
-	err := s.Do(ctx, pick.node, func(ctx context.Context, token string) (err error) {
-		list, err = pick.node.Nodes(ctx, token)
-		return err
-	})
+	list, err := s.fetchNodeList(ctx)
 	if err != nil {
-		s.opts.Logger.Warn("node list refresh failed", "cluster", s.opts.Cluster, "node", pick.name, "error", err)
+		// The list the client has stays until the next attempt; the nodes are not asked, as
+		// a cluster host that cannot be reached means no node is assumed reachable.
+		s.opts.Logger.Warn("node list refresh failed", "cluster", s.opts.Cluster,
+			"cluster_host", s.opts.EntryURL, "error", err)
 		return
 	}
 	next := s.dialAll(list.Nodes, known)
@@ -224,6 +237,20 @@ func (s *Session) refreshNodes(ctx context.Context) {
 	s.mu.Lock()
 	s.members = next
 	s.mu.Unlock()
+}
+
+// fetchNodeList asks the cluster host for the node list.
+func (s *Session) fetchNodeList(ctx context.Context) (list wire.Nodes, err error) {
+	entry, err := s.entryNode()
+	if err != nil {
+		return list, err
+	}
+	// Not Do: the cluster host is not a member, so its outcome is no node's health.
+	_, err = s.withToken(ctx, func(ctx context.Context, token string) (err error) {
+		list, err = entry.Nodes(ctx, token)
+		return err
+	})
+	return list, err
 }
 
 // usable is the members that are not cooling, or the one that stops cooling first.

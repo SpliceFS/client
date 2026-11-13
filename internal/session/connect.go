@@ -2,9 +2,7 @@ package session
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/SpliceFS/common/wire"
 )
@@ -60,19 +58,30 @@ func (s *Session) connect(ctx context.Context) error {
 	return nil
 }
 
-// enter logs in at the entry node and fetches the node list with that token.
-func (s *Session) enter(ctx context.Context) (wire.LoginResponse, []*member, error) {
-	entry, err := s.opts.Dial(entryName, s.opts.EntryURL)
-	if err != nil {
-		return wire.LoginResponse{}, nil, s.unavailable("dial entry", err)
-	}
-	login, err := entry.Login(ctx, s.opts.User, s.opts.Password)
-	if err != nil {
-		if s.opts.IsUnauthorized(err) {
-			return wire.LoginResponse{}, nil, fmt.Errorf("cluster %q: log in at entry: %w: %w",
-				s.opts.Cluster, ErrBadCredentials, err)
+// entryNode returns the cluster host. It is dialed on first use and kept; if dialing fails, the
+// next attempt dials again.
+func (s *Session) entryNode() (Node, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entry == nil {
+		entry, err := s.opts.Dial(entryName, s.opts.EntryURL)
+		if err != nil {
+			return nil, err
 		}
-		return wire.LoginResponse{}, nil, s.unavailable("log in at entry", err)
+		s.entry = entry
+	}
+	return s.entry, nil
+}
+
+func (s *Session) badCredentials(what string, err error) error {
+	return fmt.Errorf("cluster %q: %s: %w: %w", s.opts.Cluster, what, ErrBadCredentials, err)
+}
+
+// enter logs in at the cluster host and fetches the node list with that token.
+func (s *Session) enter(ctx context.Context) (wire.LoginResponse, []*member, error) {
+	entry, login, err := s.loginAtEntry(ctx)
+	if err != nil {
+		return wire.LoginResponse{}, nil, err
 	}
 	list, err := entry.Nodes(ctx, login.Token)
 	if err != nil {
@@ -152,10 +161,9 @@ func (s *Session) login(ctx context.Context, stale string) error {
 		s.mu.Unlock()
 		return err
 	}
-	nodes := nodesOf(s.members)
 	s.mu.Unlock()
 
-	login, err := s.loginAny(ctx, nodes)
+	_, login, err := s.loginAtEntry(ctx)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -170,48 +178,20 @@ func (s *Session) login(ctx context.Context, stale string) error {
 	return nil
 }
 
-// loginAny logs in at all nodes at once and returns the first success, so that a
-// user file that has not reached every node yet still works. The slower attempts are
-// cancelled and have ended when loginAny returns.
-func (s *Session) loginAny(parent context.Context, nodes []Node) (wire.LoginResponse, error) {
-	if len(nodes) == 0 {
-		return wire.LoginResponse{}, s.unavailable("log in", errors.New("no nodes known"))
+// loginAtEntry logs in at the cluster host and returns it with the login. Every login goes
+// there and nowhere else: when the cluster host cannot be reached, no node is assumed to be
+// reachable either, so the failure is final until the next attempt.
+func (s *Session) loginAtEntry(ctx context.Context) (Node, wire.LoginResponse, error) {
+	entry, err := s.entryNode()
+	if err != nil {
+		return nil, wire.LoginResponse{}, s.unavailable("dial entry", err)
 	}
-	ctx, cancel := context.WithCancel(parent)
-	type result struct {
-		login wire.LoginResponse
-		err   error
-	}
-	results := make(chan result, len(nodes))
-	var wg sync.WaitGroup
-	defer wg.Wait()
-	defer cancel()
-	for _, n := range nodes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			login, err := n.Login(ctx, s.opts.User, s.opts.Password)
-			results <- result{login, err}
-		}()
-	}
-
-	var denied, last error
-	for range nodes {
-		r := <-results
-		switch {
-		case r.err == nil:
-			return r.login, nil
-		case s.opts.IsUnauthorized(r.err):
-			denied = r.err
-		default:
-			last = r.err
-		}
-	}
+	login, err := entry.Login(ctx, s.opts.User, s.opts.Password)
 	switch {
-	case parent.Err() != nil:
-		return wire.LoginResponse{}, parent.Err()
-	case denied != nil:
-		return wire.LoginResponse{}, fmt.Errorf("cluster %q: log in: %w: %w", s.opts.Cluster, ErrBadCredentials, denied)
+	case err == nil:
+		return entry, login, nil
+	case s.opts.IsUnauthorized(err):
+		return nil, wire.LoginResponse{}, s.badCredentials("log in at entry", err)
 	}
-	return wire.LoginResponse{}, s.unavailable("log in", last)
+	return nil, wire.LoginResponse{}, s.unavailable("log in at entry", err)
 }

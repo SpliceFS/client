@@ -1,11 +1,13 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,8 +26,8 @@ func TestNewDoesNotUseTheNetwork(t *testing.T) {
 func TestNewDefaults(t *testing.T) {
 	t.Parallel()
 	o := New(Options{}).opts
-	if o.RefreshNodes != 5*time.Minute || o.RenewBefore != 2*time.Minute {
-		t.Errorf("intervals = %v, %v, want 5m, 2m", o.RefreshNodes, o.RenewBefore)
+	if o.RefreshNodes != time.Minute || o.RenewBefore != 2*time.Minute {
+		t.Errorf("intervals = %v, %v, want 1m, 2m", o.RefreshNodes, o.RenewBefore)
 	}
 	if o.Now == nil || o.Logger == nil {
 		t.Error("Now and Logger must have defaults")
@@ -225,36 +227,14 @@ func TestTokenIsRenewedNearExpiry(t *testing.T) {
 	if again := token(t, s, a); again != got {
 		t.Errorf("token = %q after renewal, want %q again", again, got)
 	}
-	if n := e.entry.loginCount(); n != 1 {
-		t.Errorf("entry logins = %d, want 1: renewal goes to the listed nodes", n)
+	if n := e.entry.loginCount(); n != 2 {
+		t.Errorf("cluster host logins = %d, want 2: the first and the renewal", n)
 	}
-}
-
-func TestRenewalFirstSuccessWinsAndCancelsTheRest(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t, "slow", "fast")
-	s := e.session()
-	slow, fast := nodeOf(t, s, "slow"), nodeOf(t, s, "fast")
-	token(t, s, fast)
-
-	cancelled := make(chan struct{})
-	e.nodes["slow"].setLogin(func(ctx context.Context) (wire.LoginResponse, error) {
-		<-ctx.Done()
-		close(cancelled)
-		return wire.LoginResponse{}, ctx.Err()
-	})
-	e.nodes["fast"].setLogin(func(context.Context) (wire.LoginResponse, error) {
-		return wire.LoginResponse{Token: "from-fast", Expires: e.clk.Now().Add(time.Hour)}, nil
-	})
-	e.clk.Advance(time.Hour)
-
-	if got := token(t, s, slow); got != "from-fast" {
-		t.Errorf("token = %q, want from-fast", got)
+	if n := e.nodeLogins(); n != 0 {
+		t.Errorf("node logins = %d, want 0: renewal goes to the cluster host", n)
 	}
-	select {
-	case <-cancelled:
-	default:
-		t.Error("the slow login was not cancelled before the call returned")
+	if n := e.dialCount(entryName); n != 1 {
+		t.Errorf("the cluster host was dialed %d times, want once and kept", n)
 	}
 }
 
@@ -262,13 +242,13 @@ func TestRenewalFailures(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		a, b    error
+		login   error
 		want    error
 		notWant error
 	}{
-		{"every node down", errDown, errDown, ErrUnavailable, ErrBadCredentials},
-		{"one rejects the credentials", errDown, errDenied, ErrBadCredentials, ErrUnavailable},
-		{"every node rejects the credentials", errDenied, errDenied, ErrBadCredentials, ErrUnavailable},
+		{"cluster host unreachable", errDown, ErrUnavailable, ErrBadCredentials},
+		{"cluster host fails otherwise", errors.New("server error"), ErrUnavailable, ErrBadCredentials},
+		{"cluster host rejects the credentials", errDenied, ErrBadCredentials, ErrUnavailable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -277,8 +257,7 @@ func TestRenewalFailures(t *testing.T) {
 			s := e.session()
 			a := nodeOf(t, s, "a")
 			token(t, s, a)
-			e.nodes["a"].setLogin(failWith(tt.a))
-			e.nodes["b"].setLogin(failWith(tt.b))
+			e.entry.setLogin(failWith(tt.login))
 			e.clk.Advance(time.Hour)
 
 			err := s.Do(context.Background(), a, func(context.Context, string) error {
@@ -287,6 +266,9 @@ func TestRenewalFailures(t *testing.T) {
 			})
 			if !errors.Is(err, tt.want) || errors.Is(err, tt.notWant) {
 				t.Errorf("Do = %v, want %v and not %v", err, tt.want, tt.notWant)
+			}
+			if got := e.nodeLogins() + e.nodeListings(); got != 0 {
+				t.Errorf("node calls = %d, want 0: the nodes are not asked", got)
 			}
 		})
 	}
@@ -298,7 +280,7 @@ func TestFailedRenewalIsNotRetriedWithinBackoff(t *testing.T) {
 	s := e.session()
 	a := nodeOf(t, s, "a")
 	token(t, s, a)
-	e.nodes["a"].setLogin(failWith(errDown))
+	e.entryDown()
 	e.clk.Advance(time.Hour)
 
 	for range 2 {
@@ -307,11 +289,11 @@ func TestFailedRenewalIsNotRetriedWithinBackoff(t *testing.T) {
 			t.Fatalf("Do = %v, want ErrUnavailable", err)
 		}
 	}
-	if got := e.nodes["a"].loginCount(); got != 1 {
-		t.Errorf("logins = %d, want 1 within the backoff", got)
+	if got := e.entry.loginCount(); got != 2 {
+		t.Errorf("cluster host logins = %d, want 2: the first and one failed renewal", got)
 	}
 
-	e.nodes["a"].setLogin(e.grant)
+	e.entry.setLogin(e.grant)
 	e.clk.Advance(2 * time.Second)
 	if got := token(t, s, a); got == "tok-1" {
 		t.Errorf("token = %q, want a renewed token", got)
@@ -324,7 +306,7 @@ func TestCancelledRenewalDoesNotStartBackoff(t *testing.T) {
 	s := e.session()
 	a := nodeOf(t, s, "a")
 	token(t, s, a)
-	e.nodes["a"].setLogin(func(ctx context.Context) (wire.LoginResponse, error) {
+	e.entry.setLogin(func(ctx context.Context) (wire.LoginResponse, error) {
 		<-ctx.Done()
 		return wire.LoginResponse{}, ctx.Err()
 	})
@@ -337,18 +319,9 @@ func TestCancelledRenewalDoesNotStartBackoff(t *testing.T) {
 		t.Fatalf("Do = %v, want context.Canceled", err)
 	}
 
-	e.nodes["a"].setLogin(e.grant)
+	e.entry.setLogin(e.grant)
 	if got := token(t, s, a); got == "tok-1" {
 		t.Errorf("token = %q, want a renewed token", got)
-	}
-}
-
-func TestLoginAnyWithoutNodes(t *testing.T) {
-	t.Parallel()
-	e := newEnv(t)
-	_, err := e.session().loginAny(context.Background(), nil)
-	if !errors.Is(err, ErrUnavailable) {
-		t.Errorf("loginAny = %v, want ErrUnavailable", err)
 	}
 }
 
@@ -363,8 +336,8 @@ func TestRenewSkipsLoginWhenTokenWasAlreadyReplaced(t *testing.T) {
 	if err != nil || got != current {
 		t.Errorf("renew = %q, %v, want %q, nil", got, err, current)
 	}
-	if n := e.nodes["a"].loginCount(); n != 0 {
-		t.Errorf("logins = %d, want 0", n)
+	if n := e.entry.loginCount(); n != 1 {
+		t.Errorf("cluster host logins = %d, want 1: only the first", n)
 	}
 }
 
@@ -411,7 +384,7 @@ func TestDoReturnsTheFailureToRenewTheToken(t *testing.T) {
 	e := newEnv(t, "a")
 	s := e.session()
 	a := nodeOf(t, s, "a")
-	e.nodes["a"].setLogin(failWith(errDenied))
+	e.entry.setLogin(failWith(errDenied))
 
 	calls := 0
 	err := s.Do(context.Background(), a, func(context.Context, string) error {
@@ -550,8 +523,11 @@ func TestNodeListRefreshAddsAndDropsNodes(t *testing.T) {
 	if _, err := s.Nodes(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.nodes["a"].listingTokens(); len(got) != 1 {
-		t.Errorf("node list fetched %d times from a, want once", len(got))
+	if got := e.entry.listingTokens(); len(got) != 2 {
+		t.Errorf("node list fetched %d times at the cluster host, want 2", len(got))
+	}
+	if got := e.nodeListings(); got != 0 {
+		t.Errorf("node list fetched %d times at nodes, want 0", got)
 	}
 }
 
@@ -582,19 +558,93 @@ func TestFailedNodeListRefreshKeepsTheOldListUntilTheNextInterval(t *testing.T) 
 	s := New(opts)
 	checkNames(t, "Nodes", mustNodes(t, s), []string{"a", "b"})
 
-	e.nodes["a"].setNodes(nodesFail(errDown))
+	e.entryDown()
 	e.setList(wire.Node{Name: "b", URL: urlOf("b")})
 	e.clk.Advance(time.Minute)
 
 	checkNames(t, "Nodes after a failed refresh", mustNodes(t, s), []string{"a", "b"})
-	e.nodes["a"].setNodes(e.serveList)
+	e.entry.setNodes(e.serveList)
 	e.clk.Advance(30 * time.Second)
 	checkNames(t, "Nodes within the interval", mustNodes(t, s), []string{"a", "b"})
-	if got := len(e.nodes["a"].listingTokens()); got != 1 {
-		t.Errorf("a was asked %d times before the next interval, want 1", got)
+	if got := len(e.entry.listingTokens()); got != 2 {
+		t.Errorf("the cluster host was asked %d times before the next interval, want 2", got)
 	}
 	e.clk.Advance(30 * time.Second)
 	checkNames(t, "Nodes after the next interval", mustNodes(t, s), []string{"b"})
+}
+
+func TestNodeListRefreshAsksTheClusterHostNotANode(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, "a", "b")
+	s := e.session()
+	mustNodes(t, s)
+	e.setList(wire.Node{Name: "b", URL: urlOf("b")})
+	e.clk.Advance(time.Minute)
+
+	checkNames(t, "Nodes", mustNodes(t, s), []string{"b"})
+	checkNames(t, "cluster host listings", e.entry.listingTokens(), []string{"tok-1", "tok-1"})
+	if got := e.nodeListings(); got != 0 {
+		t.Errorf("node list fetched %d times at nodes, want 0", got)
+	}
+}
+
+func TestNodeListRefreshWithTheClusterHostUnreachableKeepsTheListAndWarns(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, "a", "b")
+	var logged bytes.Buffer
+	opts := e.options()
+	opts.Logger = slog.New(slog.NewTextHandler(&logged, nil))
+	s := New(opts)
+	mustNodes(t, s)
+	e.entryDown()
+	e.setList(wire.Node{Name: "b", URL: urlOf("b")})
+	e.clk.Advance(time.Minute)
+
+	checkNames(t, "Nodes", mustNodes(t, s), []string{"a", "b"})
+	for _, want := range []string{"node list refresh failed", "cluster_host=" + opts.EntryURL} {
+		if !strings.Contains(logged.String(), want) {
+			t.Errorf("log = %q, want it to contain %q", logged.String(), want)
+		}
+	}
+	if got := e.nodeListings() + e.nodeLogins(); got != 0 {
+		t.Errorf("nodes were used %d times, want 0", got)
+	}
+}
+
+func TestNodeListRefreshWithoutADialableClusterHostFails(t *testing.T) {
+	t.Parallel()
+	// After a connect the cluster host is always dialed; this is the guard for the rest.
+	e := newEnv(t, "a")
+	e.dialErr[entryName] = errDown
+	s := e.session()
+
+	if _, err := s.fetchNodeList(context.Background()); !errors.Is(err, errDown) {
+		t.Errorf("fetchNodeList = %v, want errDown", err)
+	}
+}
+
+func TestNodeListRefreshReplacesARefusedTokenOnce(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, "a", "b")
+	s := e.session()
+	mustNodes(t, s)
+	e.entry.setNodes(func(_ context.Context, tok string) (wire.Nodes, error) {
+		if tok == "tok-1" {
+			return wire.Nodes{}, errDenied
+		}
+		return e.serveList(context.Background(), tok)
+	})
+	e.setList(wire.Node{Name: "b", URL: urlOf("b")})
+	e.clk.Advance(time.Minute)
+
+	checkNames(t, "Nodes", mustNodes(t, s), []string{"b"})
+	checkNames(t, "cluster host listings", e.entry.listingTokens(), []string{"tok-1", "tok-1", "tok-2"})
+	if got := e.entry.loginCount(); got != 2 {
+		t.Errorf("cluster host logins = %d, want 2: the first and one replacement", got)
+	}
+	if got := e.nodeLogins() + e.nodeListings(); got != 0 {
+		t.Errorf("nodes were used %d times, want 0", got)
+	}
 }
 
 func TestNodeListRefreshIgnoresAListWithNoUsableNode(t *testing.T) {
@@ -620,5 +670,66 @@ func TestConnectWhenAlreadyConnectedDoesNothing(t *testing.T) {
 	}
 	if got := e.entry.loginCount(); got != 1 {
 		t.Errorf("entry logins = %d, want 1", got)
+	}
+}
+
+func TestRejectedCredentialsAtTheClusterHostAreFinal(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, "a", "b")
+	s := e.session()
+	a := nodeOf(t, s, "a")
+	token(t, s, a)
+	e.entry.setLogin(failWith(errDenied))
+	e.clk.Advance(time.Hour)
+
+	err := s.Do(context.Background(), a, func(context.Context, string) error {
+		t.Error("call made without a token")
+		return nil
+	})
+	if !errors.Is(err, ErrBadCredentials) || errors.Is(err, ErrUnavailable) {
+		t.Errorf("Do = %v, want ErrBadCredentials only", err)
+	}
+	if got := e.nodeLogins(); got != 0 {
+		t.Errorf("node logins = %d, want 0: rejected credentials are not retried at the nodes", got)
+	}
+}
+
+func TestTheClusterHostIsDialedAgainOnlyAfterADialFailure(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t, "a")
+	e.dialErr[entryName] = errDown
+	s := e.session()
+	if _, err := s.Nodes(context.Background()); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Nodes = %v, want ErrUnavailable", err)
+	}
+
+	delete(e.dialErr, entryName)
+	e.clk.Advance(2 * time.Second)
+	checkNames(t, "Nodes", mustNodes(t, s), []string{"a"})
+	e.clk.Advance(time.Hour)
+	mustNodes(t, s)
+	if got := e.dialCount(entryName); got != 2 {
+		t.Errorf("the cluster host was dialed %d times, want 2: the failure, then once and kept", got)
+	}
+}
+
+func TestCallsToTheClusterHostNeverChangeANodesHealth(t *testing.T) {
+	t.Parallel()
+	// A node that is named like the cluster host must not take its failures.
+	e := newEnv(t, "a", "entry")
+	s := e.session()
+	checkNames(t, "Nodes", mustNodes(t, s), []string{"a", "entry"})
+	e.entry.setNodes(nodesFail(errDown))
+	e.clk.Advance(time.Minute)
+	checkNames(t, "Usable after a failed refresh", mustUsable(t, s), []string{"a", "entry"})
+	if got := len(e.entry.listingTokens()); got != 2 {
+		t.Errorf("cluster host listings = %d, want 2: the first and the failed refresh", got)
+	}
+
+	e.entry.setLogin(failWith(errDown))
+	e.clk.Advance(time.Hour)
+	checkNames(t, "Usable after a failed renewal", mustUsable(t, s), []string{"a", "entry"})
+	if got := e.entry.loginCount(); got != 2 {
+		t.Errorf("cluster host logins = %d, want 2: the first and the failed renewal", got)
 	}
 }

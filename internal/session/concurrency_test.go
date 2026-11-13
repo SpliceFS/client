@@ -18,12 +18,10 @@ func TestConcurrentCallersShareOneLoginWhenTheTokenExpires(t *testing.T) {
 		token(t, s, a)
 
 		gate := make(chan struct{})
-		for _, n := range e.nodes {
-			n.setLogin(func(ctx context.Context) (wire.LoginResponse, error) {
-				<-gate
-				return e.grant(ctx)
-			})
-		}
+		e.entry.setLogin(func(ctx context.Context) (wire.LoginResponse, error) {
+			<-gate
+			return e.grant(ctx)
+		})
 		e.clk.Advance(time.Hour)
 
 		const callers = 5
@@ -46,10 +44,11 @@ func TestConcurrentCallersShareOneLoginWhenTheTokenExpires(t *testing.T) {
 				t.Errorf("caller %d got token %q, want one shared new token (first was %q)", i, tok, tokens[0])
 			}
 		}
-		for name, n := range e.nodes {
-			if got := n.loginCount(); got != 1 {
-				t.Errorf("node %s logins = %d, want 1", name, got)
-			}
+		if got := e.entry.loginCount(); got != 2 {
+			t.Errorf("cluster host logins = %d, want 2: the first and one shared renewal", got)
+		}
+		if got := e.nodeLogins(); got != 0 {
+			t.Errorf("node logins = %d, want 0", got)
 		}
 	})
 }
