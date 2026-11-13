@@ -101,6 +101,9 @@ notable ones.
 - Entry names that a node lists are checked. A name that is empty, a dot segment, or holds a
   slash or a NUL byte is dropped, so a hostile node cannot make an entry point outside the
   directory it was listed in. Found by the new fuzz tests.
+- FreeBSD: the client runs on FreeBSD 14 and 15, with the same FUSE mounts as on Linux.
+  `make check-freebsd` runs the tests in a FreeBSD virtual machine, and `make package-freebsd`
+  builds, installs and tests the package there. The package is not published yet.
 
 ### Removed
 

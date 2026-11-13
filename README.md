@@ -199,7 +199,7 @@ app/           builds the client from the configuration, mounts it, serves the c
                and applies a changed configuration on SIGHUP
 config/        loads and validates the files in conf.d, clusters.d and mounts.d
 core/          the client as an importable library (github.com/SpliceFS/client/core)
-mount/         the contract every mount layer offers; mount/fuse is Linux, mount/nfs is macOS
+mount/         the contract every mount layer offers; mount/fuse is Linux and FreeBSD, mount/nfs is macOS
 internal/      node HTTP client, cluster session, merged tree, block cache, block reader, and
                the version number set at build time
 docs/          design and configuration reference

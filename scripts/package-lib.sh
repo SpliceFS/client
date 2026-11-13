@@ -67,3 +67,10 @@ rpmver="$debver"
 apkver="$core"
 if [ -n "$pre" ]; then apkver="${apkver}_$(printf '%s' "$pre" | tr -d .)"; fi
 if [ -n "$extra" ]; then apkver="${apkver}_git$PACKAGE_DATE"; fi
+
+# FreeBSD compares versions field by field and knows rc and friends as older than the release,
+# so the pre-release becomes one more field (1.2.3.rc1) and a build that is not exactly a tag
+# carries the date of its commit as the last field: 1.2.3.20261112.
+pkgver="$core"
+if [ -n "$pre" ]; then pkgver="$pkgver.$(printf '%s' "$pre" | tr -d .)"; fi
+if [ -n "$extra" ]; then pkgver="$pkgver.$PACKAGE_DATE"; fi

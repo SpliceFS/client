@@ -1,0 +1,12 @@
+#!/bin/sh
+# FreeBSD runs this once, at the end of its first boot, as root. It hands over to the job
+# script, writes everything the job produced to the scratch disk as a tar archive, and
+# powers the machine off, which ends the run on the other side.
+mkdir -p /tmp/in /tmp/out
+mount -t msdosfs -o ro /dev/msdosfs/cidata /tmp/in
+if sh /tmp/in/@JOB@ /tmp/in /tmp/out @ARGS@ > /tmp/out/log.txt 2>&1; then
+    touch /tmp/out/ok
+fi
+cat /tmp/out/log.txt > /dev/console
+tar cf /dev/vtbd2 -C /tmp/out .
+shutdown -p now

@@ -8,13 +8,14 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 failed=0
 
-# $1 VERSION, $2 deb and rpm version, $3 Alpine version (PACKAGE_DATE is 20261112).
+# $1 VERSION, $2 deb and rpm version, $3 Alpine version, $4 FreeBSD version (PACKAGE_DATE is
+# 20261112).
 check() {
     got="$(VERSION="$1" PACKAGE_DATE=20261112 sh -c \
-        '. scripts/package-lib.sh; echo "$debver $rpmver $apkver"' 2>&1)" || true
-    want="$2 $2 $3"
+        '. scripts/package-lib.sh; echo "$debver $rpmver $apkver $pkgver"' 2>&1)" || true
+    want="$2 $2 $3 $4"
     if [ "$got" = "$want" ]; then
-        printf 'ok   %-28s deb/rpm %-26s apk %s\n' "$1" "$2" "$3"
+        printf 'ok   %-28s deb/rpm %-26s apk %-24s pkg %s\n' "$1" "$2" "$3" "$4"
     else
         printf 'FAIL %-28s want "%s" got "%s"\n' "$1" "$want" "$got"
         failed=$((failed + 1))
@@ -34,17 +35,17 @@ refuse() {
     fi
 }
 
-check v1.2.3 1.2.3 1.2.3
-check v1.2.3-4-gabc1234 1.2.3+4.gabc1234 1.2.3_git20261112
-check v1.2.3-rc.1 1.2.3~rc.1 1.2.3_rc1
-check v1.2.3-beta.2 1.2.3~beta.2 1.2.3_beta2
-check v1.2.3-alpha 1.2.3~alpha 1.2.3_alpha
-check v1.2.3-rc.1-4-gabc1234 1.2.3~rc.1+4.gabc1234 1.2.3_rc1_git20261112
-check abc1234 0.0.0+abc1234 0.0.0_git20261112
-check v1.2.3-dirty 1.2.3+dirty 1.2.3_git20261112
-check v1.2.3-4-gabc1234-dirty 1.2.3+4.gabc1234.dirty 1.2.3_git20261112
-check v1.2.3-rc.1-dirty 1.2.3~rc.1+dirty 1.2.3_rc1_git20261112
-check abc1234-dirty 0.0.0+abc1234.dirty 0.0.0_git20261112
+check v1.2.3 1.2.3 1.2.3 1.2.3
+check v1.2.3-4-gabc1234 1.2.3+4.gabc1234 1.2.3_git20261112 1.2.3.20261112
+check v1.2.3-rc.1 1.2.3~rc.1 1.2.3_rc1 1.2.3.rc1
+check v1.2.3-beta.2 1.2.3~beta.2 1.2.3_beta2 1.2.3.beta2
+check v1.2.3-alpha 1.2.3~alpha 1.2.3_alpha 1.2.3.alpha
+check v1.2.3-rc.1-4-gabc1234 1.2.3~rc.1+4.gabc1234 1.2.3_rc1_git20261112 1.2.3.rc1.20261112
+check abc1234 0.0.0+abc1234 0.0.0_git20261112 0.0.0.20261112
+check v1.2.3-dirty 1.2.3+dirty 1.2.3_git20261112 1.2.3.20261112
+check v1.2.3-4-gabc1234-dirty 1.2.3+4.gabc1234.dirty 1.2.3_git20261112 1.2.3.20261112
+check v1.2.3-rc.1-dirty 1.2.3~rc.1+dirty 1.2.3_rc1_git20261112 1.2.3.rc1.20261112
+check abc1234-dirty 0.0.0+abc1234.dirty 0.0.0_git20261112 0.0.0.20261112
 refuse v1.2.3-foo.1 v1.2.3-foo.1
 refuse v1.2 v1.2
 refuse v1.2.3-rc.1.2 v1.2.3-rc.1.2

@@ -1,0 +1,60 @@
+#!/bin/sh
+# rc.d service of the SpliceFS client on FreeBSD.
+#
+# PROVIDE: splicefs
+# REQUIRE: NETWORKING DAEMON FILESYSTEMS
+# KEYWORD: shutdown
+#
+# Settings for /etc/rc.conf:
+#   splicefs_enable   "NO" keeps the client from starting. The default is "YES", so that an
+#                     installed client runs after the next boot without any setting, which
+#                     is as close as FreeBSD lets a package come to "installing means
+#                     running": pkg stops whatever an install script starts.
+
+. /etc/rc.subr
+
+name=splicefs
+rcvar=splicefs_enable
+load_rc_config "$name"
+
+: "${splicefs_enable:=YES}"
+
+program=/usr/local/bin/splicefs
+logfile=/var/log/splicefs.log
+# daemon(8) writes two pid files: its own, which stop and status use, and the client's,
+# which reload needs because the signal must reach the client and not its supervisor.
+pidfile=/var/run/splicefs/daemon.pid
+childpidfile=/var/run/splicefs/splicefs.pid
+
+# The mounts are FUSE mounts. rc.subr loads the kernel module before the start.
+required_modules=fusefs
+
+# The client runs as root, as on Linux: mounting needs it. -r restarts the client when it
+# exits, which is what Restart=on-failure does in the systemd unit; -R 5 waits five
+# seconds first. Stopping the service makes daemon(8) end the client, which unmounts
+# everything.
+command=/usr/sbin/daemon
+command_args="-f -r -R 5 -P ${pidfile} -p ${childpidfile} -o ${logfile} ${program} mount"
+
+extra_commands=reload
+start_precmd=splicefs_prestart
+reload_cmd=splicefs_reload
+
+splicefs_prestart() {
+    # The default cache folder. The client fills it with the blocks it has read.
+    install -d -o root -g wheel -m 0755 /var/cache/splicefs
+    # The pid files and the control socket of the client live here.
+    install -d -o root -g wheel -m 0755 /var/run/splicefs
+}
+
+splicefs_reload() {
+    # The client applies its configuration again on SIGHUP: added mounts are mounted,
+    # removed ones are detached, and a configuration with an error is refused and logged.
+    if [ ! -r "${childpidfile}" ]; then
+        echo "${name} is not running."
+        return 1
+    fi
+    kill -HUP "$(cat "${childpidfile}")"
+}
+
+run_rc_command "$1"

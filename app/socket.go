@@ -59,10 +59,10 @@ func systemHost() system {
 
 // SocketPath returns the path of the control socket of the client that uses the
 // configuration directory configDir: <dir>/splicefs/<16 hex digits>.sock, where <dir> is
-// $XDG_RUNTIME_DIR, else /run for root, else the temporary directory, and the digits are
-// the start of the SHA-256 of the absolute configuration directory. Two configurations
-// therefore never share a socket, and every command that names the same directory finds
-// the same one.
+// $XDG_RUNTIME_DIR, else /run for root (/var/run on FreeBSD), else the temporary
+// directory, and the digits are the start of the SHA-256 of the absolute configuration
+// directory. Two configurations therefore never share a socket, and every command that
+// names the same directory finds the same one.
 func SocketPath(configDir string) string {
 	return systemHost().socketPath(configDir)
 }
@@ -81,7 +81,7 @@ func (s system) runtimeDir() string {
 		return dir
 	}
 	if s.geteuid() == 0 {
-		return "/run"
+		return rootRuntimeDir
 	}
 	return s.tempDir()
 }

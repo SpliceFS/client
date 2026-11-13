@@ -41,14 +41,14 @@ func TestSocketPath(t *testing.T) {
 		want string
 	}{
 		{"runtime directory", fakeSystem(map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}, 1000), "/etc/splicefs/client", "/run/user/1000/splicefs/" + sum("/etc/splicefs/client") + ".sock"},
-		{"root without runtime directory", fakeSystem(nil, 0), "/etc/splicefs/client", "/run/splicefs/" + sum("/etc/splicefs/client") + ".sock"},
+		{"root without runtime directory", fakeSystem(nil, 0), "/etc/splicefs/client", rootRuntimeDir + "/splicefs/" + sum("/etc/splicefs/client") + ".sock"},
 		{"ordinary user without runtime directory", fakeSystem(nil, 1000), "/etc/splicefs/client", "/tmp/example/splicefs/" + sum("/etc/splicefs/client") + ".sock"},
-		{"relative directory is made absolute", fakeSystem(nil, 0), "conf/", "/run/splicefs/" + sum("/work/conf") + ".sock"},
+		{"relative directory is made absolute", fakeSystem(nil, 0), "conf/", rootRuntimeDir + "/splicefs/" + sum("/work/conf") + ".sock"},
 		{"unresolvable directory is cleaned", func() system {
 			s := fakeSystem(nil, 0)
 			s.abs = func(string) (string, error) { return "", errors.New("no cwd") }
 			return s
-		}(), "/etc//x/", "/run/splicefs/" + sum("/etc/x") + ".sock"},
+		}(), "/etc//x/", rootRuntimeDir + "/splicefs/" + sum("/etc/x") + ".sock"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || freebsd
 
 package fuse
 
@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"syscall"
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -77,19 +76,15 @@ func nodeOptions(s settings, log *slog.Logger) *fs.Options {
 }
 
 // mountOptions describes the mount to the kernel. Read-only makes the kernel refuse
-// writes itself. DirectMount makes go-fuse call mount(2) first, which needs no helper
-// program when the client runs as root, and fall back to fusermount3 otherwise. The two
-// routes take the read-only setting differently: mount(2) as a flag, which go-fuse
-// replaces with its own default unless it is given again here, and fusermount3 as the
-// option "ro".
+// writes itself. The system specific part is in systemOptions.
 func mountOptions(opts mount.Options, log *slog.Logger) *fuse.MountOptions {
-	return &fuse.MountOptions{
-		FsName:           opts.Source,
-		Name:             subtype,
-		AllowOther:       opts.AllowOther,
-		Options:          []string{"ro"},
-		DirectMount:      true,
-		DirectMountFlags: syscall.MS_RDONLY | syscall.MS_NOSUID | syscall.MS_NODEV,
-		Logger:           slog.NewLogLogger(log.Handler(), slog.LevelWarn),
+	o := &fuse.MountOptions{
+		FsName:     opts.Source,
+		Name:       subtype,
+		AllowOther: opts.AllowOther,
+		Options:    []string{"ro"},
+		Logger:     slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+	systemOptions(o)
+	return o
 }
