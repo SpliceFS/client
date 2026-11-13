@@ -58,6 +58,12 @@ jobs:
         env:
           SIGNING_DIR: ${{ runner.temp }}/signing
         run: make repo
+      # The FreeBSD packages are built in a FreeBSD machine, and their repository is signed with
+      # the same key; this must finish before the publish step, which checks for its files.
+      - name: Build the FreeBSD packages and their signed repository
+        env:
+          SIGNING_DIR: ${{ runner.temp }}/signing
+        run: make package-freebsd
       - name: Install and remove each package in a clean system of its kind
         run: make package-test
       - name: Start the service under the real service manager of every system

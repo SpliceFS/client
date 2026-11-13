@@ -81,6 +81,16 @@ for f in apt/dists/stable/InRelease rpm/x86_64/repodata/repomd.xml.asc \
   alpine/aarch64/APKINDEX.tar.gz; do
   [ -f "$REPO/$f" ] || { echo "missing $REPO/$f, run make repo first" >&2; exit 1; }
 done
+# The FreeBSD versions come from the list the packages are built for, so they are written
+# down once. Each major version has one folder per CPU type.
+majors=$(awk '!/^#/ && NF { split($1, v, "."); print v[1] }' \
+  "$ROOT/packaging/freebsd/images" | sort -un)
+for major in $majors; do
+  for arch in amd64 aarch64; do
+    f=freebsd/FreeBSD:$major:$arch/meta.conf
+    [ -f "$REPO/$f" ] || { echo "missing $REPO/$f, run make package-freebsd first" >&2; exit 1; }
+  done
+done
 
 # A published package must never disappear, and the repository built from fetch holds every
 # old package, so a deletion means something went wrong. Only two kinds of file may go:

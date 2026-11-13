@@ -20,6 +20,26 @@ pass() { echo "ok   $*"; }
 fail() { echo "FAIL $*"; failed=$((failed + 1)); }
 skip() { echo "SKIP $*"; }
 
+# dist/repo may come from make repo alone, without the FreeBSD folders that make
+# package-freebsd adds. base is dist/repo plus a stand-in catalog and package for each
+# FreeBSD folder that is not there, so every send that should pass has what it needs.
+base="$tmp/base"
+cp -R dist/repo "$base"
+freebsd_dirs=""
+majors=$(awk '!/^#/ && NF { split($1, v, "."); print v[1] }' \
+    packaging/freebsd/images | sort -un)
+for major in $majors; do
+    for arch in amd64 aarch64; do
+        d="freebsd/FreeBSD:$major:$arch"
+        freebsd_dirs="$freebsd_dirs $d"
+        if [ ! -f "$base/$d/meta.conf" ]; then
+            mkdir -p "$base/$d/All"
+            echo "meta" > "$base/$d/meta.conf"
+            echo "pkg $major $arch" > "$base/$d/All/splicefs-server-0.0.1.pkg"
+        fi
+    done
+done
+
 chmod_ok=1
 rsync --chmod=F644 --list-only "$tmp" >/dev/null 2>&1 || chmod_ok=0
 # A refused send is a result to check, not a reason to stop. send always returns 0 and leaves
@@ -36,13 +56,13 @@ if [ "$chmod_ok" -eq 0 ]; then
     skip "a send to an empty folder: rsync has no --chmod"
     skip "b stale index removed, package missing locally refused: rsync has no --chmod"
     skip "c send refuses when a published package would disappear: rsync has no --chmod"
-    cp -R dist/repo "$tmp/target"
+    cp -R "$base" "$tmp/target"
 else
     mkdir "$tmp/target"
-    send dist/repo "$tmp/target"
+    send "$base" "$tmp/target"
     wrong_file_modes="$(find "$tmp/target" -type f ! -perm 644)"
     wrong_dir_modes="$(find "$tmp/target" -type d ! -perm 755)"
-    if [ "$send_status" -eq 0 ] && diff -r dist/repo "$tmp/target" &&
+    if [ "$send_status" -eq 0 ] && diff -r "$base" "$tmp/target" &&
         [ -z "$wrong_file_modes" ] && [ -z "$wrong_dir_modes" ]; then
         pass "a send to an empty folder gives the same tree, modes 644 and 755"
     else
@@ -51,10 +71,10 @@ else
 
     # (b) Index files that a new build replaces go; that is the only thing a send removes.
     echo stale > "$tmp/target/rpm/x86_64/repodata/stale-primary.xml.gz"
-    send dist/repo "$tmp/target"
+    send "$base" "$tmp/target"
     if [ "$send_status" -eq 0 ] &&
         [ ! -e "$tmp/target/rpm/x86_64/repodata/stale-primary.xml.gz" ] &&
-        diff -r dist/repo "$tmp/target"; then
+        diff -r "$base" "$tmp/target"; then
         pass "b the stale repodata file is gone and nothing else changed"
     else
         fail "b stale repodata removed"; sed 's/^/     /' "$tmp/out"
@@ -65,7 +85,7 @@ else
     old="apt/pool/main/old/old-package_0.0.1_amd64.deb"
     mkdir -p "$tmp/target/$(dirname "$old")"
     echo old > "$tmp/target/$old"
-    send dist/repo "$tmp/target"
+    send "$base" "$tmp/target"
     if [ "$send_status" -eq 0 ]; then
         fail "b send went ahead although a published package is missing locally"
     elif [ -f "$tmp/target/$old" ] && grep -q "$old" "$tmp/out"; then
@@ -77,8 +97,8 @@ else
     rmdir "$tmp/target/$(dirname "$old")"
 
     # (c) A repository that lacks a published package is refused and nothing is deleted.
-    cp -R dist/repo "$tmp/copy"
-    rpm="$(cd dist/repo && find rpm/x86_64 -name "*.rpm" | head -n 1)"
+    cp -R "$base" "$tmp/copy"
+    rpm="$(cd "$base" && find rpm/x86_64 -name "*.rpm" | head -n 1)"
     rm "$tmp/copy/$rpm"
     send "$tmp/copy" "$tmp/target"
     if [ "$send_status" -eq 0 ]; then
@@ -152,7 +172,7 @@ else
 fi
 
 # (f) An incomplete repository is refused before anything is sent.
-cp -R dist/repo "$tmp/partial"
+cp -R "$base" "$tmp/partial"
 rm "$tmp/partial/alpine/aarch64/APKINDEX.tar.gz"
 send "$tmp/partial" "$tmp/neverthere"
 if [ "$send_status" -eq 0 ] || [ -e "$tmp/neverthere" ]; then
@@ -161,6 +181,36 @@ elif grep -q 'missing .*APKINDEX.tar.gz' "$tmp/out"; then
     pass "f send refuses a repository without alpine/aarch64/APKINDEX.tar.gz"
 else
     fail "f send refused for the wrong reason"; sed 's/^/     /' "$tmp/out"
+fi
+
+# (g) A FreeBSD catalog that is missing stops the send before anything is sent.
+cp -R "$base" "$tmp/nofb"
+fb_first="${freebsd_dirs# }"; fb_first="${fb_first%% *}"
+rm "$tmp/nofb/$fb_first/meta.conf"
+send "$tmp/nofb" "$tmp/neverthere2"
+if [ "$send_status" -eq 0 ] || [ -e "$tmp/neverthere2" ]; then
+    fail "g send must refuse a repository without a FreeBSD meta.conf"
+elif grep -q "missing .*$fb_first/meta.conf" "$tmp/out" && grep -q 'make package-freebsd' "$tmp/out"; then
+    pass "g send refuses a repository without $fb_first/meta.conf, and sends nothing"
+else
+    fail "g send refused for the wrong reason"; sed 's/^/     /' "$tmp/out"
+fi
+
+# (h) A published FreeBSD package that is missing locally is refused like any other package.
+if [ "$chmod_ok" -eq 1 ]; then
+    oldfb="$fb_first/All/old-package-0.0.1.pkg"
+    echo old > "$tmp/target/$oldfb"
+    send "$base" "$tmp/target"
+    if [ "$send_status" -eq 0 ]; then
+        fail "h send went ahead although a published FreeBSD package is missing locally"
+    elif [ -f "$tmp/target/$oldfb" ] && grep -q "$oldfb" "$tmp/out"; then
+        pass "h send refused because a published FreeBSD package is missing locally"
+    else
+        fail "h refusal for a FreeBSD package missing locally"; sed 's/^/     /' "$tmp/out"
+    fi
+    rm "$tmp/target/$oldfb"
+else
+    skip "h FreeBSD package missing locally refused: rsync has no --chmod"
 fi
 
 [ "$failed" -eq 0 ] || { echo "$failed check(s) failed"; exit 1; }

@@ -72,7 +72,7 @@ notable ones.
   package is removed.
 - FreeBSD: the client runs on FreeBSD 14 and 15, with the same FUSE mounts as on Linux.
   `make check-freebsd` runs the tests in a FreeBSD virtual machine, and `make package-freebsd`
-  builds, installs and tests the package there. The package is not published yet.
+  builds, installs and tests the package there.
 - `make lint` also runs ShellCheck, with every optional check on; the two that are off say why
   in `.shellcheckrc`. `make check` fails when a compiled program or a file over 1 MiB is
   tracked. The FreeBSD scripts are the same files as the server's again.
@@ -83,6 +83,8 @@ notable ones.
   with status 1.
 - `make check` fails when a tracked file names a private machine, account or place, and the
   ignore rules cover programs built in place, editor leftovers and disk images.
+- FreeBSD packages are published as a signed package repository
+  (`https://packages.splicefs.org/client/freebsd/${ABI}`).
 
 ### Changed
 
