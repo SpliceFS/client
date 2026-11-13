@@ -97,6 +97,11 @@ jobs:
         run: make package
       - name: Install and remove each package in a clean system of its kind
         run: make package-test
+      # The containers above have no service manager running. These do: process 1 is
+      # systemd or OpenRC, and the service must start by itself, come back after a reboot
+      # and stop when the package is removed.
+      - name: Start the service under the real service manager of every system
+        run: make service-test
       - name: Build the signed package repositories
         run: make repo
       - name: Install from the repositories with signature checks on

@@ -60,6 +60,8 @@ jobs:
         run: make repo
       - name: Install and remove each package in a clean system of its kind
         run: make package-test
+      - name: Start the service under the real service manager of every system
+        run: make service-test
       - name: Install from the repositories with signature checks on
         run: make repo-test
       - name: Collect and sign the release files

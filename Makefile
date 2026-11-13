@@ -22,8 +22,8 @@ PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_D
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
 .PHONY: script-modes all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test \
-	package package-order-test package-test repo repo-test publish-fetch publish publish-check \
-	publish-test release-assets clean
+	package package-order-test package-test service-test repo repo-test publish-fetch publish \
+	publish-check publish-test release-assets clean
 
 all: check build
 
@@ -106,6 +106,15 @@ package-order-test:
 # packaging/test-systems (CI reads the same list) and reports each system's result.
 package-test: package-order-test
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh
+
+# Proves the service, not only the files: in a container per system in packaging/test-systems
+# that runs that system's own service manager, installs the package and checks that the
+# service starts by itself, runs as the user the unit names, answers the status command,
+# restarts, comes back after a reboot and stops when the package is removed. It needs the
+# packages in ./dist from make package. SYSTEMS=debian:12 runs only the lines of the list that
+# contain that text.
+service-test:
+	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/service-test.sh
 
 # Signed package repositories in ./dist/repo, made from the packages make package left in
 # ./dist (it builds none). Keys come from scripts/signing-keys.sh, which is the one place that
