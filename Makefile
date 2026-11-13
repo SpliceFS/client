@@ -132,6 +132,7 @@ package:
 .PHONY: package-freebsd
 package-freebsd:
 	mkdir -p dist
+	scripts/signing-keys.sh
 	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cp -r /src /tmp/w && cd /tmp/w && \
 		scripts/package-binaries.sh /out'
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) LINUX_IMAGE=$(LINUX_IMAGE) \

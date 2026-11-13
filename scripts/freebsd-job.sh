@@ -4,6 +4,12 @@
 # service runs. What "the service works" means for this program comes from check-lib.sh in
 # the input folder (packaging/freebsd/check-lib.sh): expected_user and answers.
 #
+# It also builds the signed package repository. The input archive on the fourth disk holds
+# keys/splicefs.rsa(.pub) and the packages published before (repo/FreeBSD:<major>:<cpu>/All/).
+# The output gets repo/FreeBSD:<major>:<cpu>/ with the new package and the catalog of all
+# packages that pkg repo signed. The package of this machine is installed from that repository with the signature
+# check on, and a repository signed with another key must be refused.
+#
 #   freebsd-job.sh <input folder> <output folder> <package name> <program> <package version> <program version>
 set -eu
 in="$1"
@@ -52,13 +58,44 @@ build amd64 amd64
 build arm64 aarch64
 
 case "$machine" in
-    amd64) mine="$out/FreeBSD-$major-amd64" ;;
-    arm64) mine="$out/FreeBSD-$major-aarch64" ;;
+    amd64) mine_abiarch=amd64 ;;
+    arm64) mine_abiarch=aarch64 ;;
     *) fail "unknown machine $machine" ;;
 esac
+mine="$out/FreeBSD-$major-$mine_abiarch"
 package="$mine/$name-$version.pkg"
 [ -f "$package" ] || fail "pkg create did not write $package"
 pkg info -F "$package" > "$out/info-$machine.txt"
+
+# The signed repository. The input archive is a raw disk, so it is unpacked onto the
+# filesystem first. pkg refuses a private key that others can read, and a file on the job
+# disk cannot be given a mode, so the keys are copied to a folder of their own.
+input_dir=/tmp/input
+keys=/tmp/keys
+mkdir -p "$input_dir" "$keys"
+tar -xf /dev/vtbd3 -C "$input_dir" || fail "cannot read the input archive"
+install -m 0600 "$input_dir/keys/splicefs.rsa" "$keys/splicefs.rsa"
+install -m 0644 "$input_dir/keys/splicefs.rsa.pub" "$keys/splicefs.rsa.pub"
+for abiarch in amd64 aarch64; do
+    folder="$out/repo/FreeBSD:$major:$abiarch"
+    mkdir -p "$folder/All"
+    # Only the packages are taken over: the catalog is made again, so that it holds only what
+    # this run wrote.
+    if [ -d "$input_dir/repo/FreeBSD:$major:$abiarch/All" ]; then
+        cp -R "$input_dir/repo/FreeBSD:$major:$abiarch/All/." "$folder/All/"
+    fi
+    cp "$out/FreeBSD-$major-$abiarch/$name-$version.pkg" "$folder/All/"
+    # rsa: names the kind of key, as pkg 2 wants it; the catalog files then carry a signature.
+    pkg repo "$folder" "rsa:$keys/splicefs.rsa" || fail "pkg repo could not sign the catalog of $folder"
+    [ -f "$folder/meta.conf" ] || fail "pkg repo did not write $folder/meta.conf"
+done
+repo_folder="$out/repo/FreeBSD:$major:$mine_abiarch"
+
+# Writes a repository configuration: <file> <repository name> <folder>.
+write_repo_conf() {
+    printf '%s: {\n  url: "file://%s",\n  signature_type: "pubkey",\n  pubkey: "%s",\n  enabled: yes\n}\n' \
+        "$2" "$3" "$keys/splicefs.rsa.pub" > "$1"
+}
 
 # Waits until the command given succeeds, at most $1 seconds. Sets wait_status to 0 when it
 # did and to 1 when the time ran out, and never fails itself, so that the caller reports the
@@ -87,7 +124,12 @@ show() {
     tail -n 30 "/var/log/$program.log" 2>/dev/null || true
 }
 
-pkg add "$package"
+# The package is installed from the signed repository, as a person would, and from no other
+# repository: -r names ours, so the public FreeBSD ones are not asked.
+mkdir -p /usr/local/etc/pkg/repos
+write_repo_conf /usr/local/etc/pkg/repos/splicefs.conf splicefs "$repo_folder"
+pkg update -r splicefs
+pkg install -y -r splicefs "$name"
 [ -x "/usr/local/bin/$program" ] || fail "the program is not installed"
 "/usr/local/bin/$program" --version | grep -qF "$program_version" ||
     fail "$program --version does not report $program_version"
@@ -118,3 +160,43 @@ pkg delete -y "$name" >/dev/null
 if answers; then fail "the service still answers after the package was removed"; fi
 [ ! -e "/usr/local/bin/$program" ] || fail "remove left the program behind"
 echo "removed: the service stopped"
+
+# A repository that is not signed with our key is refused. Two copies of the repository are
+# made, one signed again with a key made here and one not signed at all, and the package must
+# not install from either while the configuration names our public key. pkg update reports
+# success even when it throws a catalog away for its signature, so the install is what is
+# tested. Each copy has its own name and its own configuration folder, so that it is the only
+# repository pkg knows and the good catalog fetched above cannot stand in for it. The package
+# was removed above, so an install has something to do.
+( umask 077 && openssl genrsa -out /tmp/other.rsa 2048 2>/dev/null )
+for kind in otherkey unsigned; do
+    bad_folder="/tmp/bad-$kind"
+    bad_conf="/tmp/bad-$kind-conf"
+    rm -rf "$bad_folder" "$bad_conf"
+    mkdir -p "$bad_folder" "$bad_conf"
+    cp -R "$repo_folder/All" "$bad_folder/"
+    if [ "$kind" = otherkey ]; then
+        pkg repo "$bad_folder" rsa:/tmp/other.rsa >/dev/null
+    else
+        pkg repo "$bad_folder" >/dev/null
+    fi
+    write_repo_conf "$bad_conf/bad.conf" "splicefs$kind" "$bad_folder"
+    pkg -o REPOS_DIR="$bad_conf" update -f -r "splicefs$kind" >/dev/null 2>&1 || true
+    # pkg is a program here, so set -e is not off inside it.
+    if pkg -o REPOS_DIR="$bad_conf" install -y -r "splicefs$kind" "$name" >/dev/null 2>&1; then
+        fail "the package installed from a repository that is $kind"
+    fi
+done
+echo "repository: signed catalog accepted; one signed with another key and an unsigned one refused"
+
+# The packages published before were needed for the catalog, and the host has them already:
+# they do not travel back, so the result stays small however many versions are published.
+for abiarch in amd64 aarch64; do
+    old_packages="$input_dir/repo/FreeBSD:$major:$abiarch/All"
+    [ -d "$old_packages" ] || continue
+    for old in "$old_packages"/*.pkg; do
+        [ -f "$old" ] || continue
+        old_name="$(basename "$old")"
+        [ "$old_name" = "$name-$version.pkg" ] || rm -f "$out/repo/FreeBSD:$major:$abiarch/All/$old_name"
+    done
+done

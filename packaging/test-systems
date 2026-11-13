@@ -1,8 +1,10 @@
 # The systems every package is install-tested on: one line per system, "<format> <image>".
 # Both make package-test and CI read this file; it is the only place test images are named.
 # The format picks the package and the script that tests it (scripts/package-test-<format>.sh).
-# A system is listed only while its own vendor supports it. When that support ends, its
-# line is removed: an end-of-life system cannot be tested and must not be promised.
+# A release is listed when its own vendor supports it for 2 years or more, and only while
+# that support lasts. When it ends, the line is removed: an end-of-life system cannot be
+# tested and must not be promised. Releases with shorter support (Ubuntu's interim releases,
+# Fedora) are not listed.
 deb debian:12
 # golang:1.27 is Debian 13 and is the image the packages are built in.
 deb golang:1.27
