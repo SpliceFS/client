@@ -81,6 +81,8 @@ notable ones.
   Behavior, the configuration keys and the messages are unchanged, with one exception: when
   the answer to `--help` or `--version` cannot be written, the program now says so and exits
   with status 1.
+- `make check` fails when a tracked file names a private machine, account or place, and the
+  ignore rules cover programs built in place, editor leftovers and disk images.
 
 ### Changed
 

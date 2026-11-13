@@ -139,3 +139,40 @@ $RECYCLE.BIN/
 .Trash-*
 .nfs*
 .fuse_hidden*
+
+# --- Programs built in place -----------------------------------------------------
+# "go build ./cmd/x" writes the program into the folder it is run from, and "go build"
+# inside cmd/x writes it next to its source. Such a file was committed by mistake once: it
+# carries the folder names of the machine it was built on. make tracked-files checks for
+# it as well, because an ignore rule does not stop "git add -f".
+/splicefs
+/splicefsd
+/cmd/*/splicefs
+/cmd/*/splicefsd
+*.core
+
+# --- Leftovers of tools that edit files in place ------------------------------------
+# "sed -i -E" on macOS takes -E as the backup suffix and leaves x.go-E next to x.go.
+*-E
+cover.html
+
+# --- Virtual machine images and caches ---------------------------------------------
+# The FreeBSD build downloads disk images of several hundred megabytes into ./dist; these
+# rules catch one that is put anywhere else.
+*.qcow2
+*.img
+*.iso
+*.raw
+*.vhd
+*.vmdk
+*.xz
+
+# --- Private keys of the package formats ---------------------------------------------
+# The public halves (*.rsa.pub, *.asc) are part of the project; a private half never is.
+*.rsa
+!*.rsa.pub
+
+# --- Other languages' leftovers --------------------------------------------------------
+__pycache__/
+*.pyc
+node_modules/
