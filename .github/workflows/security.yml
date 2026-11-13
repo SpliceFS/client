@@ -2,7 +2,7 @@ name: Security
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
   schedule:
     # Weekly, so newly published vulnerabilities are caught without a code change.

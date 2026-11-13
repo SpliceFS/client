@@ -1,0 +1,17 @@
+name: Rules
+
+# The pull request rules shared by the SpliceFS repositories: the description states the
+# scope of the change, and the release bot sets the version in the branch.
+# See https://github.com/SpliceFS/.github
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  rules:
+    uses: SpliceFS/.github/.github/workflows/pull-request-rules-v1.yml@main
+    secrets:
+      bot-private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
