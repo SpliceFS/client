@@ -1,0 +1,7 @@
+bin/splicefs
+etc/rc.d/splicefs
+@dir etc/splicefs/client/conf.d
+@dir etc/splicefs/client/clusters.d
+@dir etc/splicefs/client/mounts.d
+@dir etc/splicefs/client
+@dir etc/splicefs

@@ -1,0 +1,9 @@
+# The FreeBSD systems the package is built and tested on: one line per system,
+# "<release> <machine> <sha256 of the download> <address>". These are the official virtual
+# machine images of the FreeBSD project, the kind that runs a first-boot script. The checksum
+# is the one the project publishes next to each image; a download that does not match is
+# refused, so a changed image cannot slip into a build.
+15.1 amd64 e4ca4db889f8559c9b9dfcacc70405c038476f4b6d41649b152d3809a2ed9e1f https://download.freebsd.org/releases/VM-IMAGES/15.1-RELEASE/amd64/Latest/FreeBSD-15.1-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz
+15.1 arm64 9722aea499610802de9a14bb645707fc4f6df49ff765cd9ce372b783c4693963 https://download.freebsd.org/releases/VM-IMAGES/15.1-RELEASE/aarch64/Latest/FreeBSD-15.1-RELEASE-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2.xz
+14.5 amd64 a2a8cd84cd59077225a0e75ead852e8a08fe26f9ab251a96d5a4fd4fe1db4454 https://download.freebsd.org/releases/VM-IMAGES/14.5-RELEASE/amd64/Latest/FreeBSD-14.5-RELEASE-amd64-BASIC-CLOUDINIT-ufs.qcow2.xz
+14.5 arm64 8c0309f7aaa69674c3e657eb4d4642d5eef816094aea3c7c0b0b505a7049f0ca https://download.freebsd.org/releases/VM-IMAGES/14.5-RELEASE/aarch64/Latest/FreeBSD-14.5-RELEASE-arm64-aarch64-BASIC-CLOUDINIT-ufs.qcow2.xz

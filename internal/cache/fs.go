@@ -57,6 +57,11 @@ func statfsFree(dir string) (uint64, error) {
 	if err := syscall.Statfs(dir, &st); err != nil {
 		return 0, err
 	}
-	block := uint64(st.Bsize) //nolint:gosec // a block size reported by the kernel is never negative
-	return st.Bavail * block, nil
+	return asUint64(st.Bavail) * asUint64(st.Bsize), nil
 }
+
+// asUint64 exists because the fields of Statfs_t have another type on every system: the
+// block size is int64 on Linux, uint32 on macOS and uint64 on FreeBSD, and the free blocks
+// are uint64 on Linux and macOS and int64 on FreeBSD. Neither number is ever negative when
+// the kernel reports it, so the conversion cannot wrap.
+func asUint64[T int32 | int64 | uint32 | uint64](v T) uint64 { return uint64(v) }

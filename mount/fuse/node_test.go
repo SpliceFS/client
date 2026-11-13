@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || freebsd
 
 package fuse
 
@@ -752,11 +752,12 @@ func TestMountOptions(t *testing.T) {
 	t.Parallel()
 	in := mount.Options{Target: "/mnt/x", Source: "splicefs:example/media", AllowOther: true}
 	got := mountOptions(in, slog.New(slog.DiscardHandler))
-	if got.FsName != "splicefs:example/media" || got.Name != "splicefs" || !got.AllowOther || !got.DirectMount {
+	if got.FsName != "splicefs:example/media" || got.Name != "splicefs" || !got.AllowOther {
 		t.Fatalf("mount options = %+v", got)
 	}
-	if len(got.Options) != 1 || got.Options[0] != "ro" || got.DirectMountFlags&syscall.MS_RDONLY == 0 {
-		t.Fatalf("Options = %v, flags %#x; want ro by both routes", got.Options, got.DirectMountFlags)
+	// Every system mounts read-only; what a system adds is checked in its own test.
+	if len(got.Options) == 0 || got.Options[0] != "ro" {
+		t.Fatalf("Options = %v, want ro first", got.Options)
 	}
 	in.AllowOther = false
 	if mountOptions(in, slog.New(slog.DiscardHandler)).AllowOther {

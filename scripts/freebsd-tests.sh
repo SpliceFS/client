@@ -1,0 +1,31 @@
+#!/bin/sh
+# Builds the test program of every package for FreeBSD and packs them, with the source they
+# read their test files from, into one archive per CPU type: OUTPUT_DIR/<arch>/in.tar. The
+# FreeBSD machine of scripts/check-freebsd.sh unpacks the archive and runs the programs. It
+# runs inside the Go container (make check-freebsd), in a copy of the source.
+set -eu
+
+out="${1:?usage: freebsd-tests.sh OUTPUT_DIR}"
+
+for arch in amd64 arm64; do
+    stage="$out/$arch/stage"
+    rm -rf "${out:?}/$arch"
+    mkdir -p "$stage/tests"
+    : > "$stage/tests/list"
+    go list -f '{{.Dir}}' ./... | while read -r dir; do
+        rel="${dir#"$PWD"}"
+        rel="${rel#/}"
+        name="$(printf '%s' "${rel:-root}" | tr / _)"
+        # No race detector: it needs C code, which a build for another system cannot have.
+        # A package without tests writes no program and is left out.
+        CGO_ENABLED=0 GOOS=freebsd GOARCH="$arch" go test -c -covermode=atomic \
+            -o "$stage/tests/$name.test" "./$rel" >/dev/null
+        if [ -f "$stage/tests/$name.test" ]; then
+            echo "$name ${rel:-.}" >> "$stage/tests/list"
+        fi
+    done
+    tar -cf "$out/$arch/in.tar" --exclude=./.git --exclude=./dist --exclude=./bin .
+    tar -rf "$out/$arch/in.tar" -C "$stage" tests
+    rm -rf "$stage"
+    echo "FreeBSD test programs for $arch: $(tar -tf "$out/$arch/in.tar" | grep -c '\.test$')"
+done

@@ -17,5 +17,16 @@ for arch in amd64 arm64; do
         -o "$out/stage/$arch/$program" "./cmd/$program"
 done
 
+# FreeBSD keeps what packages install under /usr/local, so these programs are built with
+# FreeBSD's folders as their defaults (see config/paths.go).
+for arch in amd64 arm64; do
+    mkdir -p "$out/stage/freebsd-$arch"
+    CGO_ENABLED=0 GOOS=freebsd GOARCH="$arch" go build -trimpath \
+        -ldflags "-s -w -X $module/internal/version.version=$VERSION \
+            -X $module/config.defaultConfigDir=/usr/local/etc/splicefs/client \
+            -X $module/config.defaultCacheDir=/var/cache/splicefs" \
+        -o "$out/stage/freebsd-$arch/$program" "./cmd/$program"
+done
+
 # The unit in the repository is written for a manual install under /usr/local.
 sed 's|/usr/local/bin/|/usr/bin/|' "packaging/systemd/$program.service" > "$out/stage/$program.service"

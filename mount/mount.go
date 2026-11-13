@@ -1,5 +1,5 @@
 // Package mount defines what every mount layer offers the client program. A mount layer
-// (FUSE on Linux, a local NFS server on macOS) turns kernel requests into calls on a
+// (FUSE on Linux and FreeBSD, a local NFS server on macOS) turns kernel requests into calls on a
 // core.FS. Keeping this contract in its own package lets the program choose a layer per
 // operating system without the layers knowing about each other.
 package mount

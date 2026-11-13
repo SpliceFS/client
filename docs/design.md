@@ -25,6 +25,7 @@ The client is one program built from two layers:
 | Platform | Mount layer | Extra software on the reader |
 |---|---|---|
 | Linux | FUSE | none as root; the `fuse3` package for an ordinary user |
+| FreeBSD | FUSE | the `fusefs` kernel module, loaded |
 | macOS | a local NFS server inside the client, mounted with the built-in NFS client | none |
 
 FUSE on macOS needs third-party software (macFUSE or FUSE-T) whose kernel interface is in
@@ -271,6 +272,17 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
 - **Offline use needs a running client.** Directory listings are kept in memory only. A
   client that is restarted while no node can be reached has nothing to list, even though
   file contents are still in its cache.
+- **FreeBSD: a hung mount cannot be aborted.** On Linux the client cuts the kernel connection
+  of a hung mount after the forced unmount, so the requests that wait on it fail. FreeBSD has
+  no interface for that, so the client cannot free programs that already wait on a hung
+  mount. It still unmounts the mount and mounts it again.
+- **FreeBSD: a missing name is asked for every time.** Linux remembers for a short time that a
+  name does not exist. FreeBSD's FUSE does not, so every look-up of a missing name goes to the
+  client again.
+- **FreeBSD: a forced unmount also ends open files.** FreeBSD has no lazy unmount, so the
+  client detaches a mount with a forced unmount (`MNT_FORCE`), which makes files that are
+  still open fail. On Linux a detached mount keeps serving its open files. A mount that is
+  in use is refused with "busy" when the client unmounts it without force.
 - **Linux: read-ahead cannot be interrupted.** The kernel does not forward the interruption
   of a program to requests it issued as read-ahead, so a killed reader's last block requests
   run to completion.
