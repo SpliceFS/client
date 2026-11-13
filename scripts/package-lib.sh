@@ -20,6 +20,20 @@ fail() {
     exit 1
 }
 
+# Fetches an image for one test system: up to 3 tries, 5 seconds apart, quiet on success.
+# A registry that fails to deliver now and then is not a fault of the package under test, so
+# the callers report a failed download as one. Pulling first also keeps the download out of
+# the log of the test itself. Usage: pull_image PLATFORM IMAGE; status 1 after the last try.
+pull_image() {
+    tries=0
+    while [ "$tries" -lt 3 ]; do
+        tries=$((tries + 1))
+        if docker pull --quiet --platform "$1" "$2" >/dev/null 2>&1; then return 0; fi
+        if [ "$tries" -lt 3 ]; then sleep 5; fi
+    done
+    return 1
+}
+
 # VERSION is what git describe prints: v1.2.3 on a release, v1.2.3-rc.1 on a pre-release,
 # v1.2.3-4-gabc after either, only a commit when there is no release yet, and a trailing
 # -dirty when the tree has changes. Split it into core (1.2.3), pre (rc.1, may be empty) and

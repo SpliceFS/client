@@ -127,7 +127,13 @@ check_removal() {
 # One system. Every command is guarded with fail because errexit is off for anything called
 # from an if; the caller runs this in a subshell so that fail ends only this system.
 run_checks() {
-    wait_ready "$1" || fail "the service manager did not finish booting"
+    # The first command of the container (installing the service manager where the image
+    # lacks one) writes its own error to the container log; without it the cause stays hidden.
+    wait_ready "$1" || {
+        echo "--- last 30 lines of the container output"
+        docker logs --tail 30 "$1" 2>&1 || true
+        fail "the service manager did not finish booting"
+    }
     install_package "$1" || fail "installing the package failed"
     check_starts_by_itself "$1"
     check_user "$1"
@@ -156,6 +162,19 @@ while read -r format image; do
     reason="$(skip_reason "$image")"
     if [ -n "$reason" ]; then
         echo "skipped: $format $image: $reason"
+        continue
+    fi
+
+    # A registry failure must not look like a failed service test.
+    # Errexit is off for the call to read its status; pull_image checks every command itself.
+    set +e
+    pull_image "$platform" "$image"
+    pulled=$?
+    set -e
+    if [ "$pulled" -ne 0 ]; then
+        echo "FAIL $format $image"
+        echo "     could not download the image $image (3 tries)"
+        failed=$((failed + 1))
         continue
     fi
 
