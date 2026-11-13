@@ -21,7 +21,7 @@ PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null
 PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
-.PHONY: all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test \
+.PHONY: script-modes all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test \
 	package package-order-test package-test repo repo-test publish-fetch publish publish-check \
 	publish-test release-assets clean
 
@@ -31,7 +31,14 @@ build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefs ./cmd/splicefs
 
 # Everything CI runs except the linter.
-check: fmt-check vet cover package-lib-test
+check: fmt-check vet cover package-lib-test script-modes
+
+# A script that lost its executable bit fails only where it is run directly, which for the
+# publishing script is the release job. This finds it in every check. Libraries (-lib.sh) are
+# read by other scripts and never run.
+script-modes:
+	@bad="$$(git ls-files -s -- 'scripts/*.sh' 'packaging/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ {print $$4}')"; \
+	if [ -n "$$bad" ]; then echo "not executable in git:"; echo "$$bad"; exit 1; fi
 
 fmt:
 	gofmt -w .
