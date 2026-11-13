@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -173,12 +174,28 @@ func TestListingAtTheLimitIsAccepted(t *testing.T) {
 
 func TestTransportFailureIsUnavailable(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.NotFoundHandler())
-	n, err := New("east", srv.URL+"/api", srv.Client())
+	// The listener stays open for the whole test and drops every connection at once. A
+	// closed server would free its port for a server of a parallel test, and the
+	// operations would then get an HTTP answer instead of a transport failure.
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+	n, err := New("east", "http://"+ln.Addr().String()+"/api", &http.Client{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, op := range operations {
 		t.Run(op.name, func(t *testing.T) {
 			t.Parallel()
