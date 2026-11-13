@@ -16,23 +16,23 @@ type item struct {
 }
 
 // fresh reports whether the item may be answered from memory. The caller holds t.mu.
-func (t *Tree) fresh(it *item) bool {
+func (t *Tree) fresh(cached *item) bool {
 	ttl := t.opts.TTL
-	if it.missing {
+	if cached.missing {
 		ttl = t.opts.NegativeTTL
 	}
-	return t.opts.Now().Sub(it.at) < ttl
+	return t.opts.Now().Sub(cached.at) < ttl
 }
 
 // previous returns the listing in memory for dir, however old.
 func (t *Tree) previous(dir string) ([]record, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	it, ok := t.items[dir]
-	if !ok || it.missing {
+	cached, ok := t.items[dir]
+	if !ok || cached.missing {
 		return nil, false
 	}
-	return it.recs, true
+	return cached.recs, true
 }
 
 // store remembers the answer for dir, evicting the least recently used directories
@@ -40,22 +40,35 @@ func (t *Tree) previous(dir string) ([]record, bool) {
 func (t *Tree) store(dir string, recs []record, missing bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	it, ok := t.items[dir]
+	cached, ok := t.items[dir]
 	if ok {
-		t.order.MoveToFront(it.elem)
+		t.order.MoveToFront(cached.elem)
 	} else {
-		it = &item{dir: dir}
-		it.elem = t.order.PushFront(it)
-		t.items[dir] = it
+		cached = &item{dir: dir}
+		cached.elem = t.order.PushFront(cached)
+		t.items[dir] = cached
 	}
-	it.recs, it.missing, it.at = recs, missing, t.opts.Now()
+	cached.recs, cached.missing, cached.at = recs, missing, t.opts.Now()
 	for t.order.Len() > t.opts.MaxDirs {
-		t.drop(t.order.Back().Value.(*item))
+		t.evictOldest()
 	}
 }
 
 // drop removes an item. The caller holds t.mu.
-func (t *Tree) drop(it *item) {
-	t.order.Remove(it.elem)
-	delete(t.items, it.dir)
+func (t *Tree) drop(cached *item) {
+	t.order.Remove(cached.elem)
+	delete(t.items, cached.dir)
+}
+
+// evictOldest removes the least recently used item. The caller holds t.mu. Only items
+// are ever put in the order list; anything else is taken out of it all the same, so
+// that the caller's loop always ends.
+func (t *Tree) evictOldest() {
+	oldest := t.order.Back()
+	cached, ok := oldest.Value.(*item)
+	if !ok {
+		t.order.Remove(oldest)
+		return
+	}
+	t.drop(cached)
 }

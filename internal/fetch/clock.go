@@ -11,4 +11,6 @@ var _ Clock = SystemClock{}
 func (SystemClock) Now() time.Time { return time.Now() }
 
 // AfterFunc calls time.AfterFunc.
+//
+//nolint:ireturn // The Clock interface fixes this signature; tests substitute their own Timer.
 func (SystemClock) AfterFunc(d time.Duration, f func()) Timer { return time.AfterFunc(d, f) }

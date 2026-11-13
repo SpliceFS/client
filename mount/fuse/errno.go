@@ -19,7 +19,7 @@ const maxLoggedErrors = 256
 //
 // ErrUnavailable is EIO and never ENOENT: a network outage must not look like deleted
 // files.
-func errnoOf(err error) (errno syscall.Errno, known bool) {
+func errnoOf(err error) (syscall.Errno, bool) {
 	switch {
 	case errors.Is(err, core.ErrNotExist):
 		return syscall.ENOENT, true
@@ -52,17 +52,25 @@ func newErrorMapper(log *slog.Logger) *errorMapper {
 
 // errno maps err; see errnoOf.
 func (m *errorMapper) errno(err error) syscall.Errno {
-	errno, known := errnoOf(err)
-	if !known {
+	m.record(err)
+	errno, _ := errnoOf(err)
+	return errno
+}
+
+// record logs err once if the mapping has no rule for it. It is for callers that have
+// no error number to return, such as the close of a file at the end of a mount.
+//
+//nolint:errcheck // errcheck takes syscall.Errno for an error; only whether a rule exists matters here.
+func (m *errorMapper) record(err error) {
+	if _, known := errnoOf(err); !known {
 		m.logOnce(err)
 	}
-	return errno
 }
 
 func (m *errorMapper) logOnce(err error) {
 	text := err.Error()
 	if m.firstSighting(text) {
-		m.log.Error("unexpected error from core, reported as EIO", "error", text)
+		m.log.Error("unexpected error from core, reported as EIO", slog.String("error", text))
 	}
 }
 

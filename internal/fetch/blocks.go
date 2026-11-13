@@ -24,7 +24,7 @@ func (b *block) inFlight() bool { return len(b.fetches) > 0 || b.arriving }
 func (b *block) idle() bool { return !b.inFlight() && b.data == nil && b.waiters == 0 }
 
 func (b *block) fetchingFrom(s *source) bool {
-	return slices.ContainsFunc(b.fetches, func(f *fetch) bool { return f.src == s })
+	return slices.ContainsFunc(b.fetches, func(request *fetch) bool { return request.src == s })
 }
 
 // fetch is one request for a block.
@@ -47,11 +47,11 @@ func (f *fetch) slot() *int {
 	return &f.src.active
 }
 
-// readBlocks copies the blocks covering p from memory, waiting for missing
+// readBlocks copies the blocks covering dest from memory, waiting for missing
 // ones, and returns the blocks to be copied from the Store. Called with r.mu
 // held.
-func (r *Reader) readBlocks(o *op, p []byte, off int64) ([]int64, error) {
-	pending := pieces(off, off+int64(len(p)), r.opts.BlockSize)
+func (r *Reader) readBlocks(operation *op, dest []byte, off int64) ([]int64, error) {
+	pending := pieces(off, off+int64(len(dest)), r.opts.BlockSize)
 	for _, b := range pending {
 		r.block(b).waiters++
 	}
@@ -59,55 +59,62 @@ func (r *Reader) readBlocks(o *op, p []byte, off int64) ([]int64, error) {
 	var stored []int64
 	for {
 		before := len(pending)
-		rest, inStore := r.collect(p, off, pending)
-		pending, stored = rest, append(stored, inStore...)
+		collected := r.collect(dest, off, pending)
+		pending, stored = collected.missing, append(stored, collected.inStore...)
 		// Scheduled even when the read is complete: the read may have moved
 		// the window, and the read-ahead must follow it.
 		r.schedule()
 		if len(pending) == 0 {
 			return stored, nil
 		}
-		if err := r.opErr(o); err != nil {
+		if err := r.opErr(operation); err != nil {
 			return nil, err
 		}
 		if r.allGone() && !r.anyInFlight(pending) {
 			return nil, ErrUnavailable
 		}
 		if len(pending) < before {
-			r.progressed(o)
+			r.progressed(operation)
 		}
 		r.noteLowestWaited()
-		r.wait(o)
+		r.wait(operation)
 	}
 }
 
-// collect copies the pending blocks that are in memory into p and stops
+// collected is the outcome of collect.
+type collected struct {
+	missing []int64 // blocks in neither memory nor the Store
+	inStore []int64 // blocks to copy from the Store
+}
+
+// collect copies the pending blocks that are in memory into dest and stops
 // waiting for them and for those in the Store. It returns the blocks still
 // missing and the blocks to copy from the Store.
-func (r *Reader) collect(p []byte, off int64, pending []int64) (missing, inStore []int64) {
+func (r *Reader) collect(dest []byte, off int64, pending []int64) collected {
+	var result collected
 	for _, b := range pending {
 		switch {
-		case r.copyResident(p, off, b):
+		case r.copyResident(dest, off, b):
 			r.unwait(b)
 		case r.hasStored(b):
-			inStore = append(inStore, b)
+			result.inStore = append(result.inStore, b)
 			r.unwait(b)
 		default:
-			missing = append(missing, b)
+			result.missing = append(result.missing, b)
 		}
 	}
-	return missing, inStore
+	return result
 }
 
 // abandon stops waiting for the blocks a read ends without. Their fetches
 // are cancelled unless another read or the current streak needs them, so
 // that an interrupted read does not leave its requests running.
 func (r *Reader) abandon(blocks []int64) {
-	first, last := r.keepRange()
+	keep := r.keepRange()
 	for _, i := range blocks {
 		r.unwait(i)
 		if b := r.blocks[i]; b != nil {
-			r.cancelUnneeded(b, first, last)
+			r.cancelUnneeded(b, keep)
 		}
 	}
 	r.noteLowestWaited()
@@ -161,13 +168,13 @@ func (r *Reader) tidy(b *block) {
 	}
 }
 
-// copyResident copies the part of p in block b if b is in memory.
-func (r *Reader) copyResident(p []byte, off, b int64) bool {
+// copyResident copies the part of dest in block b if b is in memory.
+func (r *Reader) copyResident(dest []byte, off, b int64) bool {
 	e := r.blocks[b]
 	if e.data == nil {
 		return false
 	}
-	copyOverlap(p, off, e.data, b*r.opts.BlockSize)
+	copyOverlap(dest, off, e.data, b*r.opts.BlockSize)
 	r.touch(e)
 	return true
 }
@@ -178,11 +185,11 @@ func (r *Reader) touch(b *block) {
 }
 
 // copyOverlap copies the bytes that data, which starts at file offset at,
-// shares with p, which starts at off.
-func copyOverlap(p []byte, off int64, data []byte, at int64) {
+// shares with dest, which starts at off.
+func copyOverlap(dest []byte, off int64, data []byte, at int64) {
 	lo := max(off, at)
-	hi := min(off+int64(len(p)), at+int64(len(data)))
-	copy(p[lo-off:hi-off], data[lo-at:hi-at])
+	hi := min(off+int64(len(dest)), at+int64(len(data)))
+	copy(dest[lo-off:hi-off], data[lo-at:hi-at])
 }
 
 // blockMode reports whether reads are served in whole blocks. A file no
@@ -194,9 +201,9 @@ func (r *Reader) blockMode() bool {
 
 // front returns the read-ahead window, from the block at the read position
 // on. It exists only in block mode.
-func (r *Reader) front() (first, last int64) {
+func (r *Reader) front() blockRange {
 	if !r.blockMode() {
-		return 0, -1
+		return blockRange{first: 0, last: -1}
 	}
 	return windowAt(r.streak.pos, r.opts.ReadAhead, r.opts.BlockSize, r.opts.Size)
 }
@@ -207,26 +214,33 @@ func (r *Reader) front() (first, last int64) {
 // start to end a complete cache entry. Without a working Store this would
 // only download blocks to throw them away, so it stops at the first failed
 // write.
-func (r *Reader) backfillRange() (first, last int64) {
+func (r *Reader) backfillRange() blockRange {
 	if !r.blockMode() || r.store == nil || r.storeFailed {
-		return 0, -1
+		return blockRange{first: 0, last: -1}
 	}
-	return r.streak.start / r.opts.BlockSize, r.streak.pos/r.opts.BlockSize - 1
+	return blockRange{first: r.streak.start / r.opts.BlockSize, last: r.streak.pos/r.opts.BlockSize - 1}
 }
 
 // keepRange returns the blocks whose fetches serve the current streak: from
 // its start through the end of the read-ahead window.
-func (r *Reader) keepRange() (first, last int64) {
-	_, last = windowAt(r.streak.pos, r.opts.ReadAhead, r.opts.BlockSize, r.opts.Size)
-	return r.streak.start / r.opts.BlockSize, last
+func (r *Reader) keepRange() blockRange {
+	window := windowAt(r.streak.pos, r.opts.ReadAhead, r.opts.BlockSize, r.opts.Size)
+	return blockRange{first: r.streak.start / r.opts.BlockSize, last: window.last}
+}
+
+// wantedBlocks is the outcome of wanted.
+type wantedBlocks struct {
+	front    []int64 // the read-ahead window and the blocks reads wait for
+	backfill []int64 // the rest of the streak
 }
 
 // wanted lists, in ascending order, the blocks to fetch that are not stored,
 // in memory or in flight: front holds those of the read-ahead window and
 // those reads wait for, backfill the rest of the streak.
-func (r *Reader) wanted() (front, backfill []int64) {
-	first, last := r.front()
-	for b := first; b <= last; b++ {
+func (r *Reader) wanted() wantedBlocks {
+	var front, backfill []int64
+	window := r.front()
+	for b := window.first; b <= window.last; b++ {
 		front = append(front, b)
 	}
 	for b, e := range r.blocks {
@@ -236,13 +250,13 @@ func (r *Reader) wanted() (front, backfill []int64) {
 	}
 	slices.Sort(front)
 	front = slices.DeleteFunc(slices.Compact(front), r.satisfied)
-	first, last = r.backfillRange()
-	for b := first; b <= last; b++ {
+	fill := r.backfillRange()
+	for b := fill.first; b <= fill.last; b++ {
 		if !r.satisfied(b) && !slices.Contains(front, b) {
 			backfill = append(backfill, b)
 		}
 	}
-	return front, backfill
+	return wantedBlocks{front: front, backfill: backfill}
 }
 
 // satisfied reports whether block b needs no fetch.
@@ -261,11 +275,12 @@ func (r *Reader) schedule() {
 	if r.closed {
 		return
 	}
-	front, backfill := r.wanted()
-	if len(front)+len(backfill) == 0 {
+	want := r.wanted()
+	front := want.front
+	if len(front)+len(want.backfill) == 0 {
 		return
 	}
-	plan := assign(front, backfill, r.views((*source).ready), r.opts.Streams)
+	plan := assign(front, want.backfill, r.views((*source).ready), r.opts.Streams)
 	if r.starved(front, plan) {
 		plan = slices.DeleteFunc(plan, func(a assignment) bool { return !slices.Contains(front, a.block) })
 		r.yieldBackfill()
@@ -289,92 +304,118 @@ func (r *Reader) starved(front []int64, plan []assignment) bool {
 
 // yieldBackfill cancels the backfill fetches in flight.
 func (r *Reader) yieldBackfill() {
-	first, last := r.backfillRange()
+	fill := r.backfillRange()
 	for _, b := range r.blocks {
-		if b.index >= first && b.index <= last && b.waiters == 0 && len(b.fetches) > 0 {
+		if b.index >= fill.first && b.index <= fill.last && b.waiters == 0 && len(b.fetches) > 0 {
 			r.cancelFetches(b)
 			r.tidy(b)
 		}
 	}
 }
 
-// launch starts f in its own goroutine. Called with r.mu held.
-func (r *Reader) launch(f *fetch) {
-	ctx, cancel := context.WithCancel(context.Background())
-	f.cancel = cancel
-	f.buf = r.bufs.Get().(*[]byte)
-	_, length := span(f.block.index, r.opts.BlockSize, r.opts.Size)
-	f.data = (*f.buf)[:length]
-	f.started = r.clock.Now()
-	f.block.fetches = append(f.block.fetches, f)
-	*f.slot()++
-	r.trace.fetchStarted(f.src.id, f.block.index, f.hedge)
-	r.wg.Add(1)
-	go r.run(ctx, f)
+// getBuffer returns a block buffer from the pool. A pool holding anything
+// else is not trusted; a fresh buffer is made instead.
+func (r *Reader) getBuffer() *[]byte {
+	if buf, ok := r.bufs.Get().(*[]byte); ok {
+		return buf
+	}
+	return r.newBuffer()
 }
 
-// run performs f and publishes its block if it won. The Store write happens
-// without the lock, between claiming the block and publishing it.
-func (r *Reader) run(ctx context.Context, f *fetch) {
+// newBuffer allocates a buffer for one block.
+func (r *Reader) newBuffer() *[]byte {
+	buf := make([]byte, r.opts.BlockSize)
+	return &buf
+}
+
+// launch starts request in its own goroutine. Called with r.mu held.
+func (r *Reader) launch(request *fetch) {
+	ctx, cancel := context.WithCancel(context.Background())
+	request.cancel = cancel
+	request.buf = r.getBuffer()
+	piece := span(request.block.index, r.opts.BlockSize, r.opts.Size)
+	request.data = (*request.buf)[:piece.length]
+	request.started = r.clock.Now()
+	request.block.fetches = append(request.block.fetches, request)
+	*request.slot()++
+	r.trace.fetchStarted(request.src.id, request.block.index, request.hedge)
+	r.wg.Add(1)
+	go r.run(ctx, request)
+}
+
+// run performs request and publishes its block if it won. The Store write
+// happens without the lock, between claiming the block and publishing it.
+func (r *Reader) run(ctx context.Context, request *fetch) {
 	defer r.wg.Done()
-	defer f.cancel()
-	err := f.src.src.Fetch(ctx, f.block.index*r.opts.BlockSize, f.data)
-	elapsed := r.clock.Now().Sub(f.started)
+	defer request.cancel()
+	err := request.src.src.Fetch(ctx, request.block.index*r.opts.BlockSize, request.data)
+	elapsed := r.clock.Now().Sub(request.started)
 	r.mu.Lock()
-	won := r.settle(f, err, elapsed)
+	//nolint:contextcheck // A fetch ends with the Reader, not with the context of the read that began it.
+	won := r.settle(request, err, elapsed)
 	r.mu.Unlock()
 	if !won {
-		r.bufs.Put(f.buf)
+		r.bufs.Put(request.buf)
 		return
 	}
 	// A failed write only means the block is not cached; the data still
 	// reaches the reader from memory.
-	stored := r.store != nil && r.store.WriteBlock(f.block.index, f.data) == nil
+	stored := r.store != nil && r.store.WriteBlock(request.block.index, request.data) == nil
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.publish(f, stored)
+	if stored {
+		r.publishStored(request)
+	} else {
+		r.publishResident(request)
+	}
 }
 
-// settle records the end of f and reports whether f delivered its block
-// first. Called with r.mu held.
-func (r *Reader) settle(f *fetch, err error, elapsed time.Duration) bool {
-	*f.slot()--
+// settle records the end of request and reports whether request delivered its
+// block first. Called with r.mu held.
+func (r *Reader) settle(request *fetch, err error, elapsed time.Duration) bool {
+	*request.slot()--
 	// Deferred in this order so that tests told of the settlement also see
 	// the fetches it led to.
-	defer r.trace.fetchSettled(f.src.id, f.block.index)
+	defer r.trace.fetchSettled(request.src.id, request.block.index)
 	defer r.schedule()
-	if f.cancelled {
+	if request.cancelled {
 		return false
 	}
-	b := f.block
-	b.fetches = slices.DeleteFunc(b.fetches, func(g *fetch) bool { return g == f })
+	b := request.block
+	b.fetches = slices.DeleteFunc(b.fetches, func(g *fetch) bool { return g == request })
 	if err != nil {
-		r.sourceFailed(f.src, err)
+		r.sourceFailed(request.src, err)
 		r.tidy(b)
 		r.broadcast()
 		return false
 	}
-	r.meter.Observe(f.src.id, len(f.data), elapsed)
-	f.src.failures = 0
+	r.meter.Observe(request.src.id, len(request.data), elapsed)
+	request.src.failures = 0
 	r.cancelFetches(b)
 	b.arriving = true
 	return true
 }
 
-// publish makes the block of f available: from the Store when stored is
-// true, from memory otherwise. Called with r.mu held.
-func (r *Reader) publish(f *fetch, stored bool) {
-	b := f.block
+// publishStored makes the block of request available from the Store, which
+// holds it now. Called with r.mu held.
+func (r *Reader) publishStored(request *fetch) {
+	b := request.block
 	b.arriving = false
-	if stored {
-		r.bufs.Put(f.buf)
-	} else {
-		r.storeFailed = r.store != nil
-		b.buf, b.data = f.buf, f.data
-		r.resident++
-		r.touch(b)
-		r.evict()
-	}
+	r.bufs.Put(request.buf)
+	r.tidy(b)
+	r.broadcast()
+}
+
+// publishResident makes the block of request available from memory, because
+// it is not in the Store. Called with r.mu held.
+func (r *Reader) publishResident(request *fetch) {
+	b := request.block
+	b.arriving = false
+	r.storeFailed = r.store != nil
+	b.buf, b.data = request.buf, request.data
+	r.resident++
+	r.touch(b)
+	r.evict()
 	r.tidy(b)
 	r.broadcast()
 }
@@ -383,14 +424,14 @@ func (r *Reader) publish(f *fetch, stored bool) {
 // only blocks that reads wait for are left.
 func (r *Reader) evict() {
 	for r.resident > r.memCap {
-		v := r.victim()
-		if v == nil {
+		dropped := r.victim()
+		if dropped == nil {
 			return
 		}
-		r.bufs.Put(v.buf)
-		v.buf, v.data = nil, nil
+		r.bufs.Put(dropped.buf)
+		dropped.buf, dropped.data = nil, nil
 		r.resident--
-		r.tidy(v)
+		r.tidy(dropped)
 	}
 }
 
@@ -399,47 +440,47 @@ func (r *Reader) evict() {
 // the least recently used. Plain LRU would drop unread blocks ahead of the
 // reader, which arrived before the blocks it has just read.
 func (r *Reader) victim() *block {
-	first, last := r.front()
-	inWindow := func(b *block) bool { return b.index >= first && b.index <= last }
-	before := func(b, v *block) bool {
-		if inWindow(b) != inWindow(v) {
+	window := r.front()
+	inWindow := func(b *block) bool { return b.index >= window.first && b.index <= window.last }
+	before := func(b, other *block) bool {
+		if inWindow(b) != inWindow(other) {
 			return !inWindow(b)
 		}
-		return b.used < v.used
+		return b.used < other.used
 	}
-	var v *block
+	var best *block
 	for _, b := range r.blocks {
-		if b.data != nil && b.waiters == 0 && (v == nil || before(b, v)) {
-			v = b
+		if b.data != nil && b.waiters == 0 && (best == nil || before(b, best)) {
+			best = b
 		}
 	}
-	return v
+	return best
 }
 
 // cancelFetches cancels every fetch of b. Their goroutines release their
 // slots when they return. Called with r.mu held.
 func (r *Reader) cancelFetches(b *block) {
-	for _, f := range b.fetches {
-		f.cancelled = true
-		f.cancel()
+	for _, request := range b.fetches {
+		request.cancelled = true
+		request.cancel()
 	}
 	b.fetches = nil
 	r.stop(b.hedgeTimer)
 	b.hedgeTimer = nil
 }
 
-// cancelOutside cancels the fetches of blocks outside [first, last] that no
-// read waits for.
-func (r *Reader) cancelOutside(first, last int64) {
+// cancelOutside cancels the fetches of blocks outside keep that no read waits
+// for.
+func (r *Reader) cancelOutside(keep blockRange) {
 	for _, b := range r.blocks {
-		r.cancelUnneeded(b, first, last)
+		r.cancelUnneeded(b, keep)
 	}
 }
 
-// cancelUnneeded cancels the fetches of b if it lies outside [first, last]
-// and no read waits for it.
-func (r *Reader) cancelUnneeded(b *block, first, last int64) {
-	if (b.index < first || b.index > last) && b.waiters == 0 && len(b.fetches) > 0 {
+// cancelUnneeded cancels the fetches of b if it lies outside keep and no read
+// waits for it.
+func (r *Reader) cancelUnneeded(b *block, keep blockRange) {
+	if (b.index < keep.first || b.index > keep.last) && b.waiters == 0 && len(b.fetches) > 0 {
 		r.cancelFetches(b)
 		r.tidy(b)
 	}
@@ -469,9 +510,9 @@ func (r *Reader) armHedge(b *block, s *source) {
 	if !known {
 		rate = r.fastestKnownRate()
 	}
-	_, length := span(b.index, r.opts.BlockSize, r.opts.Size)
+	piece := span(b.index, r.opts.BlockSize, r.opts.Size)
 	r.stop(b.hedgeTimer)
-	b.hedgeTimer = r.afterFunc(hedgeDelay(length, rate, r.opts.HedgeFloor, r.opts.BlockTimeout), func() {
+	b.hedgeTimer = r.afterFunc(hedgeDelay(piece.length, rate, r.opts.HedgeFloor, r.opts.BlockTimeout), func() {
 		b.hedgeTimer = nil
 		r.hedge(b)
 	})

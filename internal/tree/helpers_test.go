@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,10 +17,11 @@ var (
 	errDown = errors.New("node down")
 )
 
-var start = time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+// start is the time every test begins at.
+func start() time.Time { return time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC) }
 
 // at returns a time n minutes after start.
-func at(n int) time.Time { return start.Add(time.Duration(n) * time.Minute) }
+func at(n int) time.Time { return start().Add(time.Duration(n) * time.Minute) }
 
 func wfile(name string, size int64, mtime time.Time, etag string) wire.Entry {
 	return wire.Entry{Name: name, Size: size, MTime: mtime, ETag: etag}
@@ -68,24 +70,6 @@ func newLister(nodes ...string) *fakeLister {
 	return &fakeLister{nodes: nodes, script: make(map[string]map[string]answer)}
 }
 
-// say scripts what node answers for dir.
-func (f *fakeLister) say(node, dir string, entries ...wire.Entry) {
-	f.set(node, dir, answer{entries: entries})
-}
-
-func (f *fakeLister) fail(node, dir string, err error) {
-	f.set(node, dir, answer{err: err})
-}
-
-func (f *fakeLister) set(node, dir string, a answer) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.script[node] == nil {
-		f.script[node] = make(map[string]answer)
-	}
-	f.script[node][dir] = a
-}
-
 func (f *fakeLister) Nodes(context.Context) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -96,7 +80,7 @@ func (f *fakeLister) List(ctx context.Context, node, dir string) ([]wire.Entry, 
 	f.mu.Lock()
 	f.calls = append(f.calls, node+" "+dir)
 	fn := f.listFn
-	a, ok := f.script[node][dir]
+	scripted, ok := f.script[node][dir]
 	f.mu.Unlock()
 	if fn != nil {
 		return fn(ctx, node, dir)
@@ -104,7 +88,25 @@ func (f *fakeLister) List(ctx context.Context, node, dir string) ([]wire.Entry, 
 	if !ok {
 		return nil, errGone
 	}
-	return slices.Clone(a.entries), a.err
+	return slices.Clone(scripted.entries), scripted.err
+}
+
+// say scripts what node answers for dir.
+func (f *fakeLister) say(node, dir string, entries ...wire.Entry) {
+	f.set(node, dir, answer{entries: entries})
+}
+
+func (f *fakeLister) fail(node, dir string, err error) {
+	f.set(node, dir, answer{err: err})
+}
+
+func (f *fakeLister) set(node, dir string, scripted answer) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.script[node] == nil {
+		f.script[node] = make(map[string]answer)
+	}
+	f.script[node][dir] = scripted
 }
 
 // asked is how many times any node was asked for dir.
@@ -112,8 +114,8 @@ func (f *fakeLister) asked(dir string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := 0
-	for _, c := range f.calls {
-		if _, d, _ := cutSpace(c); d == dir {
+	for _, call := range f.calls {
+		if _, called, _ := strings.Cut(call, " "); called == dir {
 			n++
 		}
 	}
@@ -126,25 +128,16 @@ func (f *fakeLister) total() int {
 	return len(f.calls)
 }
 
-func cutSpace(s string) (before, after string, ok bool) {
-	for i := range len(s) {
-		if s[i] == ' ' {
-			return s[:i], s[i+1:], true
-		}
-	}
-	return s, "", false
-}
-
-func newTree(l Lister, opts Options) (*Tree, *clock) {
-	clk := &clock{now: start}
+func newTree(lister Lister, opts Options) (*Tree, *clock) {
+	clk := &clock{now: start()}
 	opts.Now = clk.Now
 	opts.IsNotFound = func(err error) bool { return errors.Is(err, errGone) }
-	return New(l, opts), clk
+	return New(lister, opts), clk
 }
 
-func mustList(t *testing.T, tr *Tree, dir string) []Entry {
+func mustList(t *testing.T, tree *Tree, dir string) []Entry {
 	t.Helper()
-	got, err := tr.List(context.Background(), dir)
+	got, err := tree.List(context.Background(), dir)
 	if err != nil {
 		t.Fatalf("List(%q): %v", dir, err)
 	}

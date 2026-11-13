@@ -1,12 +1,12 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"net/url"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/SpliceFS/common/units"
@@ -29,13 +29,11 @@ var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 // The mounts from index own on were asked for while the client runs and have no file: their
 // problems name the mount by its target, and the top-level cache is not blamed for them.
 func validate(cfg *Config, own int) []error {
-	var problems []error
-	problems = append(problems, validateClusters(cfg)...)
-	problems = append(problems, validateMounts(cfg, own)...)
+	problems := slices.Concat(validateClusters(cfg), validateMounts(cfg, own))
 	top := validateCache("cache", cfg.Cache, largestBlockSize(cfg.Clusters))
 	top = append(top, validateCacheDir("cache.dir", cfg.Cache.Dir, cfg.Mounts[:own])...)
-	for _, p := range top {
-		problems = append(problems, attribute(p, cfg.Sources))
+	for _, problem := range top {
+		problems = append(problems, attribute(problem, cfg.Sources))
 	}
 	return problems
 }
@@ -52,8 +50,8 @@ func attribute(err error, sources map[string]string) error {
 
 // inFile adds the origin of a cluster or mount to each problem.
 func inFile(origin string, problems []error) []error {
-	for i, p := range problems {
-		problems[i] = fmt.Errorf("%w (%s)", p, origin)
+	for i, problem := range problems {
+		problems[i] = fmt.Errorf("%w (%s)", problem, origin)
 	}
 	return problems
 }
@@ -63,22 +61,23 @@ func fileOrigin(sub, name string) string {
 	return "file " + source(sub, name+yamlExt)
 }
 
-// mountOrigin names where a mount came from. A requested mount has no file, and its
-// generated name would mean nothing to the person who asked, so the target names it.
-func mountOrigin(m Mount, requested bool) string {
-	if requested {
-		return "requested mount " + m.Target
+// mountOrigin names where the mount at index came from. The mounts from index own on were
+// requested and have no file, and their generated names would mean nothing to the person
+// who asked, so the target names them.
+func mountOrigin(mount *Mount, index, own int) string {
+	if index >= own {
+		return "requested mount " + mount.Target
 	}
-	return fileOrigin(mountsDirName, m.Name)
+	return fileOrigin(mountsDirName, mount.Name)
 }
 
 // normalize puts valid values in their final form: no trailing slash on a
 // cluster URL, a cleaned mount path. It runs after validation because
 // cleaning would hide a ".." that validation must reject.
 func normalize(cfg *Config) {
-	for name, c := range cfg.Clusters {
-		c.URL = strings.TrimRight(c.URL, "/")
-		cfg.Clusters[name] = c
+	for name, cluster := range cfg.Clusters {
+		cluster.URL = strings.TrimRight(cluster.URL, "/")
+		cfg.Clusters[name] = cluster
 	}
 	for i := range cfg.Mounts {
 		cfg.Mounts[i].Path = path.Clean(cfg.Mounts[i].Path)
@@ -88,42 +87,51 @@ func normalize(cfg *Config) {
 // required reports an empty value.
 func required(key, value string) []error {
 	if value == "" {
-		return []error{fmt.Errorf("%s: must not be empty", key)}
+		return []error{fmt.Errorf("%s: %w", key, ErrEmpty)}
 	}
 	return nil
 }
 
+// requiredAbsolute reports an empty value and a value that is not an absolute path.
+func requiredAbsolute(key, value string) []error {
+	if value != "" && !filepath.IsAbs(value) {
+		return []error{fmt.Errorf("%s: %q %w", key, value, ErrNotAbsolute)}
+	}
+	return required(key, value)
+}
+
 func validateClusters(cfg *Config) []error {
-	var problems []error
-	for _, name := range cfg.clusterNames() {
+	names := cfg.clusterNames()
+	problems := make([]error, 0, len(names))
+	for _, name := range names {
 		found := validateCluster(name, cfg.Clusters[name])
 		problems = append(problems, inFile(fileOrigin(clustersDirName, name), found)...)
 	}
 	return problems
 }
 
-func validateCluster(name string, c Cluster) []error {
+func validateCluster(name string, cluster Cluster) []error {
 	key := "clusters." + name
 	var problems []error
 	if !namePattern.MatchString(name) {
-		problems = append(problems, fmt.Errorf("%s: name must match %s", key, namePattern))
+		problems = append(problems, fmt.Errorf("%s: %w %s", key, ErrNamePattern, namePattern))
 	}
-	if err := validateURL(c.URL); err != nil {
+	if err := validateURL(cluster.URL); err != nil {
 		problems = append(problems, fmt.Errorf("%s.url: %w", key, err))
 	}
-	problems = append(problems, required(key+".user", c.User)...)
-	problems = append(problems, required(key+".password_file", c.PasswordFile)...)
-	if c.BlockSize < minBlockSize || c.BlockSize > maxBlockSize {
-		problems = append(problems, fmt.Errorf("%s.block_size: %s is not allowed, use a size from %s to %s",
-			key, c.BlockSize, minBlockSize, maxBlockSize))
+	problems = append(problems, required(key+".user", cluster.User)...)
+	problems = append(problems, required(key+".password_file", cluster.PasswordFile)...)
+	if cluster.BlockSize < minBlockSize || cluster.BlockSize > maxBlockSize {
+		problems = append(problems, fmt.Errorf("%s.block_size: %s %w %s to %s",
+			key, cluster.BlockSize, ErrBlockSizeRange, minBlockSize, maxBlockSize))
 	}
-	if c.StreamsPerNode < minStreamsPerNode || c.StreamsPerNode > maxStreamsPerNode {
-		problems = append(problems, fmt.Errorf("%s.streams_per_node: %d is not between %d and %d",
-			key, c.StreamsPerNode, minStreamsPerNode, maxStreamsPerNode))
+	if cluster.StreamsPerNode < minStreamsPerNode || cluster.StreamsPerNode > maxStreamsPerNode {
+		problems = append(problems, fmt.Errorf("%s.streams_per_node: %d %w %d and %d",
+			key, cluster.StreamsPerNode, ErrStreamsRange, minStreamsPerNode, maxStreamsPerNode))
 	}
-	if c.ReadAhead.Unlimited() || c.ReadAhead < c.BlockSize {
-		problems = append(problems, fmt.Errorf("%s.read_ahead: %s is not allowed, use a finite size of at least one block (%s)",
-			key, c.ReadAhead, c.BlockSize))
+	if cluster.ReadAhead.Unlimited() || cluster.ReadAhead < cluster.BlockSize {
+		problems = append(problems, fmt.Errorf("%s.read_ahead: %s %w (%s)",
+			key, cluster.ReadAhead, ErrReadAheadTooSmall, cluster.BlockSize))
 	}
 	return problems
 }
@@ -132,71 +140,60 @@ func validateCluster(name string, c Cluster) []error {
 // a query or fragment.
 func validateURL(raw string) error {
 	if raw == "" {
-		return errors.New("must not be empty")
+		return ErrEmpty
 	}
-	u, err := url.Parse(raw)
+	parsed, err := url.Parse(raw)
 	if err != nil {
-		return err
+		return err //nolint:wrapcheck // The caller adds the key, the url package error says the rest.
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return fmt.Errorf("%q is not an absolute http or https URL with a host", raw)
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+		return fmt.Errorf("%q %w", raw, ErrURLNotAbsolute)
 	}
 	// A bare "?" or "#" parses to an empty query or fragment, so the text is
 	// checked as well.
 	if strings.ContainsAny(raw, "?#") {
-		return fmt.Errorf("%q must not have a query or fragment", raw)
+		return fmt.Errorf("%q %w", raw, ErrURLQuery)
 	}
 	return nil
 }
 
 func validateMounts(cfg *Config, own int) []error {
 	var problems []error
-	for i, m := range cfg.Mounts {
-		requested := i >= own
-		found := validateMount(m, cfg)
-		found = append(found, validateMountCache(m, cfg)...)
-		if requested {
+	for i := range cfg.Mounts {
+		mount := &cfg.Mounts[i]
+		found := validateMount(mount, cfg)
+		found = append(found, validateMountCache(mount, cfg)...)
+		if i >= own {
 			// The cache directory is the same for every mount, so a conflict with a requested
 			// mount is that mount's doing and must not be blamed on the file that set the
 			// directory.
-			found = append(found, validateCacheDir("cache.dir", cfg.Cache.Dir, []Mount{m})...)
+			found = append(found, validateCacheDir("cache.dir", cfg.Cache.Dir, cfg.Mounts[i:i+1])...)
 		}
-		problems = append(problems, inFile(mountOrigin(m, requested), found)...)
+		problems = append(problems, inFile(mountOrigin(mount, i, own), found)...)
 	}
 	return append(problems, validateTargets(cfg.Mounts, own)...)
 }
 
-func validateMount(m Mount, cfg *Config) []error {
-	key := "mounts." + m.Name
+func validateMount(mount *Mount, cfg *Config) []error {
+	key := "mounts." + mount.Name
 	var problems []error
-	if !namePattern.MatchString(m.Name) {
-		problems = append(problems, fmt.Errorf("%s: name must match %s", key, namePattern))
+	if !namePattern.MatchString(mount.Name) {
+		problems = append(problems, fmt.Errorf("%s: %w %s", key, ErrNamePattern, namePattern))
 	}
-	if _, ok := cfg.Clusters[m.Cluster]; !ok {
-		problems = append(problems, fmt.Errorf("%s.cluster: %q is not a cluster defined in clusters", key, m.Cluster))
+	if _, ok := cfg.Clusters[mount.Cluster]; !ok {
+		problems = append(problems, fmt.Errorf("%s.cluster: %q %w", key, mount.Cluster, ErrUnknownCluster))
 	}
-	if !strings.HasPrefix(m.Path, "/") {
-		problems = append(problems, fmt.Errorf("%s.path: %q must start with \"/\"", key, m.Path))
+	if !strings.HasPrefix(mount.Path, "/") {
+		problems = append(problems, fmt.Errorf("%s.path: %q %w", key, mount.Path, ErrPathNoSlash))
 	}
-	if hasDotDot(m.Path) {
-		problems = append(problems, fmt.Errorf("%s.path: %q must not contain \"..\"", key, m.Path))
+	if hasDotDot(mount.Path) {
+		problems = append(problems, fmt.Errorf("%s.path: %q %w", key, mount.Path, ErrPathDotDot))
 	}
-	switch {
-	case m.Target == "":
-		problems = append(problems, fmt.Errorf("%s.target: must not be empty", key))
-	case !filepath.IsAbs(m.Target):
-		problems = append(problems, fmt.Errorf("%s.target: %q is not an absolute path", key, m.Target))
-	}
-	return problems
+	return append(problems, requiredAbsolute(key+".target", mount.Target)...)
 }
 
 func hasDotDot(p string) bool {
-	for _, segment := range strings.Split(p, "/") {
-		if segment == ".." {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(p, "/"), "..")
 }
 
 // validateTargets reports targets that are shared or nested. A mount over a
@@ -204,12 +201,16 @@ func hasDotDot(p string) bool {
 // requested.
 func validateTargets(mounts []Mount, own int) []error {
 	var problems []error
-	for j, later := range mounts {
-		for _, earlier := range mounts[:j] {
-			if err := checkTargets(earlier.Target, later.Target); err != nil {
-				found := []error{fmt.Errorf("mounts.%s.target: %w (mounts.%s)", later.Name, err, earlier.Name)}
-				problems = append(problems, inFile(mountOrigin(later, j >= own), found)...)
+	for laterIndex := range mounts {
+		later := &mounts[laterIndex]
+		for earlierIndex := range laterIndex {
+			earlier := &mounts[earlierIndex]
+			err := checkTargets(earlier.Target, later.Target)
+			if err == nil {
+				continue
 			}
+			found := []error{fmt.Errorf("mounts.%s.target: %w (mounts.%s)", later.Name, err, earlier.Name)}
+			problems = append(problems, inFile(mountOrigin(later, laterIndex, own), found)...)
 		}
 	}
 	return problems
@@ -220,11 +221,11 @@ func checkTargets(earlier, later string) error {
 	case !filepath.IsAbs(earlier) || !filepath.IsAbs(later):
 		return nil
 	case earlier == later:
-		return fmt.Errorf("%s is already the target of another mount", later)
+		return fmt.Errorf("%s %w", later, ErrTargetShared)
 	case contains(earlier, later):
-		return fmt.Errorf("%s is inside the target %s of another mount", later, earlier)
+		return fmt.Errorf("%s %w %s of another mount", later, ErrTargetInside, earlier)
 	case contains(later, earlier):
-		return fmt.Errorf("%s contains the target %s of another mount", later, earlier)
+		return fmt.Errorf("%s %w %s of another mount", later, ErrTargetContains, earlier)
 	}
 	return nil
 }
@@ -245,49 +246,66 @@ func contains(outer, inner string) bool {
 
 // validateMountCache checks the cache of a mount when it differs from the top-level one. A
 // mount that inherits the top-level cache unchanged would only repeat its problems.
-func validateMountCache(m Mount, cfg *Config) []error {
-	key := "mounts." + m.Name + ".cache"
+func validateMountCache(mount *Mount, cfg *Config) []error {
+	key := "mounts." + mount.Name + ".cache"
 	var problems []error
-	if m.Cache != cfg.Cache {
-		problems = validateCache(key, m.Cache, largestBlockSize(cfg.Clusters))
+	if mount.Cache != cfg.Cache {
+		problems = validateCache(key, mount.Cache, largestBlockSize(cfg.Clusters))
 	}
-	if m.Cache.Dir != cfg.Cache.Dir {
-		problems = append(problems, validateCacheDir(key+".dir", m.Cache.Dir, cfg.Mounts)...)
+	if mount.Cache.Dir != cfg.Cache.Dir {
+		problems = append(problems, validateCacheDir(key+".dir", mount.Cache.Dir, cfg.Mounts)...)
 	}
 	return problems
 }
 
 func largestBlockSize(clusters map[string]Cluster) units.Size {
 	var largest units.Size
-	for _, c := range clusters {
-		largest = max(largest, c.BlockSize)
+	for _, cluster := range clusters {
+		largest = max(largest, cluster.BlockSize)
 	}
 	return largest
 }
 
-func validateCache(key string, c Cache, largestBlock units.Size) []error {
-	problems := required(key+".dir", c.Dir)
-	if c.Dir != "" && !filepath.IsAbs(c.Dir) {
-		problems = append(problems, fmt.Errorf("%s.dir: %q is not an absolute path", key, c.Dir))
+func validateCache(key string, cache Cache, largestBlock units.Size) []error {
+	problems := requiredAbsolute(key+".dir", cache.Dir)
+	problems = append(problems, validateCacheEviction(key, cache, largestBlock)...)
+	problems = append(problems, validateCacheMinimums(key, cache)...)
+	return append(problems, validateCacheFreshness(key, cache)...)
+}
+
+// validateCacheEviction checks the limits that decide when cached files are evicted.
+func validateCacheEviction(key string, cache Cache, largestBlock units.Size) []error {
+	var problems []error
+	if !cache.MaxSize.Unlimited() && cache.MaxSize < largestBlock {
+		problems = append(problems, fmt.Errorf("%s.max_size: %s %w (%s), use at least that or \"unlimited\"",
+			key, cache.MaxSize, ErrMaxSizeTooSmall, largestBlock))
 	}
-	if !c.MaxSize.Unlimited() && c.MaxSize < largestBlock {
-		problems = append(problems, fmt.Errorf("%s.max_size: %s is smaller than one block of the largest cluster (%s), use at least that or \"unlimited\"",
-			key, c.MaxSize, largestBlock))
+	if !cache.MaxAge.Unlimited() && cache.MaxAge <= 0 {
+		problems = append(problems, fmt.Errorf("%s.max_age: %s %w", key, cache.MaxAge, ErrMaxAge))
 	}
-	if !c.MaxAge.Unlimited() && c.MaxAge <= 0 {
-		problems = append(problems, fmt.Errorf("%s.max_age: %s is not allowed, use a duration above 0 or \"unlimited\"", key, c.MaxAge))
+	return problems
+}
+
+// validateCacheMinimums checks the sizes that only have a meaning when finite.
+func validateCacheMinimums(key string, cache Cache) []error {
+	var problems []error
+	if cache.MinFree.Unlimited() {
+		problems = append(problems, fmt.Errorf("%s.min_free: %w", key, ErrUnlimitedSize))
 	}
-	if c.MinFree.Unlimited() {
-		problems = append(problems, fmt.Errorf("%s.min_free: unlimited is not allowed, use a finite size", key))
+	if cache.MinFileSize.Unlimited() {
+		problems = append(problems, fmt.Errorf("%s.min_file_size: %w", key, ErrUnlimitedSize))
 	}
-	if c.MinFileSize.Unlimited() {
-		problems = append(problems, fmt.Errorf("%s.min_file_size: unlimited is not allowed, use a finite size", key))
+	return problems
+}
+
+// validateCacheFreshness checks the times that decide how long cached data is trusted.
+func validateCacheFreshness(key string, cache Cache) []error {
+	var problems []error
+	if cache.Revalidate.Unlimited() || cache.Revalidate <= 0 {
+		problems = append(problems, fmt.Errorf("%s.revalidate: %s %w", key, cache.Revalidate, ErrRevalidate))
 	}
-	if c.Revalidate.Unlimited() || c.Revalidate <= 0 {
-		problems = append(problems, fmt.Errorf("%s.revalidate: %s is not allowed, use a finite duration above 0", key, c.Revalidate))
-	}
-	if c.ListingTTL.Unlimited() || c.ListingTTL < 0 {
-		problems = append(problems, fmt.Errorf("%s.listing_ttl: %s is not allowed, use a finite duration of at least 0", key, c.ListingTTL))
+	if cache.ListingTTL.Unlimited() || cache.ListingTTL < 0 {
+		problems = append(problems, fmt.Errorf("%s.listing_ttl: %s %w", key, cache.ListingTTL, ErrListingTTL))
 	}
 	return problems
 }
@@ -300,10 +318,11 @@ func validateCacheDir(key, dir string, mounts []Mount) []error {
 		return nil
 	}
 	var problems []error
-	for _, m := range mounts {
-		if filepath.IsAbs(m.Target) && (contains(m.Target, dir) || contains(dir, m.Target)) {
-			problems = append(problems, fmt.Errorf("%s: %s must not be, lie inside or contain the target %s of mounts.%s",
-				key, dir, m.Target, m.Name))
+	for i := range mounts {
+		mount := &mounts[i]
+		if filepath.IsAbs(mount.Target) && (contains(mount.Target, dir) || contains(dir, mount.Target)) {
+			problems = append(problems, fmt.Errorf("%s: %s %w %s of mounts.%s",
+				key, dir, ErrCacheDirOverlap, mount.Target, mount.Name))
 		}
 	}
 	return problems

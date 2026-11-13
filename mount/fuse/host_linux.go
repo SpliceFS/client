@@ -25,6 +25,9 @@ const mountTable = "/proc/self/mountinfo"
 // errNotListed says that the mount table has no FUSE mount at the asked point.
 var errNotListed = errors.New("no FUSE mount listed")
 
+// errNoHelper says that neither name of the fusermount helper is in PATH.
+var errNoHelper = errors.New("no fusermount3 or fusermount program found in PATH")
+
 // kernelHost is the host backed by the running Linux kernel.
 type kernelHost struct {
 	// unmountCall is the umount2 system call.
@@ -49,7 +52,7 @@ func newKernelHost() kernelHost {
 }
 
 // Stat implements host.
-func (kernelHost) Stat(path string) (fs.FileInfo, error) { return os.Stat(path) }
+func (kernelHost) Stat(path string) (fs.FileInfo, error) { return statPath(path) }
 
 // ConnectionID implements host. The number comes from the mount table and never from the
 // mount point itself, so that asking does not disturb how a dead mount answers.
@@ -79,6 +82,8 @@ func (h kernelHost) AbortConnection(id uint32) error {
 
 // Unmount implements host. The system call needs privilege; an ordinary user gets EPERM
 // and goes through the setuid fusermount helper, the same way the mount was made.
+//
+//nolint:revive // host.Unmount fixes this signature.
 func (h kernelHost) Unmount(ctx context.Context, target string, detach bool) error {
 	flags := 0
 	if detach {
@@ -96,6 +101,8 @@ func (h kernelHost) Unmount(ctx context.Context, target string, detach bool) err
 
 // helperUnmount unmounts with fusermount. The helper reports a busy mount only in its
 // message, so the message is what turns the failure into an error wrapping EBUSY.
+//
+//nolint:revive // detach is the host.Unmount parameter, passed through.
 func (h kernelHost) helperUnmount(ctx context.Context, target string, detach bool) error {
 	bin, err := h.findHelper()
 	if err != nil {
@@ -106,7 +113,8 @@ func (h kernelHost) helperUnmount(ctx context.Context, target string, detach boo
 		args = append(args, "-z")
 	}
 	args = append(args, "--", target)
-	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput() //nolint:gosec // bin comes from PATH lookup of fixed names and target is a mount point chosen by the operator
+	//nolint:gosec // bin comes from a PATH lookup of fixed names, target is chosen by the operator
+	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput()
 	if err == nil {
 		return nil
 	}
@@ -125,5 +133,5 @@ func findFusermount() (string, error) {
 			return path, nil
 		}
 	}
-	return "", errors.New("no fusermount3 or fusermount program found in PATH")
+	return "", errNoHelper
 }

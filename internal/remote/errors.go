@@ -36,6 +36,29 @@ var (
 	ErrUnavailable = errors.New("node unavailable")
 )
 
+// Errors for a request this package refuses to send. They are wrapped with the node name and
+// the operation, and mean the caller passed an argument that no node could answer.
+var (
+	// ErrNilClient means New was given no HTTP client.
+	ErrNilClient = errors.New("remote: nil http client")
+	// ErrInvalidPath means a path has an empty, "." or ".." segment.
+	ErrInvalidPath = errors.New("invalid path")
+	// ErrEmptyETag means a block was requested without the tag of the file version it belongs to.
+	ErrEmptyETag = errors.New("empty etag: a block must be pinned to a file version")
+	// ErrNegativeOffset means a block was requested at a negative offset.
+	ErrNegativeOffset = errors.New("negative offset")
+)
+
+// The errors below end a message that names the offending value first, such as
+// `length 0 is not positive`, so their own text is only the tail of that sentence.
+var (
+	errSlashInShare   = errors.New("contains a slash")
+	errNotPositive    = errors.New("is not positive")
+	errRangeOverflow  = errors.New("overflows")
+	errNotAbsoluteURL = errors.New("is not an absolute http or https URL")
+	errQueryOrFragURL = errors.New("must not have a query or fragment")
+)
+
 // maxServerMessage bounds how much of the server's error message goes into an error text.
 const maxServerMessage = 256
 
@@ -61,9 +84,9 @@ func sentinelFor(status int) error {
 }
 
 // statusError turns an unexpected response into an error and consumes the response.
-func (n *Node) statusError(op string, resp *http.Response) error {
+func (n *Node) statusError(operation string, resp *http.Response) error {
 	defer closeBody(resp)
-	err := fmt.Errorf("node %s: %s: %w (HTTP %d)", n.name, op, sentinelFor(resp.StatusCode), resp.StatusCode)
+	err := fmt.Errorf("node %s: %s: %w (HTTP %d)", n.name, operation, sentinelFor(resp.StatusCode), resp.StatusCode)
 	if msg := serverMessage(resp.Body); msg != "" {
 		return fmt.Errorf("%w: %q", err, msg)
 	}
@@ -90,16 +113,16 @@ func serverMessage(body io.Reader) string {
 
 // transportError classifies a failure to complete an exchange. If the caller's context
 // has ended it wins, whatever the transport reported.
-func (n *Node) transportError(op string, cerr, err error) error {
+func (n *Node) transportError(operation string, cerr, err error) error {
 	if cerr != nil {
-		return fmt.Errorf("node %s: %s: %w", n.name, op, cerr)
+		return fmt.Errorf("node %s: %s: %w", n.name, operation, cerr)
 	}
 	// The cause is formatted with %v on purpose: wrapping it could make a client-side
 	// timeout satisfy errors.Is(err, context.DeadlineExceeded), which is reserved for the
 	// caller's own deadline.
-	return fmt.Errorf("node %s: %s: %w: %v", n.name, op, ErrUnavailable, err.Error())
+	return fmt.Errorf("node %s: %s: %w: %v", n.name, operation, ErrUnavailable, err.Error())
 }
 
-func (n *Node) protocolError(op, format string, args ...any) error {
-	return fmt.Errorf("node %s: %s: %w: %s", n.name, op, ErrProtocol, fmt.Sprintf(format, args...))
+func (n *Node) protocolError(operation, format string, args ...any) error {
+	return fmt.Errorf("node %s: %s: %w: %s", n.name, operation, ErrProtocol, fmt.Sprintf(format, args...))
 }

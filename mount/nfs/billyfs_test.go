@@ -22,11 +22,12 @@ import (
 	"github.com/SpliceFS/client/mount"
 )
 
-var testOwner = owner{uid: 501, gid: 20}
+// testOwner is the owner every test filesystem reports.
+func testOwner() owner { return owner{uid: 501, gid: 20} }
 
 func newTestBilly(t *testing.T, fsys core.FS) *billyFS {
 	t.Helper()
-	return newBillyFS(t.Context(), fsys, time.Minute, testOwner, slog.New(slog.DiscardHandler))
+	return newBillyFS(t.Context(), fsys, time.Minute, testOwner(), slog.New(slog.DiscardHandler))
 }
 
 func treeFS() *fakeFS {
@@ -94,7 +95,7 @@ func TestBillyStat(t *testing.T) {
 				t.Fatalf("%s: %v", tt.name, err)
 			}
 			if info.Name() != tt.wantName || info.IsDir() != tt.isDir || info.Size() != tt.size ||
-				info.Mode() != tt.mode || !info.ModTime().Equal(fakeMTime) {
+				info.Mode() != tt.mode || !info.ModTime().Equal(fakeMTime()) {
 				t.Errorf("%s: got name %q dir %v size %d mode %v mtime %v", tt.name,
 					info.Name(), info.IsDir(), info.Size(), info.Mode(), info.ModTime())
 			}
@@ -177,21 +178,28 @@ func wantRootDir(t *testing.T, b *billyFS, wantMTime time.Time) {
 	}
 }
 
-// blockRoot makes the first stat of the root wait until release is closed. started is
-// closed when it has begun.
-func blockRoot(f *fakeFS) (started <-chan struct{}, release func()) {
-	s, r := make(chan struct{}), make(chan struct{})
+// rootBlock is a held stat of the root: started is closed when the stat has begun, and
+// release lets it go.
+type rootBlock struct {
+	started <-chan struct{}
+	release func()
+}
+
+// blockRoot makes the first stat of the root wait until the returned release function is
+// called.
+func blockRoot(f *fakeFS) rootBlock {
+	reached, gate := make(chan struct{}), make(chan struct{})
 	var once sync.Once
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.fail = func(op, name string) error {
 		if op == "stat" && name == "" {
-			once.Do(func() { close(s) })
-			<-r
+			once.Do(func() { close(reached) })
+			<-gate
 		}
 		return nil
 	}
-	return s, sync.OnceFunc(func() { close(r) })
+	return rootBlock{started: reached, release: sync.OnceFunc(func() { close(gate) })}
 }
 
 func waitFor(t *testing.T, ch <-chan struct{}, what string) {
@@ -207,8 +215,8 @@ func TestBillyRootAttrFollowsAHealthyCore(t *testing.T) {
 	t.Parallel()
 	fsys := treeFS()
 	b := newTestBilly(t, fsys)
-	wantRootDir(t, b, fakeMTime)
-	later := fakeMTime.Add(time.Hour)
+	wantRootDir(t, b, fakeMTime())
+	later := fakeMTime().Add(time.Hour)
 	fsys.mu.Lock()
 	fsys.nodes[""].attr.MTime = later
 	fsys.mu.Unlock()
@@ -238,14 +246,14 @@ func TestBillyRootAttrAfterAFailureIsTheLastAnswer(t *testing.T) {
 	fsys := treeFS()
 	b := newTestBilly(t, fsys)
 	b.created = time.Unix(1_600_000_000, 0)
-	wantRootDir(t, b, fakeMTime)
+	wantRootDir(t, b, fakeMTime())
 	failRoot(fsys, core.ErrUnavailable)
-	wantRootDir(t, b, fakeMTime)
+	wantRootDir(t, b, fakeMTime())
 	failRoot(fsys, nil)
 	fsys.mu.Lock()
-	fsys.nodes[""].attr.MTime = fakeMTime.Add(time.Minute)
+	fsys.nodes[""].attr.MTime = fakeMTime().Add(time.Minute)
 	fsys.mu.Unlock()
-	wantRootDir(t, b, fakeMTime.Add(time.Minute))
+	wantRootDir(t, b, fakeMTime().Add(time.Minute))
 }
 
 func TestBillyRootAttrOtherPathsStillFail(t *testing.T) {
@@ -269,8 +277,8 @@ func TestBillyRootAttrOtherPathsStillFail(t *testing.T) {
 func TestBillyRootAttrAnswersWithinTheBudgetAndKeepsTheLateAnswer(t *testing.T) {
 	t.Parallel()
 	fsys := treeFS()
-	started, release := blockRoot(fsys)
-	t.Cleanup(release)
+	block := blockRoot(fsys)
+	t.Cleanup(block.release)
 	b := newTestBilly(t, fsys)
 	b.rootBudget = 10 * time.Millisecond
 	b.created = time.Unix(1_600_000_000, 0)
@@ -280,15 +288,15 @@ func TestBillyRootAttrAnswersWithinTheBudgetAndKeepsTheLateAnswer(t *testing.T) 
 		defer close(answered)
 		wantRootDir(t, b, b.created)
 	}()
-	waitFor(t, started, "the core call to start")
+	waitFor(t, block.started, "the core call to start")
 	waitFor(t, answered, "an answer while the core is blocked")
 	pending := pendingRoot(t, b)
 
-	late := fakeMTime.Add(time.Hour)
+	late := fakeMTime().Add(time.Hour)
 	fsys.mu.Lock()
 	fsys.nodes[""].attr.MTime = late
 	fsys.mu.Unlock()
-	release()
+	block.release()
 	waitFor(t, pending, "the late call to end")
 
 	// The core fails from now on, so what comes back can only be the late answer.
@@ -299,8 +307,8 @@ func TestBillyRootAttrAnswersWithinTheBudgetAndKeepsTheLateAnswer(t *testing.T) 
 func TestBillyRootAttrNeverRunsTwoCallsAtOnce(t *testing.T) {
 	t.Parallel()
 	fsys := treeFS()
-	started, release := blockRoot(fsys)
-	t.Cleanup(release)
+	block := blockRoot(fsys)
+	t.Cleanup(block.release)
 	b := newTestBilly(t, fsys)
 	b.rootBudget = 10 * time.Millisecond
 	b.created = time.Unix(1_600_000_000, 0)
@@ -309,19 +317,19 @@ func TestBillyRootAttrNeverRunsTwoCallsAtOnce(t *testing.T) {
 	for range 4 {
 		wg.Go(func() { wantRootDir(t, b, b.created) })
 	}
-	waitFor(t, started, "the core call to start")
+	waitFor(t, block.started, "the core call to start")
 	wg.Wait()
 	wantRootDir(t, b, b.created)
 	if n := rootStats(fsys); n != 1 {
 		t.Errorf("the core got %d root calls while the first was running, want 1", n)
 	}
 
-	release()
+	block.release()
 	waitFor(t, pendingRoot(t, b), "the call to end")
 	// With a long budget the next request waits for its own call, so the count below does
 	// not depend on how fast that call is scheduled.
 	b.rootBudget = 5 * time.Second
-	wantRootDir(t, b, fakeMTime)
+	wantRootDir(t, b, fakeMTime())
 	if n := rootStats(fsys); n != 2 {
 		t.Errorf("the core got %d root calls after the first ended, want 2", n)
 	}
@@ -379,6 +387,7 @@ func TestBillyProbeNameIsAnsweredWhileACoreCallIsBlocked(t *testing.T) {
 	blocked := make(chan struct{})
 	go func() {
 		defer close(blocked)
+		//nolint:errcheck // Only the blocking matters here; the cleanup ends the call and nothing reads its result.
 		_, _ = b.Stat("dir/hello.txt")
 	}()
 	t.Cleanup(func() { close(release); <-blocked })
@@ -469,9 +478,9 @@ func TestBillyReadDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var names []string
-	for _, i := range infos {
-		names = append(names, i.Name())
+	names := make([]string, 0, len(infos))
+	for _, info := range infos {
+		names = append(names, info.Name())
 	}
 	if len(names) != 2 || names[0] != "dir" || names[1] != "empty" {
 		t.Errorf("names = %q", names)
@@ -484,28 +493,37 @@ func TestBillyReadDir(t *testing.T) {
 func TestBillyOpenAndRead(t *testing.T) {
 	t.Parallel()
 	b := newTestBilly(t, treeFS())
-	f, err := b.Open("dir/hello.txt")
+	opened, err := b.Open("dir/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.Name() != "dir/hello.txt" {
-		t.Errorf("Name() = %q", f.Name())
+	if opened.Name() != "dir/hello.txt" {
+		t.Errorf("Name() = %q", opened.Name())
 	}
 	buf := make([]byte, 5)
-	if n, err := f.ReadAt(buf, 6); n != 5 || err != nil || string(buf) != "world" {
+	if n, err := opened.ReadAt(buf, 6); n != 5 || err != nil || string(buf) != "world" {
 		t.Errorf("ReadAt = %d, %v, %q", n, err, buf)
 	}
 	// io.EOF must come through unchanged: go-nfs compares against it.
-	if n, err := f.ReadAt(buf, 8); n != 3 || !errors.Is(err, io.EOF) {
+	if n, err := opened.ReadAt(buf, 8); n != 3 || !errors.Is(err, io.EOF) {
 		t.Errorf("ReadAt at the end = %d, %v; want 3, io.EOF", n, err)
 	}
-	if err := f.Close(); err != nil {
+}
+
+func TestBillyFileCloseAndLockAreAccepted(t *testing.T) {
+	t.Parallel()
+	b := newTestBilly(t, treeFS())
+	opened, err := b.Open("dir/hello.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := opened.Lock(); err != nil {
 		t.Error(err)
 	}
-	if err := f.Lock(); err != nil {
+	if err := opened.Unlock(); err != nil {
 		t.Error(err)
 	}
-	if err := f.Unlock(); err != nil {
+	if err := opened.Close(); err != nil {
 		t.Error(err)
 	}
 }
@@ -525,7 +543,7 @@ func TestBillyFileReadFailureAndCloseFailure(t *testing.T) {
 	t.Parallel()
 	fsys := treeFS()
 	b := newTestBilly(t, fsys)
-	f, err := b.Open("dir/hello.txt")
+	opened, err := b.Open("dir/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,27 +553,48 @@ func TestBillyFileReadFailureAndCloseFailure(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := f.ReadAt(make([]byte, 4), 0); !errors.Is(err, syscall.EIO) {
+	if _, err := opened.ReadAt(make([]byte, 4), 0); !errors.Is(err, syscall.EIO) {
 		t.Errorf("ReadAt = %v, want EIO", err)
 	}
-	if err := f.Close(); !errors.Is(err, syscall.EIO) {
+	if err := opened.Close(); !errors.Is(err, syscall.EIO) {
 		t.Errorf("Close = %v, want EIO", err)
 	}
 }
 
-func TestBillyFileSequentialReadAndSeek(t *testing.T) {
+// readNext reads up to size bytes from the current position of reader.
+func readNext(t *testing.T, reader io.Reader, size int) (string, error) {
+	t.Helper()
+	buf := make([]byte, size)
+	n, err := reader.Read(buf)
+	return string(buf[:n]), err
+}
+
+func TestBillyFileSequentialRead(t *testing.T) {
 	t.Parallel()
 	b := newTestBilly(t, treeFS())
-	f, err := b.Open("dir/hello.txt")
+	opened, err := b.Open("dir/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	buf := make([]byte, 5)
-	if n, err := f.Read(buf); n != 5 || err != nil || string(buf) != "hello" {
-		t.Fatalf("first Read = %d, %v, %q", n, err, buf)
+	for _, want := range []string{"hello", " worl"} {
+		if got, err := readNext(t, opened, 5); got != want || err != nil {
+			t.Fatalf("Read = %q, %v; want %q", got, err, want)
+		}
 	}
-	if n, err := f.Read(buf); n != 5 || err != nil || string(buf) != " worl" {
-		t.Fatalf("second Read = %d, %v, %q", n, err, buf)
+	if _, err := opened.Seek(7, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readNext(t, opened, 5); got != "orld" || !errors.Is(err, io.EOF) {
+		t.Errorf("Read to the end = %q, %v; want %q, io.EOF", got, err, "orld")
+	}
+}
+
+func TestBillyFileSeek(t *testing.T) {
+	t.Parallel()
+	b := newTestBilly(t, treeFS())
+	opened, err := b.Open("dir/hello.txt")
+	if err != nil {
+		t.Fatal(err)
 	}
 	tests := []struct {
 		name    string
@@ -571,23 +610,17 @@ func TestBillyFileSequentialReadAndSeek(t *testing.T) {
 		{"bad whence", 0, 99, 0, true},
 	}
 	for _, tt := range tests {
-		got, err := f.Seek(tt.offset, tt.whence)
+		got, err := opened.Seek(tt.offset, tt.whence)
 		if (err != nil) != tt.wantErr || (err == nil && got != tt.want) {
 			t.Errorf("%s: Seek = %d, %v", tt.name, got, err)
 		}
-	}
-	if _, err := f.Seek(7, io.SeekStart); err != nil {
-		t.Fatal(err)
-	}
-	if n, err := f.Read(buf); n != 4 || !errors.Is(err, io.EOF) || string(buf[:n]) != "orld" {
-		t.Errorf("Read to the end = %d, %v, %q", n, err, buf[:n])
 	}
 }
 
 func TestBillyMutationsAreRefused(t *testing.T) {
 	t.Parallel()
 	b := newTestBilly(t, treeFS())
-	f, err := b.Open("dir/hello.txt")
+	opened, err := b.Open("dir/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -598,8 +631,8 @@ func TestBillyMutationsAreRefused(t *testing.T) {
 		"TempFile":  func() error { _, err := b.TempFile("dir", "t"); return err },
 		"MkdirAll":  func() error { return b.MkdirAll("a/b", 0o755) },
 		"Symlink":   func() error { return b.Symlink("x", "y") },
-		"Write":     func() error { _, err := f.Write([]byte("x")); return err },
-		"Truncate":  func() error { return f.Truncate(0) },
+		"Write":     func() error { _, err := opened.Write([]byte("x")); return err },
+		"Truncate":  func() error { return opened.Truncate(0) },
 		"O_WRONLY":  func() error { _, err := b.OpenFile("dir/hello.txt", os.O_WRONLY, 0); return err },
 		"O_RDWR":    func() error { _, err := b.OpenFile("dir/hello.txt", os.O_RDWR, 0); return err },
 		"O_APPEND":  func() error { _, err := b.OpenFile("dir/hello.txt", os.O_APPEND, 0); return err },
@@ -617,11 +650,11 @@ func TestBillyMutationsAreRefused(t *testing.T) {
 func TestBillyOpenFileForReading(t *testing.T) {
 	t.Parallel()
 	b := newTestBilly(t, treeFS())
-	f, err := b.OpenFile("dir/hello.txt", os.O_RDONLY, 0)
+	opened, err := b.OpenFile("dir/hello.txt", os.O_RDONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.Close(); err != nil {
+	if err := opened.Close(); err != nil {
 		t.Error(err)
 	}
 }

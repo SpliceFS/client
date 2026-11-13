@@ -24,12 +24,12 @@ import (
 
 // dialClient connects to the server. The client library picks its own local port
 // without asking the system, so parallel tests can collide; it is asked again.
-func dialClient(t *testing.T, s *server) *rpc.Client {
+func dialClient(t *testing.T, srv *server) *rpc.Client {
 	t.Helper()
 	var err error
 	for range 100 {
 		var client *rpc.Client
-		client, err = rpc.DialTCP("tcp", fmt.Sprintf("127.0.0.1:%d", s.Port()), false)
+		client, err = rpc.DialTCP("tcp", fmt.Sprintf("127.0.0.1:%d", srv.Port()), false)
 		if err == nil {
 			return client
 		}
@@ -41,11 +41,11 @@ func dialClient(t *testing.T, s *server) *rpc.Client {
 	return nil
 }
 
-func dial(t *testing.T, s *server) *nfs.Target {
+func dial(t *testing.T, srv *server) *nfs.Target {
 	t.Helper()
-	client := dialClient(t, s)
-	mount := &nfs.Mount{Client: client}
-	target, err := mount.Mount("/example/media", rpc.AuthNull)
+	client := dialClient(t, srv)
+	mounter := &nfs.Mount{Client: client}
+	target, err := mounter.Mount("/example/media", rpc.AuthNull)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,16 +55,16 @@ func dial(t *testing.T, s *server) *nfs.Target {
 
 func startTest(t *testing.T, fsys *fakeFS) *server {
 	t.Helper()
-	ln, err := listenLoopback(t.Context())
+	listener, err := listenLoopback(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := startServer(fsys, ln, serverConfig{owner: testOwner})
+	srv, err := startServer(fsys, listener, serverConfig{owner: testOwner()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(s.Close)
-	return s
+	t.Cleanup(srv.Close)
+	return srv
 }
 
 // pseudoRandom returns n bytes that do not repeat, so a read at the wrong offset or a
@@ -90,10 +90,10 @@ func wantStatus(t *testing.T, what string, err error, want uint32) {
 func TestProtocolAttributes(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
-	tg := dial(t, startTest(t, fsys))
+	target := dial(t, startTest(t, fsys))
 	file, _ := fsys.node("dir/hello.txt")
 	dir, _ := fsys.node("dir")
-	mtime := nfs.NFS3Time{Seconds: uint32(fakeMTime.Unix()), Nseconds: uint32(fakeMTime.Nanosecond())}
+	mtime := nfs.NFS3Time{Seconds: uint32(fakeMTime().Unix()), Nseconds: uint32(fakeMTime().Nanosecond())}
 
 	tests := []struct {
 		name     string
@@ -108,7 +108,7 @@ func TestProtocolAttributes(t *testing.T) {
 		{"root", "/", nfs.NF3Dir, 0o555, 0, 1},
 	}
 	for _, tt := range tests {
-		got, err := tg.Getattr(tt.path)
+		got, err := target.Getattr(tt.path)
 		if err != nil {
 			t.Fatalf("%s: %v", tt.name, err)
 		}
@@ -130,19 +130,20 @@ func TestProtocolAttributes(t *testing.T) {
 func TestProtocolReadDirPlusPagesThroughALargeDirectory(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS()
-	var want []string
-	for i := range 200 {
+	const fileCount = 200
+	want := make([]string, 0, fileCount)
+	for i := range fileCount {
 		name := fmt.Sprintf("file-%03d.txt", i)
 		fsys.addFile("many/"+name, make([]byte, i))
 		want = append(want, name)
 	}
-	tg := dial(t, startTest(t, fsys))
+	target := dial(t, startTest(t, fsys))
 
-	entries, err := tg.ReadDirPlus("/many")
+	entries, err := target.ReadDirPlus("/many")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
+	got := make([]string, 0, len(entries))
 	for _, e := range entries {
 		got = append(got, e.Name())
 		node, _ := fsys.node("many/" + e.Name())
@@ -161,51 +162,67 @@ func TestProtocolReadDirPlusPagesThroughALargeDirectory(t *testing.T) {
 	}
 }
 
-func TestProtocolReadsFiles(t *testing.T) {
-	t.Parallel()
-	data := pseudoRandom(5 << 20)
-	tg := dial(t, startTest(t, newFakeFS().addFile("media/big.bin", data)))
-	f, err := tg.Open("/media/big.bin")
+// openBig serves data as media/big.bin and opens it through a client.
+func openBig(t *testing.T, data []byte) *nfs.File {
+	t.Helper()
+	target := dial(t, startTest(t, newFakeFS().addFile("media/big.bin", data)))
+	opened, err := target.Open("/media/big.bin")
 	if err != nil {
 		t.Fatal(err)
 	}
+	return opened
+}
 
-	t.Run("whole file in one request", func(t *testing.T) {
-		got := make([]byte, len(data))
-		if n, err := f.ReadAt(got, 0); n != len(data) || !errors.Is(err, io.EOF) || !bytes.Equal(got, data) {
-			t.Errorf("read %d bytes, error %v, equal %v", n, err, bytes.Equal(got, data))
+func TestProtocolReadsAWholeFileInOneRequest(t *testing.T) {
+	t.Parallel()
+	data := pseudoRandom(5 << 20)
+	opened := openBig(t, data)
+	got := make([]byte, len(data))
+	if n, err := opened.ReadAt(got, 0); n != len(data) || !errors.Is(err, io.EOF) || !bytes.Equal(got, data) {
+		t.Errorf("read %d bytes, error %v, equal %v", n, err, bytes.Equal(got, data))
+	}
+}
+
+func TestProtocolReadsPiecesOutOfOrder(t *testing.T) {
+	t.Parallel()
+	data := pseudoRandom(5 << 20)
+	opened := openBig(t, data)
+	const piece = 64 << 10
+	for _, i := range rand.New(rand.NewPCG(3, 4)).Perm(len(data) / piece) {
+		buf := make([]byte, piece)
+		if n, err := opened.ReadAt(buf, int64(i*piece)); n != piece || (err != nil && !errors.Is(err, io.EOF)) {
+			t.Fatalf("piece %d: %d bytes, %v", i, n, err)
 		}
-	})
-	t.Run("in 64 KiB pieces, out of order", func(t *testing.T) {
-		const piece = 64 << 10
-		for _, i := range rand.New(rand.NewPCG(3, 4)).Perm(len(data) / piece) {
-			buf := make([]byte, piece)
-			if n, err := f.ReadAt(buf, int64(i*piece)); n != piece || (err != nil && !errors.Is(err, io.EOF)) {
-				t.Fatalf("piece %d: %d bytes, %v", i, n, err)
-			}
-			if !bytes.Equal(buf, data[i*piece:(i+1)*piece]) {
-				t.Fatalf("piece %d differs", i)
-			}
+		if !bytes.Equal(buf, data[i*piece:(i+1)*piece]) {
+			t.Fatalf("piece %d differs", i)
 		}
-	})
-	t.Run("sequentially with Read", func(t *testing.T) {
-		got, err := io.ReadAll(io.LimitReader(f, int64(len(data))))
-		if err != nil || !bytes.Equal(got, data) {
-			t.Errorf("read %d bytes, error %v", len(got), err)
-		}
-	})
-	t.Run("past the end", func(t *testing.T) {
-		if n, err := f.ReadAt(make([]byte, 10), int64(len(data))+5); n != 0 || !errors.Is(err, io.EOF) {
-			t.Errorf("read %d bytes, error %v; want 0, EOF", n, err)
-		}
-	})
+	}
+}
+
+func TestProtocolReadsSequentially(t *testing.T) {
+	t.Parallel()
+	data := pseudoRandom(5 << 20)
+	opened := openBig(t, data)
+	got, err := io.ReadAll(io.LimitReader(opened, int64(len(data))))
+	if err != nil || !bytes.Equal(got, data) {
+		t.Errorf("read %d bytes, error %v", len(got), err)
+	}
+}
+
+func TestProtocolReadPastTheEnd(t *testing.T) {
+	t.Parallel()
+	data := pseudoRandom(5 << 20)
+	opened := openBig(t, data)
+	if n, err := opened.ReadAt(make([]byte, 10), int64(len(data))+5); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("read %d bytes, error %v; want 0, EOF", n, err)
+	}
 }
 
 func TestProtocolReadOnly(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
-	tg := dial(t, startTest(t, fsys))
-	f, err := tg.Open("/dir/hello.txt")
+	target := dial(t, startTest(t, fsys))
+	opened, err := target.Open("/dir/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,15 +232,15 @@ func TestProtocolReadOnly(t *testing.T) {
 		name string
 		call func() error
 	}{
-		{"create", func() error { _, err := tg.Create("/dir/new.txt", 0o644); return err }},
-		{"create over an existing file", func() error { _, err := tg.Create("/dir/hello.txt", 0o644); return err }},
-		{"mkdir", func() error { _, err := tg.Mkdir("/dir/sub", 0o755); return err }},
-		{"remove", func() error { return tg.Remove("/dir/hello.txt") }},
-		{"rmdir", func() error { return tg.RmDir("/dir") }},
-		{"rename", func() error { return tg.Rename("/dir/hello.txt", "/dir/moved.txt") }},
-		{"symlink", func() error { return tg.Symlink("/dir/hello.txt", "/dir/link") }},
-		{"setattr", func() error { return tg.Setattr("/dir/hello.txt", nfs.Sattr3{Mode: mode}) }},
-		{"write", func() error { _, err := f.Write([]byte("x")); return err }},
+		{"create", func() error { _, err := target.Create("/dir/new.txt", 0o644); return err }},
+		{"create over an existing file", func() error { _, err := target.Create("/dir/hello.txt", 0o644); return err }},
+		{"mkdir", func() error { _, err := target.Mkdir("/dir/sub", 0o755); return err }},
+		{"remove", func() error { return target.Remove("/dir/hello.txt") }},
+		{"rmdir", func() error { return target.RmDir("/dir") }},
+		{"rename", func() error { return target.Rename("/dir/hello.txt", "/dir/moved.txt") }},
+		{"symlink", func() error { return target.Symlink("/dir/hello.txt", "/dir/link") }},
+		{"setattr", func() error { return target.Setattr("/dir/hello.txt", nfs.Sattr3{Mode: mode}) }},
+		{"write", func() error { _, err := opened.Write([]byte("x")); return err }},
 	}
 	for _, tt := range tests {
 		wantStatus(t, tt.name, tt.call(), nfs.NFS3ErrROFS)
@@ -240,9 +257,9 @@ func TestProtocolReadOnly(t *testing.T) {
 
 func TestProtocolAccessDeniesEveryWrite(t *testing.T) {
 	t.Parallel()
-	tg := dial(t, startTest(t, newFakeFS().addFile("hello.txt", []byte("x"))))
+	target := dial(t, startTest(t, newFakeFS().addFile("hello.txt", []byte("x"))))
 	const writes = nfs.ACCESS3_MODIFY | nfs.ACCESS3_EXTEND | nfs.ACCESS3_DELETE
-	got, err := tg.Access("/hello.txt", nfs.ACCESS3_READ|writes)
+	got, err := target.Access("/hello.txt", nfs.ACCESS3_READ|writes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,12 +271,12 @@ func TestProtocolAccessDeniesEveryWrite(t *testing.T) {
 func TestProtocolProbeNameIsNotFoundAndNeverReachesTheCore(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
-	tg := dial(t, startTest(t, fsys))
+	target := dial(t, startTest(t, fsys))
 	fsys.mu.Lock()
 	fsys.calls = nil
 	fsys.mu.Unlock()
 
-	if _, _, err := tg.Lookup("/" + mount.ProbeName); !os.IsNotExist(err) {
+	if _, _, err := target.Lookup("/" + mount.ProbeName); !os.IsNotExist(err) {
 		t.Fatalf("lookup of the probe name = %v, want not-exist", err)
 	}
 	fsys.mu.Lock()
@@ -274,21 +291,21 @@ func TestProtocolProbeNameIsNotFoundAndNeverReachesTheCore(t *testing.T) {
 func TestProtocolProbeNameIsAnsweredWithTheCoreUnreachable(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
-	started, release := blockRoot(fsys)
-	t.Cleanup(release)
-	ln, err := listenLoopback(t.Context())
+	block := blockRoot(fsys)
+	t.Cleanup(block.release)
+	listener, err := listenLoopback(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := startServer(fsys, ln, serverConfig{owner: testOwner, rootBudget: 10 * time.Millisecond})
+	srv, err := startServer(fsys, listener, serverConfig{owner: testOwner(), rootBudget: 10 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(s.Close)
-	tg := dial(t, s)
-	waitFor(t, started, "the root call to start")
+	t.Cleanup(srv.Close)
+	target := dial(t, srv)
+	waitFor(t, block.started, "the root call to start")
 
-	if _, _, err := tg.Lookup("/" + mount.ProbeName); !os.IsNotExist(err) {
+	if _, _, err := target.Lookup("/" + mount.ProbeName); !os.IsNotExist(err) {
 		t.Fatalf("lookup of the probe name = %v, want not-exist", err)
 	}
 	fsys.mu.Lock()
@@ -303,30 +320,30 @@ func TestProtocolProbeNameIsAnsweredWithTheCoreUnreachable(t *testing.T) {
 func TestProtocolErrors(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
-	tg := dial(t, startTest(t, fsys))
+	target := dial(t, startTest(t, fsys))
 
-	if _, _, err := tg.Lookup("/dir/missing"); !os.IsNotExist(err) {
+	if _, _, err := target.Lookup("/dir/missing"); !os.IsNotExist(err) {
 		t.Errorf("lookup of a missing name = %v, want not-exist", err)
 	}
-	_, _, err := tg.Lookup("/dir/hello.txt/below")
+	_, _, err := target.Lookup("/dir/hello.txt/below")
 	wantStatus(t, "lookup below a file", err, nfs.NFS3ErrNotDir)
 
-	_, fh, err := tg.Lookup("/dir/hello.txt")
+	_, fileHandle, err := target.Lookup("/dir/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, handle := range map[string][]byte{
-		"unknown handle":   bytes.Repeat([]byte{7}, len(fh)),
+		"unknown handle":   bytes.Repeat([]byte{7}, len(fileHandle)),
 		"malformed handle": {1, 2, 3},
 	} {
-		_, err := tg.GetAttr(handle)
+		_, err := target.GetAttr(handle)
 		wantStatus(t, name, err, nfs.NFS3ErrStale)
 	}
 
 	fsys.mu.Lock()
 	delete(fsys.nodes, "dir/hello.txt")
 	fsys.mu.Unlock()
-	if _, err := tg.GetAttr(fh); !os.IsNotExist(err) {
+	if _, err := target.GetAttr(fileHandle); !os.IsNotExist(err) {
 		t.Errorf("getattr of a removed file = %v, want not-exist", err)
 	}
 }
@@ -336,12 +353,12 @@ func TestProtocolErrors(t *testing.T) {
 func TestProtocolUnavailableIsAnIOError(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
-	tg := dial(t, startTest(t, fsys))
-	_, fh, err := tg.Lookup("/dir/hello.txt")
+	target := dial(t, startTest(t, fsys))
+	_, fileHandle, err := target.Lookup("/dir/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	file, err := tg.Open("/dir/hello.txt")
+	opened, err := target.Open("/dir/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,11 +375,11 @@ func TestProtocolUnavailableIsAnIOError(t *testing.T) {
 	}
 
 	setFailing("stat")
-	_, err = tg.GetAttr(fh)
+	_, err = target.GetAttr(fileHandle)
 	wantStatus(t, "getattr", err, nfs.NFS3ErrIO)
 
 	setFailing("read")
-	_, err = file.ReadAt(make([]byte, 5), 0)
+	_, err = opened.ReadAt(make([]byte, 5), 0)
 	wantStatus(t, "read", err, nfs.NFS3ErrIO)
 }
 
@@ -374,8 +391,8 @@ func TestProtocolUnavailableIsAnIOError(t *testing.T) {
 func TestProtocolLimitsOfGoNFS(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
-	tg := dial(t, startTest(t, fsys))
-	if _, _, err := tg.Lookup("/dir"); err != nil {
+	target := dial(t, startTest(t, fsys))
+	if _, _, err := target.Lookup("/dir"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -388,28 +405,29 @@ func TestProtocolLimitsOfGoNFS(t *testing.T) {
 	}
 	fsys.mu.Unlock()
 
-	if _, _, err := tg.Lookup("/dir/hello.txt"); !os.IsNotExist(err) {
+	if _, _, err := target.Lookup("/dir/hello.txt"); !os.IsNotExist(err) {
 		t.Errorf("lookup during an outage = %v, want NOENT (go-nfs limit)", err)
 	}
-	_, err := tg.ReadDirPlus("/dir")
+	_, err := target.ReadDirPlus("/dir")
 	wantStatus(t, "readdir during an outage", err, nfs.NFS3ErrNotDir)
 }
 
 func TestProtocolFindsNamesInAnotherUnicodeForm(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("m\u00fasica/"+nfcCafe, []byte("content"))
-	tg := dial(t, startTest(t, fsys))
+	target := dial(t, startTest(t, fsys))
 	asked := "/mu\u0301sica/" + nfdCafe
 
-	f, err := tg.Open(asked)
+	opened, err := target.Open(asked)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := make([]byte, 16)
-	if n, err := f.ReadAt(got, 0); string(got[:n]) != "content" || (err != nil && !errors.Is(err, io.EOF)) {
-		t.Errorf("read %q, %v", got[:n], err)
+	n, readErr := opened.ReadAt(got, 0)
+	if string(got[:n]) != "content" || (readErr != nil && !errors.Is(readErr, io.EOF)) {
+		t.Errorf("read %q, %v", got[:n], readErr)
 	}
-	entries, err := tg.ReadDirPlus("/mu\u0301sica")
+	entries, err := target.ReadDirPlus("/mu\u0301sica")
 	if err != nil || len(entries) != 1 || entries[0].Name() != nfcCafe {
 		t.Errorf("listing = %v, %v; want the stored name %q", entries, err, nfcCafe)
 	}
@@ -418,26 +436,24 @@ func TestProtocolFindsNamesInAnotherUnicodeForm(t *testing.T) {
 func TestProtocolSeveralClientsAtOnce(t *testing.T) {
 	t.Parallel()
 	data := pseudoRandom(2 << 20)
-	s := startTest(t, newFakeFS().addFile("big.bin", data))
+	srv := startTest(t, newFakeFS().addFile("big.bin", data))
 	var wg sync.WaitGroup
 	errs := make(chan error, 8)
 	for range 8 {
-		tg := dial(t, s)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			f, err := tg.Open("/big.bin")
+		target := dial(t, srv)
+		wg.Go(func() {
+			opened, err := target.Open("/big.bin")
 			if err != nil {
 				errs <- err
 				return
 			}
 			got := make([]byte, len(data))
-			if _, err := f.ReadAt(got, 0); err != nil && !errors.Is(err, io.EOF) {
+			if _, err := opened.ReadAt(got, 0); err != nil && !errors.Is(err, io.EOF) {
 				errs <- err
 			} else if !bytes.Equal(got, data) {
 				errs <- errors.New("data differs")
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

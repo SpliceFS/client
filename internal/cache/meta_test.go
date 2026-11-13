@@ -59,7 +59,7 @@ func TestVersionBlockLen(t *testing.T) {
 
 func TestCheckBitmap(t *testing.T) {
 	t.Parallel()
-	v := testVersion(40) // 10 blocks, 2 bitmap bytes
+	version := testVersion(40) // 10 blocks, 2 bitmap bytes
 	tests := []struct {
 		name   string
 		bitmap []byte
@@ -71,7 +71,7 @@ func TestCheckBitmap(t *testing.T) {
 		{"bits past the end", []byte{0, 0x04}, false},
 	}
 	for _, tt := range tests {
-		if err := checkBitmap(v, tt.bitmap); tt.ok != (err == nil) {
+		if err := checkBitmap(version, tt.bitmap); tt.ok != (err == nil) {
 			t.Errorf("%s: checkBitmap() = %v, want ok=%v", tt.name, err, tt.ok)
 		}
 	}
@@ -82,7 +82,7 @@ func TestCheckBitmap(t *testing.T) {
 
 func TestCountBlocks(t *testing.T) {
 	t.Parallel()
-	v := testVersion(10) // blocks of 4, 4, 2
+	version := testVersion(10) // blocks of 4, 4, 2
 	tests := []struct {
 		name          string
 		bitmap        []byte
@@ -94,13 +94,13 @@ func TestCountBlocks(t *testing.T) {
 		{"all", []byte{7}, 3, 10},
 	}
 	for _, tt := range tests {
-		present, size := countBlocks(v, tt.bitmap)
-		if present != tt.present || size != tt.size {
-			t.Errorf("%s: countBlocks() = %d, %d; want %d, %d", tt.name, present, size, tt.present, tt.size)
+		got := countBlocks(version, tt.bitmap)
+		if got.present != tt.present || got.bytes != tt.size {
+			t.Errorf("%s: countBlocks() = %d, %d; want %d, %d", tt.name, got.present, got.bytes, tt.present, tt.size)
 		}
 	}
-	if present, size := countBlocks(testVersion(0), nil); present != 0 || size != 0 {
-		t.Errorf("empty file: countBlocks() = %d, %d", present, size)
+	if got := countBlocks(testVersion(0), nil); got != (blockCount{}) {
+		t.Errorf("empty file: countBlocks() = %+v", got)
 	}
 }
 

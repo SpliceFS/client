@@ -2,7 +2,9 @@ package nfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net"
@@ -56,13 +58,12 @@ func listenOn(ctx context.Context, addr string) (net.Listener, error) {
 	return ln, nil
 }
 
-// startServer serves fsys on ln until Close is called or the listener fails. It takes
-// over ln: Close closes it.
-func startServer(fsys core.FS, ln net.Listener, cfg serverConfig) (*server, error) {
-	addr, err := netip.ParseAddrPort(ln.Addr().String())
+// startServer serves fsys on listener until Close is called or the listener fails. It
+// takes over listener: Close closes it.
+func startServer(fsys core.FS, listener net.Listener, cfg serverConfig) (*server, error) {
+	addr, err := netip.ParseAddrPort(listener.Addr().String())
 	if err != nil {
-		_ = ln.Close()
-		return nil, fmt.Errorf("listener address %q: %w", ln.Addr(), err)
+		return nil, errors.Join(fmt.Errorf("listener address %q: %w", listener.Addr(), err), listener.Close())
 	}
 	if cfg.logger == nil {
 		cfg.logger = slog.New(slog.DiscardHandler)
@@ -75,23 +76,15 @@ func startServer(fsys core.FS, ln net.Listener, cfg serverConfig) (*server, erro
 	if cfg.rootBudget > 0 {
 		billyView.rootBudget = cfg.rootBudget
 	}
-	s := &server{
-		guard:  &guardListener{Listener: ln, log: cfg.logger, conns: make(map[*trackedConn]struct{})},
+	srv := &server{
+		guard:  &guardListener{Listener: listener, log: cfg.logger, conns: make(map[*trackedConn]struct{})},
 		cancel: cancel,
 		port:   int(addr.Port()),
 		done:   make(chan struct{}),
 	}
 	nfsServer := &gonfs.Server{Handler: newHandler(billyView, handleCacheSize, verifierCacheSize), Context: ctx}
-	go s.run(nfsServer)
-	return s, nil
-}
-
-func (s *server) run(nfsServer *gonfs.Server) {
-	defer close(s.done)
-	err := nfsServer.Serve(s.guard)
-	if !s.closing.Load() {
-		s.err = fmt.Errorf("serve nfs: %w", err)
-	}
+	go srv.run(nfsServer)
+	return srv, nil
 }
 
 // Port is the loopback port the server listens on.
@@ -110,8 +103,18 @@ func (s *server) Err() error { return s.err }
 func (s *server) Close() {
 	s.closing.Store(true)
 	s.cancel()
-	_ = s.guard.Close()
+	if err := s.guard.Close(); err != nil {
+		s.guard.log.Warn("close listener", slog.Any("err", err))
+	}
 	<-s.done
+}
+
+func (s *server) run(nfsServer *gonfs.Server) {
+	defer close(s.done)
+	err := nfsServer.Serve(s.guard)
+	if !s.closing.Load() {
+		s.err = fmt.Errorf("serve nfs: %w", err)
+	}
 }
 
 // guardListener only hands out connections that come from the loopback interface, and
@@ -125,6 +128,7 @@ func (s *server) Close() {
 // any local process can connect.
 type guardListener struct {
 	net.Listener
+
 	log *slog.Logger
 
 	mu     sync.Mutex
@@ -137,33 +141,17 @@ func (g *guardListener) Accept() (net.Conn, error) {
 	for {
 		conn, err := g.Listener.Accept()
 		if err != nil {
+			//nolint:wrapcheck // go-nfs asserts net.Error on this error to retry after a timeout; a wrapper would hide it.
 			return nil, err
 		}
 		if !isLoopback(conn.RemoteAddr()) {
-			g.log.Warn("refused connection from a non-loopback address", "remote", conn.RemoteAddr())
-			_ = conn.Close()
+			g.log.Warn("refused connection from a non-loopback address",
+				slog.String("remote", conn.RemoteAddr().String()))
+			discardClose(conn)
 			continue
 		}
 		return g.track(conn)
 	}
-}
-
-func (g *guardListener) track(conn net.Conn) (net.Conn, error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.closed {
-		_ = conn.Close()
-		return nil, net.ErrClosed
-	}
-	tracked := &trackedConn{Conn: conn, owner: g}
-	g.conns[tracked] = struct{}{}
-	return tracked, nil
-}
-
-func (g *guardListener) forget(conn *trackedConn) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.conns, conn)
 }
 
 // Close closes the listener and every connection handed out. go-nfs calls it when its
@@ -179,21 +167,52 @@ func (g *guardListener) Close() error {
 	g.mu.Unlock()
 
 	err := g.Listener.Close()
-	for _, c := range conns {
-		_ = c.Close()
+	for _, conn := range conns {
+		discardClose(conn)
 	}
-	return err
+	if err != nil {
+		return fmt.Errorf("close listener: %w", err)
+	}
+	return nil
+}
+
+func (g *guardListener) track(conn net.Conn) (net.Conn, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		discardClose(conn)
+		return nil, net.ErrClosed
+	}
+	tracked := &trackedConn{Conn: conn, owner: g}
+	g.conns[tracked] = struct{}{}
+	return tracked, nil
+}
+
+func (g *guardListener) forget(conn *trackedConn) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.conns, conn)
 }
 
 // trackedConn removes itself from its listener when closed.
 type trackedConn struct {
 	net.Conn
+
 	owner *guardListener
 }
 
 func (c *trackedConn) Close() error {
 	c.owner.forget(c)
-	return c.Conn.Close()
+	if err := c.Conn.Close(); err != nil {
+		return fmt.Errorf("close connection: %w", err)
+	}
+	return nil
+}
+
+// discardClose closes a connection that is being dropped. A failure to close it cannot
+// be acted on: the peer may have closed it first, and the connection is gone either way.
+func discardClose(conn io.Closer) {
+	_ = conn.Close() //nolint:errcheck // The reason is in the comment of this function.
 }
 
 func isLoopback(addr net.Addr) bool {

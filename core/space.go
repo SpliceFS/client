@@ -41,18 +41,18 @@ func (m *spaceMemo) put(value Space, at time.Time) {
 // cluster root adds up its shares.
 func (v *view) StatFS(ctx context.Context) (Space, error) {
 	now := v.client.opts.Now()
-	if s, ok := v.space.get(now); ok {
-		return s, nil
+	if cached, ok := v.space.get(now); ok {
+		return cached, nil
 	}
-	s, err := v.measure(ctx)
+	measured, err := v.measure(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
-			return Space{}, ctx.Err()
+			return Space{}, fmt.Errorf("statfs: %w", ctx.Err())
 		}
 		return Space{}, fmt.Errorf("statfs: %w: %w", ErrUnavailable, err)
 	}
-	v.space.put(s, now)
-	return s, nil
+	v.space.put(measured, now)
+	return measured, nil
 }
 
 func (v *view) measure(ctx context.Context) (Space, error) {
@@ -60,23 +60,19 @@ func (v *view) measure(ctx context.Context) (Space, error) {
 	if err != nil {
 		return Space{}, err
 	}
-	_, usable, err := v.c.nodes(ctx)
+	nodes, err := v.c.nodes(ctx)
 	if err != nil {
 		return Space{}, err
 	}
 	var asks []spaceAsk
 	for _, share := range shares {
-		for _, n := range usable {
-			asks = append(asks, spaceAsk{share: share, node: n})
+		for _, node := range nodes.usable {
+			asks = append(asks, spaceAsk{share: share, node: node})
 		}
 	}
-	answers := fanOut(ctx, asks, func(ctx context.Context, a spaceAsk) spaceAnswer {
-		var space wire.Space
-		err := v.c.session.Do(ctx, a.node, func(ctx context.Context, token string) (err error) {
-			space, err = a.node.Space(ctx, token, a.share)
-			return err
-		})
-		return spaceAnswer{share: a.share, space: space, err: err}
+	answers := fanOut(ctx, asks, func(ctx context.Context, ask spaceAsk) spaceAnswer {
+		space, err := callNode(ctx, v.c, ask.node, ask.node.Space, ask.share)
+		return spaceAnswer{share: ask.share, space: space, err: err}
 	})
 	return sumShares(shares, answers)
 }
@@ -90,11 +86,11 @@ func (v *view) shares(ctx context.Context) ([]string, error) {
 	}
 	entries, err := v.c.tree.List(ctx, "")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list the shares: %w", err)
 	}
 	shares := make([]string, len(entries))
-	for i, e := range entries {
-		shares[i] = e.Name
+	for i, treeEntry := range entries {
+		shares[i] = treeEntry.Name
 	}
 	return shares, nil
 }
@@ -116,25 +112,28 @@ type spaceAnswer struct {
 func sumShares(shares []string, answers []spaceAnswer) (Space, error) {
 	smallest := make(map[string]wire.Space, len(shares))
 	failures := make(map[string][]error)
-	for _, a := range answers {
-		if a.err != nil {
-			failures[a.share] = append(failures[a.share], a.err)
+	for _, answer := range answers {
+		if answer.err != nil {
+			failures[answer.share] = append(failures[answer.share], answer.err)
 			continue
 		}
-		s, ok := smallest[a.share]
+		least, ok := smallest[answer.share]
 		if !ok {
-			s = a.space
+			least = answer.space
 		}
-		smallest[a.share] = wire.Space{Total: min(s.Total, a.space.Total), Free: min(s.Free, a.space.Free)}
+		smallest[answer.share] = wire.Space{
+			Total: min(least.Total, answer.space.Total),
+			Free:  min(least.Free, answer.space.Free),
+		}
 	}
 	var sum Space
 	for _, share := range shares {
-		s, ok := smallest[share]
+		least, ok := smallest[share]
 		if !ok {
 			return Space{}, fmt.Errorf("share %q: no node answered: %w", share, errors.Join(failures[share]...))
 		}
-		sum.Total += s.Total
-		sum.Free += s.Free
+		sum.Total += least.Total
+		sum.Free += least.Free
 	}
 	return sum, nil
 }

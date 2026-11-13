@@ -42,13 +42,13 @@ type serveLoop interface {
 // prepareTarget checks that target can be mounted on. A mount left behind by a crashed
 // client answers every access with ENOTCONN; it is detached so that a new mount can
 // take its place.
-func prepareTarget(ctx context.Context, h host, target string) error {
-	info, err := h.Stat(target)
+func prepareTarget(ctx context.Context, sys host, target string) error {
+	info, err := sys.Stat(target)
 	if errors.Is(err, syscall.ENOTCONN) {
-		if err := h.Unmount(ctx, target, true); err != nil {
-			return fmt.Errorf("clear dead mount: %w", err)
+		if unmountErr := sys.Unmount(ctx, target, true); unmountErr != nil {
+			return fmt.Errorf("clear dead mount: %w", unmountErr)
 		}
-		info, err = h.Stat(target)
+		info, err = sys.Stat(target)
 	}
 	if err != nil {
 		return fmt.Errorf("mount target: %w", err)
@@ -79,45 +79,24 @@ var (
 
 // start runs the serve loop and waits until the mount is ready. If it never becomes
 // ready the mount is taken down again so that nothing is left behind.
-func start(loop serveLoop, h host, target string) (mount.Mounted, error) {
-	m := &mounted{target: target, host: h, done: make(chan struct{})}
-	go m.run(loop.Serve)
+//
+//nolint:ireturn // mount.Mounted is the result type of every mount layer.
+func start(loop serveLoop, sys host, target string) (mount.Mounted, error) {
+	live := &mounted{target: target, host: sys, done: make(chan struct{})}
+	go live.run(loop.Serve)
 	if err := loop.WaitMount(); err != nil {
-		return nil, errors.Join(fmt.Errorf("wait for mount of %s: %w", target, err), m.cleanUp())
+		return nil, errors.Join(fmt.Errorf("wait for mount of %s: %w", target, err), live.cleanUp())
 	}
-	m.connection, m.known = rememberConnection(h, target)
-	return m, nil
-}
-
-func (m *mounted) run(serve func()) {
-	serve()
-	m.err = m.endError()
-	close(m.done)
-}
-
-// endError tells a clean end from a lost connection. A serve loop that stops while the
-// mount is still attached leaves a dead mount behind, which answers with ENOTCONN. After
-// an unmount, from here or from outside, the target is an ordinary directory again.
-func (m *mounted) endError() error {
-	if _, err := m.host.Stat(m.target); errors.Is(err, syscall.ENOTCONN) {
-		return fmt.Errorf("connection to the kernel for %s was lost: %w", m.target, err)
-	}
-	return nil
+	live.connection, live.known = rememberConnection(sys, target)
+	return live, nil
 }
 
 // rememberConnection looks up the kernel connection of a mount that is up, so that Abort
 // can cut it later, when the mount point no longer leads to it. A
 // failure only means that no abort will be possible; the mount itself is fine.
-func rememberConnection(h host, target string) (uint32, bool) {
-	id, err := h.ConnectionID(target)
+func rememberConnection(sys host, target string) (uint32, bool) {
+	id, err := sys.ConnectionID(target)
 	return id, err == nil
-}
-
-// cleanUp takes down a mount that never became ready.
-func (m *mounted) cleanUp() error {
-	ctx, cancel := context.WithTimeout(context.Background(), abortTimeout)
-	defer cancel()
-	return m.Unmount(ctx, false)
 }
 
 // Done implements mount.Mounted.
@@ -129,13 +108,15 @@ func (m *mounted) Err() error { return m.err }
 // Unmount implements mount.Mounted. Without force it returns after the serve loop has
 // ended. With force it returns once the mount is detached; the loop then ends when the
 // last program using the mount lets go of it, so files that are open keep working.
+//
+//nolint:revive // mount.Mounted fixes this signature.
 func (m *mounted) Unmount(ctx context.Context, force bool) error {
 	select {
 	case <-m.done:
 		return nil
 	default:
 	}
-	if err := m.unmount(ctx, force); err != nil {
+	if err := m.hostUnmount(ctx, force); err != nil {
 		return err
 	}
 	if force {
@@ -158,16 +139,17 @@ func (m *mounted) Abort() error {
 	if !m.known {
 		return nil
 	}
-	if err := m.host.AbortConnection(m.connection); !errors.Is(err, fs.ErrNotExist) {
-		return err
+	err := m.host.AbortConnection(m.connection)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("abort connection of %s: %w", m.target, err)
 	}
 	return nil
 }
 
-// unmount runs the host's unmount in its own goroutine because the system call cannot
+// hostUnmount runs the host's unmount in its own goroutine because the system call cannot
 // be interrupted and ctx must still be honoured. The goroutine ends when the call
 // returns.
-func (m *mounted) unmount(ctx context.Context, detach bool) error {
+func (m *mounted) hostUnmount(ctx context.Context, detach bool) error {
 	result := make(chan error, 1)
 	go func() { result <- m.host.Unmount(ctx, m.target, detach) }()
 	select {
@@ -176,4 +158,27 @@ func (m *mounted) unmount(ctx context.Context, detach bool) error {
 	case <-ctx.Done():
 		return fmt.Errorf("unmount %s: %w", m.target, ctx.Err())
 	}
+}
+
+func (m *mounted) run(serve func()) {
+	serve()
+	m.err = m.endError()
+	close(m.done)
+}
+
+// endError tells a clean end from a lost connection. A serve loop that stops while the
+// mount is still attached leaves a dead mount behind, which answers with ENOTCONN. After
+// an unmount, from here or from outside, the target is an ordinary directory again.
+func (m *mounted) endError() error {
+	if _, err := m.host.Stat(m.target); errors.Is(err, syscall.ENOTCONN) {
+		return fmt.Errorf("connection to the kernel for %s was lost: %w", m.target, err)
+	}
+	return nil
+}
+
+// cleanUp takes down a mount that never became ready.
+func (m *mounted) cleanUp() error {
+	ctx, cancel := context.WithTimeout(context.Background(), abortTimeout)
+	defer cancel()
+	return m.Unmount(ctx, false)
 }

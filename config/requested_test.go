@@ -25,8 +25,6 @@ func testConfig() *Config {
 	}
 }
 
-func ptr[T any](v T) *T { return &v }
-
 func requestedMount(target string, cache Cache) Mount {
 	return Mount{
 		Name: RequestedName(target), Cluster: "example", Path: "/", Target: target,
@@ -60,7 +58,7 @@ func TestWithMountsAdds(t *testing.T) {
 		},
 		{
 			"offline override",
-			[]Requested{{Cluster: "example", Target: "/mnt/media", Offline: ptr(false)}},
+			[]Requested{{Cluster: "example", Target: "/mnt/media", Offline: new(false)}},
 			[]Mount{{
 				Name: RequestedName("/mnt/media"), Cluster: "example", Path: "/",
 				Target: "/mnt/media", Cache: base.Cache,
@@ -68,7 +66,7 @@ func TestWithMountsAdds(t *testing.T) {
 		},
 		{
 			"offline stated true",
-			[]Requested{{Cluster: "example", Target: "/mnt/media", Offline: ptr(true)}},
+			[]Requested{{Cluster: "example", Target: "/mnt/media", Offline: new(true)}},
 			[]Mount{requestedMount("/mnt/media", base.Cache)},
 		},
 		{
@@ -152,7 +150,7 @@ func TestWithMountsRejects(t *testing.T) {
 			nil,
 		},
 		{
-			"path with dot dot",
+			"path with parent segment",
 			[]Requested{{Cluster: "example", Path: "/a/../b", Target: "/mnt/media"}},
 			[]string{`must not contain ".."`, "(requested mount /mnt/media)"},
 			nil,
@@ -160,29 +158,37 @@ func TestWithMountsRejects(t *testing.T) {
 		{
 			"target equal to a file mount",
 			[]Requested{{Cluster: "example", Target: "/mnt/files/"}},
-			[]string{"/mnt/files is already the target of another mount (mounts.files)",
-				"(requested mount /mnt/files)"},
+			[]string{
+				"/mnt/files is already the target of another mount (mounts.files)",
+				"(requested mount /mnt/files)",
+			},
 			[]string{"(file mounts.d"},
 		},
 		{
 			"target inside a file mount",
 			[]Requested{{Cluster: "example", Target: "/mnt/files/sub"}},
-			[]string{"/mnt/files/sub is inside the target /mnt/files of another mount",
-				"(requested mount /mnt/files/sub)"},
+			[]string{
+				"/mnt/files/sub is inside the target /mnt/files of another mount",
+				"(requested mount /mnt/files/sub)",
+			},
 			nil,
 		},
 		{
 			"target containing a file mount",
 			[]Requested{{Cluster: "example", Target: "/mnt"}},
-			[]string{"/mnt contains the target /mnt/files of another mount",
-				"(requested mount /mnt)"},
+			[]string{
+				"/mnt contains the target /mnt/files of another mount",
+				"(requested mount /mnt)",
+			},
 			nil,
 		},
 		{
 			"target inside the cache folder",
 			[]Requested{{Cluster: "example", Target: "/var/cache/test/media"}},
-			[]string{"cache.dir: /var/cache/test must not be, lie inside or contain the target",
-				"(requested mount /var/cache/test/media)"},
+			[]string{
+				"cache.dir: /var/cache/test must not be, lie inside or contain the target",
+				"(requested mount /var/cache/test/media)",
+			},
 			[]string{"conf.d/a.yaml"},
 		},
 		{
@@ -203,8 +209,10 @@ func TestWithMountsRejects(t *testing.T) {
 				{Cluster: "example", Target: "/mnt/media"},
 				{Cluster: "example", Target: "/mnt/media"},
 			},
-			[]string{"/mnt/media is already the target of another mount",
-				"(requested mount /mnt/media)"},
+			[]string{
+				"/mnt/media is already the target of another mount",
+				"(requested mount /mnt/media)",
+			},
 			nil,
 		},
 		{
@@ -214,9 +222,11 @@ func TestWithMountsRejects(t *testing.T) {
 				{Cluster: "example", Target: "rel"},
 				{Cluster: "example", Target: "/mnt/files"},
 			},
-			[]string{`"nope" is not a cluster`, "(requested mount /mnt/a)",
+			[]string{
+				`"nope" is not a cluster`, "(requested mount /mnt/a)",
 				`"rel" is not an absolute path`, "(requested mount rel)",
-				"already the target of another mount", "(requested mount /mnt/files)"},
+				"already the target of another mount", "(requested mount /mnt/files)",
+			},
 			nil,
 		},
 	}
@@ -231,16 +241,8 @@ func TestWithMountsRejects(t *testing.T) {
 			if got != nil {
 				t.Errorf("got a configuration and the error %v", err)
 			}
-			for _, w := range tt.want {
-				if !strings.Contains(err.Error(), w) {
-					t.Errorf("error %q does not contain %q", err, w)
-				}
-			}
-			for _, w := range tt.notWant {
-				if strings.Contains(err.Error(), w) {
-					t.Errorf("error %q contains %q", err, w)
-				}
-			}
+			checkErrorContains(t, err, tt.want)
+			checkErrorOmits(t, err, tt.notWant)
 			if !reflect.DeepEqual(cfg, testConfig()) {
 				t.Errorf("cfg was changed: %+v", cfg)
 			}

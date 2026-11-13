@@ -1,13 +1,14 @@
 //go:build linux
 
+//nolint:paralleltest // the tests mount for real and share the mount table and the process environment
 package fuse
 
 import (
 	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,16 +33,16 @@ func TestMain(m *testing.M) {
 	if target := os.Getenv(crashEnv); target != "" {
 		os.Exit(runCrashingClient(target))
 	}
-	os.Exit(m.Run())
+	m.Run()
 }
 
 func runCrashingClient(target string) int {
 	mounted, err := Mount(newFakeFS(), mount.Options{Target: target, Source: testSource})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		log.New(os.Stderr, "", 0).Println(err)
 		return 2
 	}
-	fmt.Println("ready")
+	log.New(os.Stdout, "", 0).Println("ready")
 	<-mounted.Done()
 	return 0
 }
@@ -117,11 +118,12 @@ func TestAllowOtherIsPassedToTheKernel(t *testing.T) {
 		t.Skip("allow_other for ordinary users needs user_allow_other in /etc/fuse.conf")
 	}
 	target := t.TempDir()
-	m, err := mountWith(newFakeFS(), mount.Options{Target: target, Source: testSource, AllowOther: true}, defaultSettings(), newKernelHost())
+	opts := mount.Options{Target: target, Source: testSource, AllowOther: true}
+	mnt, err := mountWith(newFakeFS(), opts, defaultSettings(), newKernelHost())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { endMount(t, m) })
+	t.Cleanup(func() { endMount(t, mnt) })
 	entry, ok := findMount(t, target)
 	if !ok || !slices.Contains(entry.superOptions, "allow_other") {
 		t.Fatalf("super options %v lack allow_other", entry.superOptions)
@@ -138,20 +140,21 @@ func TestInterruptedReadCancelsTheCoreCall(t *testing.T) {
 	// Direct I/O makes the kernel wait for the answer to this very request, which is what
 	// makes it interruptible. A buffered read is served by read-ahead requests that run on
 	// after the reader is gone and are never interrupted.
-	cmd := exec.CommandContext(testContext(t), "dd", "if="+filepath.Join(target, "hello.txt"), "of=/dev/null", "bs=4096", "count=1", "iflag=direct")
+	cmd := exec.CommandContext(testContext(t), "dd",
+		"if="+filepath.Join(target, "hello.txt"), "of=/dev/null", "bs=4096", "count=1", "iflag=direct")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-fake.reading:
 	case <-time.After(waitTimeout):
-		_ = cmd.Process.Kill()
+		killAndReap(cmd)
 		t.Fatal("the read never reached the core")
 	}
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
-	_ = cmd.Wait()
+	reap(cmd)
 
 	select {
 	case err := <-fake.cancelled:
@@ -210,35 +213,40 @@ func TestExtendedAttributesAreNotSupported(t *testing.T) {
 // unmount, which makes open files fail.
 func TestForcedUnmountDetachesAndOpenFilesKeepWorking(t *testing.T) {
 	fake := newFakeFS()
-	target, m := mountFake(t, fake, defaultSettings(), nil)
-	f, err := os.Open(filepath.Join(target, "hello.txt"))
+	target, mnt := mountFake(t, fake, defaultSettings(), nil)
+	file, err := os.Open(filepath.Join(target, "hello.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeQuietly(f)
+	defer closeQuietly(file)
 
-	if err := m.Unmount(testContext(t), true); err != nil {
+	if err = mnt.Unmount(testContext(t), true); err != nil {
 		t.Fatalf("forced Unmount = %v", err)
 	}
 	if _, ok := findMount(t, target); ok {
 		t.Fatal("forced unmount left the mount in the tree")
 	}
 	select {
-	case <-m.Done():
+	case <-mnt.Done():
 		t.Fatal("mount ended while a file is still open")
 	default:
 	}
 
-	got, err := io.ReadAll(f)
+	got, err := io.ReadAll(file)
 	if err != nil || string(got) != fakeContent {
 		t.Fatalf("open file after detach = %q, %v", got, err)
 	}
-	if err := f.Close(); err != nil {
+	if err = file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, m.Done())
-	if m.Err() != nil {
-		t.Fatalf("Err = %v, want nil", m.Err())
+	waitFor(t, mnt.Done())
+	requireNoLeftovers(t, mnt, fake)
+}
+
+func requireNoLeftovers(t *testing.T, mnt mount.Mounted, fake *fakeFS) {
+	t.Helper()
+	if mnt.Err() != nil {
+		t.Fatalf("Err = %v, want nil", mnt.Err())
 	}
 	if got := fake.open.Load(); got != 0 {
 		t.Fatalf("%d files still open in the core", got)
@@ -261,14 +269,25 @@ func crashedClient(t *testing.T, target string) {
 		t.Fatal(err)
 	}
 	if line, err := bufio.NewReader(out).ReadString('\n'); err != nil || line != "ready\n" {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		killAndReap(cmd)
 		t.Fatalf("client did not become ready: %q, %v", line, err)
 	}
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
-	_ = cmd.Wait()
+	reap(cmd)
+}
+
+// killAndReap ends a child that a test gives up on. Both steps may fail because the child
+// is already gone, and the test is about to fail for another reason.
+func killAndReap(cmd *exec.Cmd) {
+	_ = cmd.Process.Kill() //nolint:errcheck // the child may be gone already, and a test is about to fail anyway
+	reap(cmd)
+}
+
+// reap waits for a child that was killed. The wait always reports the kill as an error.
+func reap(cmd *exec.Cmd) {
+	_ = cmd.Wait() //nolint:errcheck // a killed child always reports the kill as its exit status
 }
 
 // FreeBSD has no control directory to abort a connection with, and what it does with the

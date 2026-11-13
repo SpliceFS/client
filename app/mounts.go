@@ -17,6 +17,10 @@ import (
 	"github.com/SpliceFS/client/mount"
 )
 
+// ErrNotConfigured completes a sentence that starts with a target: the configuration has
+// no mount there.
+var ErrNotConfigured = errors.New("is not a mount in the configuration")
+
 // selectMounts returns the mounts a run is responsible for: all of them when wanted is
 // empty, otherwise the ones whose targets are in it, in configuration order. The targets
 // in wanted are absolute and cleaned, as absTargets makes them.
@@ -24,15 +28,12 @@ func selectMounts(cfg *config.Config, wanted []string) ([]config.Mount, error) {
 	if len(wanted) == 0 {
 		return slices.Clone(cfg.Mounts), nil
 	}
-	var selected []config.Mount
-	for _, m := range cfg.Mounts {
-		if slices.Contains(wanted, m.Target) {
-			selected = append(selected, m)
-		}
-	}
+	selected := slices.DeleteFunc(slices.Clone(cfg.Mounts), func(mountCfg config.Mount) bool {
+		return !slices.Contains(wanted, mountCfg.Target)
+	})
 	for _, t := range wanted {
-		if !slices.ContainsFunc(selected, func(m config.Mount) bool { return m.Target == t }) {
-			return nil, fmt.Errorf("%s is not a mount in the configuration", t)
+		if !slices.ContainsFunc(selected, func(mountCfg config.Mount) bool { return mountCfg.Target == t }) {
+			return nil, fmt.Errorf("%s %w", t, ErrNotConfigured)
 		}
 	}
 	return selected, nil
@@ -85,10 +86,12 @@ func (l *liveMount) ended() bool {
 	}
 }
 
+// unmount returns the error of the mount layer as it is: each caller says which target it
+// was unmounting, and the text of the error goes to the client that asked for the unmount.
 func (l *liveMount) unmount(ctx context.Context, force bool) error {
 	l.unmounting.Lock()
 	defer l.unmounting.Unlock()
-	return l.mounted.Unmount(ctx, force)
+	return l.mounted.Unmount(ctx, force) //nolint:wrapcheck // see above
 }
 
 // isBusy tells a refusal because the mount is in use from other failures. The FUSE
@@ -124,19 +127,19 @@ func newMountSet(release func(core.FS), log *slog.Logger) *mountSet {
 }
 
 // add puts a mount in the set and starts its watcher.
-func (s *mountSet) add(m *liveMount) {
+func (s *mountSet) add(live *liveMount) {
 	s.mu.Lock()
-	s.mounts = append(s.mounts, m)
+	s.mounts = append(s.mounts, live)
 	s.mu.Unlock()
-	s.watchers.Go(func() { s.watch(m) })
+	s.watchers.Go(func() { s.watch(live) })
 }
 
-// remove takes m out of the set if it is there. It compares pointers, because a reload
+// remove takes live out of the set if it is there. It compares pointers, because a reload
 // may already have mounted something new at the same target.
-func (s *mountSet) remove(m *liveMount) {
+func (s *mountSet) remove(live *liveMount) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if i := slices.Index(s.mounts, m); i >= 0 {
+	if i := slices.Index(s.mounts, live); i >= 0 {
 		s.mounts = slices.Delete(s.mounts, i, i+1)
 	}
 }
@@ -149,43 +152,44 @@ func (s *mountSet) list() []*liveMount {
 }
 
 func (s *mountSet) find(target string) (*liveMount, bool) {
-	for _, m := range s.list() {
-		if m.target == target {
-			return m, true
+	for _, live := range s.list() {
+		if live.target == target {
+			return live, true
 		}
 	}
 	return nil, false
 }
 
-// watch waits for m to end, whatever the cause: an unmount through the control socket,
-// an unmount by the administrator or a reload. It then drops m from the set if it is
+// watch waits for live to end, whatever the cause: an unmount through the control socket,
+// an unmount by the administrator or a reload. It then drops live from the set if it is
 // still there and gives its view back to the core, which closes what a reload replaced
 // once nothing uses it. A mount that ended by itself stays unmounted until the next
 // reload or start.
-func (s *mountSet) watch(m *liveMount) {
+func (s *mountSet) watch(live *liveMount) {
 	select {
-	case <-m.mounted.Done():
+	case <-live.mounted.Done():
 	case <-s.stop:
 		return
 	}
-	s.remove(m)
-	s.release(m.fs)
-	s.dropRequested(m)
-	if err := m.mounted.Err(); err != nil {
-		s.log.Warn("mount ended with an error", "target", m.target, "err", err)
+	s.remove(live)
+	s.release(live.fs)
+	s.dropRequested(live)
+	if err := live.mounted.Err(); err != nil {
+		s.log.Warn("mount ended with an error",
+			slog.String("target", live.target), slog.Any("err", err))
 		return
 	}
-	s.log.Info("mount ended", "target", m.target)
+	s.log.Info("mount ended", slog.String("target", live.target))
 }
 
 // dropRequested takes a requested mount that ended on its own off the requested list, so
 // that it is not brought back. A mount ended by a stop stays on it, for the next start.
 // One that a reload detached was already dealt with, and its target may be in use again.
-func (s *mountSet) dropRequested(m *liveMount) {
-	if s.stopping.Load() || m.detached.Load() {
+func (s *mountSet) dropRequested(live *liveMount) {
+	if s.stopping.Load() || live.detached.Load() {
 		return
 	}
-	s.requested.remove(m.target)
+	s.requested.remove(live.target)
 }
 
 // endWatchers stops the watchers and waits for them. The core is closed after that, which
@@ -198,9 +202,9 @@ func (s *mountSet) endWatchers() {
 // notEnded returns the mounts that have not ended.
 func notEnded(mounts []*liveMount) []*liveMount {
 	var open []*liveMount
-	for _, m := range mounts {
-		if !m.ended() {
-			open = append(open, m)
+	for _, live := range mounts {
+		if !live.ended() {
+			open = append(open, live)
 		}
 	}
 	return open
@@ -210,9 +214,9 @@ func notEnded(mounts []*liveMount) []*liveMount {
 // failures.
 func unmountPending(ctx context.Context, mounts []*liveMount, force bool) []error {
 	var errs []error
-	for _, m := range notEnded(mounts) {
-		if err := m.unmount(ctx, force); err != nil {
-			errs = append(errs, fmt.Errorf("unmount %s: %w", m.target, err))
+	for _, live := range notEnded(mounts) {
+		if err := live.unmount(ctx, force); err != nil {
+			errs = append(errs, fmt.Errorf("unmount %s: %w", live.target, err))
 		}
 	}
 	return errs
@@ -222,25 +226,30 @@ func unmountPending(ctx context.Context, mounts []*liveMount, force bool) []erro
 // behind blocks the next start, so a mount that refuses a polite unmount is forced. It
 // returns why any mount could not be removed or ended with an error. The mounts are
 // listed once, before any of them ends, because the watchers remove the ended ones.
-func (s *mountSet) stopAll(log *slog.Logger, limits stopLimits) error {
+//
+// ctx is the context of the run, which has ended by now, so the stop keeps its values and
+// not its cancellation.
+func (s *mountSet) stopAll(ctx context.Context, log *slog.Logger, limits stopLimits) error {
 	s.stopping.Store(true)
+	ctx = context.WithoutCancel(ctx)
 	all := s.list()
-	gentle, cancelGentle := context.WithTimeout(context.Background(), limits.graceful)
+	gentle, cancelGentle := context.WithTimeout(ctx, limits.graceful)
 	defer cancelGentle()
 	for _, err := range unmountPending(gentle, all, false) {
-		log.Warn("unmount refused, forcing it", "err", err)
+		log.WarnContext(ctx, "unmount refused, forcing it", slog.Any("err", err))
 	}
-	return s.forceMounts(all, limits.force)
+	return s.forceMounts(ctx, all, limits.force)
 }
 
-// forceAll unmounts what is left with force and waits for every mount to end.
-func (s *mountSet) forceAll(limit time.Duration) error {
+// forceAll unmounts what is left with force and waits for every mount to end. Like
+// stopAll, it is not cut short by the cancellation of ctx.
+func (s *mountSet) forceAll(ctx context.Context, limit time.Duration) error {
 	s.stopping.Store(true)
-	return s.forceMounts(s.list(), limit)
+	return s.forceMounts(context.WithoutCancel(ctx), s.list(), limit)
 }
 
-func (s *mountSet) forceMounts(mounts []*liveMount, limit time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), limit)
+func (s *mountSet) forceMounts(ctx context.Context, mounts []*liveMount, limit time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	errs := unmountPending(ctx, mounts, true)
 	errs = append(errs, endErrors(ctx, mounts)...)
@@ -252,14 +261,14 @@ func (s *mountSet) forceMounts(mounts []*liveMount, limit time.Duration) error {
 // or did not end before ctx expired.
 func endErrors(ctx context.Context, mounts []*liveMount) []error {
 	var errs []error
-	for _, m := range mounts {
+	for _, live := range mounts {
 		select {
-		case <-m.mounted.Done():
-			if err := m.mounted.Err(); err != nil {
-				errs = append(errs, fmt.Errorf("mount %s: %w", m.target, err))
+		case <-live.mounted.Done():
+			if err := live.mounted.Err(); err != nil {
+				errs = append(errs, fmt.Errorf("mount %s: %w", live.target, err))
 			}
 		case <-ctx.Done():
-			errs = append(errs, fmt.Errorf("mount %s did not stop: %w", m.target, ctx.Err()))
+			errs = append(errs, fmt.Errorf("mount %s did not stop: %w", live.target, ctx.Err()))
 		}
 	}
 	return errs
@@ -267,11 +276,11 @@ func endErrors(ctx context.Context, mounts []*liveMount) []error {
 
 // unmountTarget unmounts one mount for a control request.
 func (s *mountSet) unmountTarget(ctx context.Context, target string, force bool) UnmountResult {
-	m, ok := s.find(target)
+	live, ok := s.find(target)
 	if !ok {
 		return UnmountResult{Target: target, Result: ResultUnknown}
 	}
-	err := m.unmount(ctx, force)
+	err := live.unmount(ctx, force)
 	switch {
 	case err == nil:
 		return UnmountResult{Target: target, Result: ResultUnmounted}
@@ -284,12 +293,12 @@ func (s *mountSet) unmountTarget(ctx context.Context, target string, force bool)
 func (s *mountSet) report() []MountReport {
 	mounts := s.list()
 	reports := make([]MountReport, 0, len(mounts))
-	for _, m := range mounts {
+	for _, live := range mounts {
 		state := StateMounted
-		if m.ended() {
+		if live.ended() {
 			state = StateEnded
 		}
-		reports = append(reports, MountReport{Target: m.target, Source: m.source, State: state})
+		reports = append(reports, MountReport{Target: live.target, Source: live.source, State: state})
 	}
 	return reports
 }

@@ -10,6 +10,9 @@ import (
 // jumping on every outlier.
 const sampleWeight = 0.3
 
+// failedRateShare is the share of its estimate a source keeps after a failure.
+const failedRateShare = 0.5
+
 // RateMeter is a Meter keeping an exponentially weighted moving average of
 // bytes per second for each source. A failure halves the estimate, so a node
 // that keeps failing sinks to the back. It is safe for concurrent use.
@@ -45,7 +48,7 @@ func (m *RateMeter) Failed(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if old, ok := m.rates[id]; ok {
-		m.rates[id] = old / 2
+		m.rates[id] = old * failedRateShare
 	}
 }
 

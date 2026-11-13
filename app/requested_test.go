@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -28,221 +30,256 @@ func mountFile(cluster, path, target string) string {
 	return "cluster: " + cluster + "\npath: " + path + "\ntarget: " + target + "\n"
 }
 
-func boolPtr(v bool) *bool { return &v }
-
 // requestRig is a running client whose configuration comes from files, the way the
 // program reads it, so that requested mounts are validated against the real rules.
 type requestRig struct {
-	h       *harness
+	env     *harness
 	dir     string
 	signals chan os.Signal
 }
 
 func newRequestRig(t *testing.T) *requestRig {
 	t.Helper()
-	g := &requestRig{h: newHarness(t), dir: t.TempDir(), signals: make(chan os.Signal)}
-	g.write("conf.d/cache.yaml", testCacheFile)
-	g.write("clusters.d/example.yaml", testClusterFile)
-	g.write("clusters.d/other.yaml", testClusterFile)
-	g.write("mounts.d/a.yaml", mountFile("example", "/media", "/mnt/a"))
-	g.h.opts.Reload = g.signals
-	g.h.opts.Load = func() (*config.Config, error) { return config.LoadDir(g.dir) }
-	return g
+	rig := &requestRig{env: newHarness(t), dir: t.TempDir(), signals: make(chan os.Signal)}
+	rig.write("conf.d/cache.yaml", testCacheFile)
+	rig.write("clusters.d/example.yaml", testClusterFile)
+	rig.write("clusters.d/other.yaml", testClusterFile)
+	rig.write("mounts.d/a.yaml", mountFile("example", "/media", "/mnt/a"))
+	rig.env.opts.Reload = rig.signals
+	rig.env.opts.Load = func() (*config.Config, error) { return config.LoadDir(rig.dir) }
+	return rig
 }
 
-func (g *requestRig) write(name, content string) {
-	g.h.t.Helper()
-	path := filepath.Join(g.dir, name)
+func (rig *requestRig) write(name, content string) {
+	rig.env.t.Helper()
+	path := filepath.Join(rig.dir, name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		g.h.t.Fatal(err)
+		rig.env.t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		g.h.t.Fatal(err)
+		rig.env.t.Fatal(err)
 	}
 }
 
-func (g *requestRig) remove(name string) {
-	g.h.t.Helper()
-	if err := os.Remove(filepath.Join(g.dir, name)); err != nil {
-		g.h.t.Fatal(err)
+func (rig *requestRig) remove(name string) {
+	rig.env.t.Helper()
+	if err := os.Remove(filepath.Join(rig.dir, name)); err != nil {
+		rig.env.t.Fatal(err)
 	}
 }
 
 // begin loads the files and starts a run that is ready.
-func (g *requestRig) begin() *running {
-	g.h.t.Helper()
-	cfg, err := config.LoadDir(g.dir)
+func (rig *requestRig) begin() *running {
+	rig.env.t.Helper()
+	cfg, err := config.LoadDir(rig.dir)
 	if err != nil {
-		g.h.t.Fatal(err)
+		rig.env.t.Fatal(err)
 	}
-	g.h.cfg = cfg
-	return g.h.start()
+	rig.env.cfg = cfg
+	return rig.env.start()
 }
 
 // ask sends one mount request over the control socket.
-func (g *requestRig) ask(m MountRequest) error {
+func (rig *requestRig) ask(m MountRequest) error {
 	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 	defer cancel()
-	_, err := systemHost().call(ctx, g.h.socket, Request{Op: OpMount, Mount: &m})
+	_, err := systemHost().call(ctx, rig.env.socket, Request{Op: OpMount, Mount: &m})
 	return err
 }
 
-func (g *requestRig) mustAsk(m MountRequest) {
-	g.h.t.Helper()
-	if err := g.ask(m); err != nil {
-		g.h.t.Fatalf("mount %s refused: %v", m.Target, err)
+func (rig *requestRig) mustAsk(m MountRequest) {
+	rig.env.t.Helper()
+	if err := rig.ask(m); err != nil {
+		rig.env.t.Fatalf("mount %s refused: %v", m.Target, err)
 	}
 }
 
-func (g *requestRig) listPath() string { return requestedPath(g.h.socket) }
+func (rig *requestRig) listPath() string { return requestedPath(rig.env.socket) }
+
+// listBytes returns what the list file holds.
+func (rig *requestRig) listBytes() []byte {
+	rig.env.t.Helper()
+	data, err := os.ReadFile(rig.listPath())
+	if err != nil {
+		rig.env.t.Fatal(err)
+	}
+	return data
+}
+
+// wantListFileMode fails the test unless the list file has exactly this permission.
+func (rig *requestRig) wantListFileMode(want os.FileMode) {
+	rig.env.t.Helper()
+	info, err := os.Stat(rig.listPath())
+	if err != nil {
+		rig.env.t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != want {
+		rig.env.t.Errorf("list file mode = %o, want %o", perm, want)
+	}
+}
 
 // listed returns the requested mounts the list file holds, none if it does not exist.
-func (g *requestRig) listed() []MountRequest {
-	g.h.t.Helper()
-	data, err := os.ReadFile(g.listPath())
+func (rig *requestRig) listed() []MountRequest {
+	rig.env.t.Helper()
+	data, err := os.ReadFile(rig.listPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		g.h.t.Fatal(err)
+		rig.env.t.Fatal(err)
 	}
 	var got []MountRequest
 	if err := json.Unmarshal(data, &got); err != nil {
-		g.h.t.Fatal(err)
+		rig.env.t.Fatal(err)
 	}
 	return got
 }
 
-func (g *requestRig) listedTargets() []string {
-	g.h.t.Helper()
-	targets := []string{}
-	for _, m := range g.listed() {
-		targets = append(targets, m.Target)
+func (rig *requestRig) listedTargets() []string {
+	rig.env.t.Helper()
+	listed := rig.listed()
+	targets := make([]string, 0, len(listed))
+	for _, request := range listed {
+		targets = append(targets, request.Target)
 	}
 	return targets
 }
 
 // waitListed returns once the list file holds exactly these targets. The watchers of the
 // mounts change it in their own goroutines.
-func (g *requestRig) waitListed(want ...string) {
-	g.h.t.Helper()
-	waitFor(g.h.t, "the requested list to change", func() bool {
-		return slices.Equal(g.listedTargets(), append([]string{}, want...))
+func (rig *requestRig) waitListed(want ...string) {
+	rig.env.t.Helper()
+	waitFor(rig.env.t, "the requested list to change", func() bool {
+		return slices.Equal(rig.listedTargets(), append([]string{}, want...))
 	})
 }
 
-func (g *requestRig) finished() int {
-	out := g.h.log.String()
+func (rig *requestRig) finished() int {
+	out := rig.env.log.String()
 	return strings.Count(out, "configuration applied") +
 		strings.Count(out, "configuration not applied")
 }
 
 // reload asks for a reload and waits until it is done.
-func (g *requestRig) reload() {
-	g.h.t.Helper()
-	done := g.finished()
+func (rig *requestRig) reload() {
+	rig.env.t.Helper()
+	done := rig.finished()
 	select {
-	case g.signals <- syscall.SIGHUP:
+	case rig.signals <- syscall.SIGHUP:
 	case <-time.After(stopTimeout):
-		g.h.t.Fatal("the run did not take the reload request")
+		rig.env.t.Fatal("the run did not take the reload request")
 	}
-	waitFor(g.h.t, "the reload to finish", func() bool { return g.finished() > done })
+	waitFor(rig.env.t, "the reload to finish", func() bool { return rig.finished() > done })
 }
 
-func (g *requestRig) wantLogged(parts ...string) {
-	g.h.t.Helper()
-	out := g.h.log.String()
+func (rig *requestRig) wantLogged(parts ...string) {
+	rig.env.t.Helper()
+	out := rig.env.log.String()
 	for _, part := range parts {
 		if !strings.Contains(out, part) {
-			g.h.t.Errorf("log lacks %q:\n%s", part, out)
+			rig.env.t.Errorf("log lacks %q:\n%s", part, out)
 		}
 	}
 }
 
-func (g *requestRig) wantMountCalls(want ...string) {
-	g.h.t.Helper()
-	if got := g.h.mounter.targets(); !slices.Equal(got, want) {
-		g.h.t.Errorf("mount calls = %v, want %v", got, want)
+func (rig *requestRig) wantMountCalls(want ...string) {
+	rig.env.t.Helper()
+	if got := rig.env.mounter.targets(); !slices.Equal(got, want) {
+		rig.env.t.Errorf("mount calls = %v, want %v", got, want)
 	}
 }
 
 // wantLive checks the mounts the client reports as mounted, sorted.
-func (g *requestRig) wantLive(want ...string) {
-	g.h.t.Helper()
+func (rig *requestRig) wantLive(want ...string) {
+	rig.env.t.Helper()
 	live := []string{}
-	for _, m := range g.h.status().Mounts {
+	for _, m := range rig.env.status().Mounts {
 		if m.State == StateMounted {
 			live = append(live, m.Target)
 		}
 	}
 	slices.Sort(live)
 	if !slices.Equal(live, append([]string{}, want...)) {
-		g.h.t.Errorf("live mounts = %v, want %v", live, want)
+		rig.env.t.Errorf("live mounts = %v, want %v", live, want)
 	}
 }
 
-func (g *requestRig) stop(r *running) {
-	g.h.t.Helper()
+func (rig *requestRig) stop(r *running) {
+	rig.env.t.Helper()
 	if err := r.stop(); err != nil {
-		g.h.t.Fatalf("Run = %v, want nil after a clean stop", err)
+		rig.env.t.Fatalf("Run = %v, want nil after a clean stop", err)
 	}
 }
 
 func TestRequestMountsAndListsIt(t *testing.T) {
 	t.Parallel()
-	g := newRequestRig(t)
-	r := g.begin()
+	rig := newRequestRig(t)
+	r := rig.begin()
 
 	const request = `{"op":"mount","mount":{"cluster":"example","path":"/media/tv",` +
 		`"target":"/mnt/tv","allow_other":true,"offline":false}}`
-	if got := rawCall(t, g.h.socket, request); got != "{}\n" {
+	if got := rawCall(t, rig.env.socket, request); got != "{}\n" {
 		t.Errorf("reply = %q, want an empty reply", got)
 	}
 
-	g.wantMountCalls("/mnt/a", "/mnt/tv")
-	opts := g.h.mounter.opts[1]
+	rig.wantMountCalls("/mnt/a", "/mnt/tv")
+	opts := rig.env.mounter.opts[1]
 	if opts.Source != "splicefs:example/media/tv" || !opts.AllowOther {
 		t.Errorf("mount options = %+v", opts)
 	}
-	g.wantLive("/mnt/a", "/mnt/tv")
+	rig.wantLive("/mnt/a", "/mnt/tv")
 	want := []MountRequest{{
 		Cluster: "example", Path: "/media/tv", Target: "/mnt/tv", AllowOther: true,
-		Offline: boolPtr(false),
+		Offline: new(false),
 	}}
-	got := g.listed()
-	if len(got) != 1 || got[0].Offline == nil || *got[0].Offline != false ||
-		got[0].Cluster != want[0].Cluster || got[0].Path != want[0].Path ||
-		got[0].Target != want[0].Target || got[0].AllowOther != want[0].AllowOther {
+	if got := rig.listed(); !reflect.DeepEqual(got, want) {
 		t.Errorf("list = %+v, want %+v", got, want)
 	}
-	info, err := os.Stat(g.listPath())
-	if err != nil {
-		t.Fatal(err)
+	rig.wantListFileMode(privateFileMode)
+	// The bytes are the JSON as it was always written, without a newline at the end.
+	if data := rig.listBytes(); !bytes.HasSuffix(data, []byte("}]")) {
+		t.Errorf("list file = %q, want the JSON list with no newline after it", data)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
-		t.Errorf("list file mode = %o, want 600", perm)
-	}
-	g.stop(r)
+	rig.stop(r)
 }
 
 func TestRequestForTheSameTargetReplacesTheEntry(t *testing.T) {
 	t.Parallel()
-	g := newRequestRig(t)
-	r := g.begin()
-	g.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
-	first := g.h.mounter.get("/mnt/tv")
-	g.mustAsk(MountRequest{Cluster: "other", Path: "/docs", Target: "/mnt/tv/"})
+	rig := newRequestRig(t)
+	r := rig.begin()
+	rig.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
+	first := rig.env.mounter.get("/mnt/tv")
+	rig.mustAsk(MountRequest{Cluster: "other", Path: "/docs", Target: "/mnt/tv/"})
 
-	g.wantMountCalls("/mnt/a", "/mnt/tv", "/mnt/tv")
+	rig.wantMountCalls("/mnt/a", "/mnt/tv", "/mnt/tv")
 	if calls := first.unmountCalls(); !slices.Equal(calls, []bool{true}) {
 		t.Errorf("the first mount was unmounted with force = %v, want one forced unmount", calls)
 	}
-	got := g.listed()
+	got := rig.listed()
 	if len(got) != 1 || got[0].Cluster != "other" || got[0].Path != "/docs" {
 		t.Errorf("list = %+v, want the second request alone", got)
 	}
-	g.wantLive("/mnt/a", "/mnt/tv")
-	g.stop(r)
+	rig.wantLive("/mnt/a", "/mnt/tv")
+	rig.stop(r)
+}
+
+// wantRefusalNaming fails the test unless err is the refusal of a request for target. The
+// answer must say why: "not mounted" alone would leave the caller guessing.
+func wantRefusalNaming(t *testing.T, err error, target string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "the client refused the request") ||
+		!strings.Contains(err.Error(), filepath.Clean(target)) {
+		t.Errorf("error = %v, want a refusal that names %s", err, target)
+		return
+	}
+	if strings.Contains(err.Error(), "is not mounted") {
+		t.Errorf("error = %v, want the reason the request is invalid", err)
+	}
+	// The config package already says what is wrong with the mount, and the control socket
+	// carries that text as it is.
+	if strings.Contains(err.Error(), "check the requested mounts") {
+		t.Errorf("error = %v, want the message of the config package without a prefix", err)
+	}
 }
 
 func TestInvalidRequestIsRefused(t *testing.T) {
@@ -260,33 +297,18 @@ func TestInvalidRequestIsRefused(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newRequestRig(t)
-			r := g.begin()
-			g.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/keep"})
-			before, err := os.ReadFile(g.listPath())
-			if err != nil {
-				t.Fatal(err)
-			}
+			rig := newRequestRig(t)
+			r := rig.begin()
+			rig.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/keep"})
+			before := rig.listBytes()
 
-			err = g.ask(tt.request)
-			if err == nil || !strings.Contains(err.Error(), "the client refused the request") ||
-				!strings.Contains(err.Error(), filepath.Clean(tt.request.Target)) {
-				t.Errorf("error = %v, want a refusal that names %s", err, tt.request.Target)
-			}
-			g.wantMountCalls("/mnt/a", "/mnt/keep")
-			g.wantLive("/mnt/a", "/mnt/keep")
-			after, err := os.ReadFile(g.listPath())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(after) != string(before) {
+			wantRefusalNaming(t, rig.ask(tt.request), tt.request.Target)
+			rig.wantMountCalls("/mnt/a", "/mnt/keep")
+			rig.wantLive("/mnt/a", "/mnt/keep")
+			if after := rig.listBytes(); !bytes.Equal(after, before) {
 				t.Errorf("list changed from %s to %s", before, after)
 			}
-			// The answer says why. "Not mounted" alone would leave the caller guessing.
-			if err != nil && strings.Contains(err.Error(), "is not mounted") {
-				t.Errorf("error = %v, want the reason the request is invalid", err)
-			}
-			g.stop(r)
+			rig.stop(r)
 		})
 	}
 }
@@ -296,42 +318,42 @@ func TestRequestThatCannotBeMountedIsRefusedAndUnlisted(t *testing.T) {
 	tests := []struct {
 		name string
 		// arm makes the next mount fail, once the run is ready.
-		arm  func(h *harness)
+		arm  func(env *harness)
 		want string
 	}{
 		{
 			name: "the mount layer fails",
-			arm: func(h *harness) {
-				h.mounter.mu.Lock()
-				defer h.mounter.mu.Unlock()
-				h.mounter.fail["/mnt/x"] = errors.New("fuse refused")
+			arm: func(env *harness) {
+				env.mounter.mu.Lock()
+				defer env.mounter.mu.Unlock()
+				env.mounter.fail["/mnt/x"] = errors.New("fuse refused")
 			},
 			want: "fuse refused",
 		},
 		{
 			name: "the view cannot be made",
-			arm: func(h *harness) {
-				h.core.mu.Lock()
-				defer h.core.mu.Unlock()
-				h.core.viewErr = errors.New("no view")
+			arm: func(env *harness) {
+				env.core.mu.Lock()
+				defer env.core.mu.Unlock()
+				env.core.viewErr = errors.New("no view")
 			},
 			want: "no view",
 		},
 		{
 			name: "the core refuses the configuration",
-			arm: func(h *harness) {
-				h.core.mu.Lock()
-				defer h.core.mu.Unlock()
-				h.core.applyErr = errors.New("apply refused")
+			arm: func(env *harness) {
+				env.core.mu.Lock()
+				defer env.core.mu.Unlock()
+				env.core.applyErr = errors.New("apply refused")
 			},
 			want: "apply refused",
 		},
 		{
 			name: "the mount ends at once",
-			arm: func(h *harness) {
-				h.mounter.mu.Lock()
-				defer h.mounter.mu.Unlock()
-				h.mounter.configure = func(f *fakeMounted) { f.end(nil) }
+			arm: func(env *harness) {
+				env.mounter.mu.Lock()
+				defer env.mounter.mu.Unlock()
+				env.mounter.configure = func(f *fakeMounted) { f.end(nil) }
 			},
 			want: "/mnt/x is not mounted",
 		},
@@ -339,31 +361,36 @@ func TestRequestThatCannotBeMountedIsRefusedAndUnlisted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newRequestRig(t)
-			r := g.begin()
-			tt.arm(g.h)
+			rig := newRequestRig(t)
+			r := rig.begin()
+			tt.arm(rig.env)
 
-			err := g.ask(MountRequest{Cluster: "example", Target: "/mnt/x"})
+			err := rig.ask(MountRequest{Cluster: "example", Target: "/mnt/x"})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error = %v, want one that says %q", err, tt.want)
 			}
-			g.waitListed()
-			g.wantLive("/mnt/a")
-			g.stop(r)
+			rig.waitListed()
+			rig.wantLive("/mnt/a")
+			rig.stop(r)
 		})
 	}
 }
 
-// controlWith serves a control socket with the given request channel and no mounts.
-func controlWith(t *testing.T, requests chan<- mountRequest) (*control, string) {
+// controlSocketPath is a socket path in a fresh folder short enough for a Unix socket.
+func controlSocketPath(t *testing.T) string {
 	t.Helper()
-	socket := filepath.Join(shortDir(t), "c.sock")
+	return filepath.Join(shortDir(t), "c.sock")
+}
+
+// controlWith serves a control socket at socket with the given request channel and no mounts.
+func controlWith(t *testing.T, socket string, requests chan<- mountRequest) *control {
+	t.Helper()
 	ln, err := listenUnixSocket(socket)
 	if err != nil {
 		t.Fatal(err)
 	}
 	logs := &logBuffer{}
-	return startControl(ln, &mountSet{}, newFakeCore(), logs.logger(), requests), socket
+	return startControl(t.Context(), ln, &mountSet{}, newFakeCore(), logs.logger(), requests)
 }
 
 func TestControlRefusesMountRequestsItCannotServe(t *testing.T) {
@@ -388,7 +415,8 @@ func TestControlRefusesMountRequestsItCannotServe(t *testing.T) {
 			if tt.requests != nil {
 				requests = tt.requests
 			}
-			ctl, socket := controlWith(t, requests)
+			socket := controlSocketPath(t)
+			ctl := controlWith(t, socket, requests)
 			defer ctl.stop()
 			if got := rawCall(t, socket, tt.request); !strings.Contains(got, tt.want) {
 				t.Errorf("reply = %s, want one that says %q", got, tt.want)
@@ -397,79 +425,80 @@ func TestControlRefusesMountRequestsItCannotServe(t *testing.T) {
 	}
 }
 
-func TestMountRequestDuringStopIsAnswered(t *testing.T) {
+func TestMountRequestBeforeTheRunLoopTakesItIsAnswered(t *testing.T) {
 	t.Parallel()
-	req := &MountRequest{Cluster: "example", Target: "/mnt/x"}
+	ctl := controlWith(t, controlSocketPath(t), make(chan mountRequest))
+	stopped, stop := context.WithCancel(t.Context())
+	stop()
+	reply := make(chan Reply, 1)
+	go func() { reply <- ctl.mount(stopped, &MountRequest{Cluster: "example", Target: "/mnt/x"}) }()
+	select {
+	case got := <-reply:
+		if got.Error != errStopping.Error() {
+			t.Errorf("reply = %+v, want %q", got, errStopping)
+		}
+	case <-time.After(stopTimeout):
+		t.Fatal("the request hung")
+	}
+	ctl.stop()
+}
 
-	t.Run("before the run loop takes it", func(t *testing.T) {
-		t.Parallel()
-		ctl, _ := controlWith(t, make(chan mountRequest))
-		ctl.cancel()
-		reply := make(chan Reply, 1)
-		go func() { reply <- ctl.mount(req) }()
-		select {
-		case got := <-reply:
-			if got.Error != errStopping.Error() {
-				t.Errorf("reply = %+v, want %q", got, errStopping)
-			}
-		case <-time.After(stopTimeout):
-			t.Fatal("the request hung")
+// askToMount sends a mount request over the socket and delivers what came back, as an error if the
+// client answered with any text.
+func askToMount(socket string, answer chan<- error) {
+	conn, err := dialUnix(socket)
+	if err != nil {
+		answer <- err
+		return
+	}
+	defer closeQuietly(conn)
+	_, err = io.WriteString(conn, `{"op":"mount","mount":{"cluster":"example","target":"/mnt/x"}}`)
+	if err == nil {
+		var text []byte
+		if text, err = io.ReadAll(conn); err == nil {
+			err = errors.New(string(text))
 		}
-		ctl.stop()
-	})
+	}
+	answer <- err
+}
 
-	t.Run("while the run loop works on it", func(t *testing.T) {
-		t.Parallel()
-		requests := make(chan mountRequest)
-		ctl, socket := controlWith(t, requests)
-		answer := make(chan error, 1)
-		go func() {
-			conn, err := dialUnix(socket)
-			if err != nil {
-				answer <- err
-				return
-			}
-			defer func() { _ = conn.Close() }()
-			_, err = io.WriteString(conn,
-				`{"op":"mount","mount":{"cluster":"example","target":"/mnt/x"}}`)
-			if err == nil {
-				var text []byte
-				if text, err = io.ReadAll(conn); err == nil {
-					err = errors.New(string(text))
-				}
-			}
-			answer <- err
-		}()
-		select {
-		case <-requests:
-		case <-time.After(stopTimeout):
-			t.Fatal("the request never reached the run loop")
+func TestMountRequestWhileTheRunLoopWorksOnItIsAnswered(t *testing.T) {
+	t.Parallel()
+	requests := make(chan mountRequest)
+	socket := controlSocketPath(t)
+	ctl := controlWith(t, socket, requests)
+	answer := make(chan error, 1)
+	go askToMount(socket, answer)
+	select {
+	case <-requests:
+	case <-time.After(stopTimeout):
+		t.Fatal("the request never reached the run loop")
+	}
+	ctl.stop()
+	select {
+	case err := <-answer:
+		if err == nil || !strings.Contains(err.Error(), errStopping.Error()) {
+			t.Errorf("answer = %v, want %q", err, errStopping)
 		}
-		ctl.stop()
-		select {
-		case err := <-answer:
-			if err == nil || !strings.Contains(err.Error(), errStopping.Error()) {
-				t.Errorf("answer = %v, want %q", err, errStopping)
-			}
-		case <-time.After(stopTimeout):
-			t.Fatal("the request hung")
-		}
-	})
+	case <-time.After(stopTimeout):
+		t.Fatal("the request hung")
+	}
 }
 
 func TestUnmountTakesARequestedMountOffTheList(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		end  func(t *testing.T, g *requestRig)
+		end  func(t *testing.T, rig *requestRig)
 	}{
-		{"the administrator unmounts it", func(_ *testing.T, g *requestRig) {
-			g.h.mounter.get("/mnt/tv").end(nil)
+		{"the administrator unmounts it", func(_ *testing.T, rig *requestRig) {
+			rig.env.mounter.get("/mnt/tv").end(nil)
 		}},
-		{"it is unmounted over the socket", func(t *testing.T, g *requestRig) {
+		{"it is unmounted over the socket", func(t *testing.T, rig *requestRig) {
+			t.Helper()
 			ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
 			defer cancel()
-			if err := Unmount(ctx, g.h.socket, []string{"/mnt/tv"}, false); err != nil {
+			if err := Unmount(ctx, rig.env.socket, []string{"/mnt/tv"}, false); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -477,63 +506,63 @@ func TestUnmountTakesARequestedMountOffTheList(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newRequestRig(t)
-			r := g.begin()
-			g.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
-			g.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/film"})
+			rig := newRequestRig(t)
+			r := rig.begin()
+			rig.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
+			rig.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/film"})
 
-			tt.end(t, g)
-			g.waitListed("/mnt/film")
-			g.wantLive("/mnt/a", "/mnt/film")
-			g.stop(r)
+			tt.end(t, rig)
+			rig.waitListed("/mnt/film")
+			rig.wantLive("/mnt/a", "/mnt/film")
+			rig.stop(r)
 			// The mount that stayed is still listed after the stop.
-			g.waitListed("/mnt/film")
+			rig.waitListed("/mnt/film")
 		})
 	}
 }
 
 func TestStopKeepsRequestedMountsAndTheNextRunMountsThemBeforeReady(t *testing.T) {
 	t.Parallel()
-	g := newRequestRig(t)
+	rig := newRequestRig(t)
 	var mountedAtReady []string
-	g.h.opts.Notify = func(state string) error {
+	rig.env.opts.Notify = func(state string) error {
 		if state == "READY=1" {
-			mountedAtReady = g.h.mounter.targets()
+			mountedAtReady = rig.env.mounter.targets()
 		}
-		return g.h.notes.notify(state)
+		return rig.env.notes.notify(state)
 	}
-	first := g.begin()
-	g.mustAsk(MountRequest{Cluster: "example", Path: "/media", Target: "/mnt/tv", AllowOther: true})
-	g.stop(first)
-	g.waitListed("/mnt/tv")
+	first := rig.begin()
+	rig.mustAsk(MountRequest{Cluster: "example", Path: "/media", Target: "/mnt/tv", AllowOther: true})
+	rig.stop(first)
+	rig.waitListed("/mnt/tv")
 
-	second := g.begin()
+	second := rig.begin()
 	want := []string{"/mnt/a", "/mnt/tv", "/mnt/a", "/mnt/tv"}
 	if !slices.Equal(mountedAtReady, want) {
 		t.Errorf("mounted when ready = %v, want %v", mountedAtReady, want)
 	}
-	if last := g.h.mounter.opts[3]; last.Source != "splicefs:example/media" || !last.AllowOther {
+	if last := rig.env.mounter.opts[3]; last.Source != "splicefs:example/media" || !last.AllowOther {
 		t.Errorf("remounted with %+v", last)
 	}
-	g.wantLive("/mnt/a", "/mnt/tv")
-	g.waitListed("/mnt/tv")
-	g.stop(second)
+	rig.wantLive("/mnt/a", "/mnt/tv")
+	rig.waitListed("/mnt/tv")
+	rig.stop(second)
 }
 
 func TestStartDropsAListedMountThatFails(t *testing.T) {
 	t.Parallel()
-	g := newRequestRig(t)
-	g.h.mounter.fail["/mnt/bad"] = errors.New("fuse refused")
+	rig := newRequestRig(t)
+	rig.env.mounter.fail["/mnt/bad"] = errors.New("fuse refused")
 	list := `[{"cluster":"example","target":"/mnt/bad"},{"cluster":"example","target":"/mnt/ok"}]`
-	if err := os.WriteFile(g.listPath(), []byte(list), 0o600); err != nil {
+	if err := os.WriteFile(rig.listPath(), []byte(list), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := g.begin()
+	r := rig.begin()
 
-	g.wantLive("/mnt/a", "/mnt/ok")
-	g.waitListed("/mnt/ok")
-	g.wantLogged("requested mount dropped", "/mnt/bad", "fuse refused")
-	g.stop(r)
+	rig.wantLive("/mnt/a", "/mnt/ok")
+	rig.waitListed("/mnt/ok")
+	rig.wantLogged("requested mount dropped", "/mnt/bad", "fuse refused")
+	rig.stop(r)
 }
 
 func TestListFileThatCannotBeUsed(t *testing.T) {
@@ -543,11 +572,13 @@ func TestListFileThatCannotBeUsed(t *testing.T) {
 		setup func(t *testing.T, path string)
 	}{
 		{"malformed", func(t *testing.T, path string) {
+			t.Helper()
 			if err := os.WriteFile(path, []byte("{not a list"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}},
 		{"a folder instead of a file", func(t *testing.T, path string) {
+			t.Helper()
 			if err := os.Mkdir(path, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -556,14 +587,14 @@ func TestListFileThatCannotBeUsed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newRequestRig(t)
-			tt.setup(t, g.listPath())
-			r := g.begin()
+			rig := newRequestRig(t)
+			tt.setup(t, rig.listPath())
+			r := rig.begin()
 
-			g.wantLogged("requested mounts ignored")
-			g.wantMountCalls("/mnt/a")
-			g.wantLive("/mnt/a")
-			g.stop(r)
+			rig.wantLogged("requested mounts ignored")
+			rig.wantMountCalls("/mnt/a")
+			rig.wantLive("/mnt/a")
+			rig.stop(r)
 		})
 	}
 }
@@ -572,31 +603,31 @@ func TestListFileThatCannotBeUsed(t *testing.T) {
 // back. The failure is logged and the requester still gets its mount.
 func TestListFileThatCannotBeWrittenIsLogged(t *testing.T) {
 	t.Parallel()
-	g := newRequestRig(t)
+	rig := newRequestRig(t)
 	// A folder where the file belongs makes the rename of the new list fail.
-	if err := os.Mkdir(g.listPath(), 0o700); err != nil {
+	if err := os.Mkdir(rig.listPath(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	r := g.begin()
+	r := rig.begin()
 
-	g.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
-	g.wantLogged("requested mounts not saved")
-	g.wantLive("/mnt/a", "/mnt/tv")
-	g.stop(r)
+	rig.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
+	rig.wantLogged("requested mounts not saved")
+	rig.wantLive("/mnt/a", "/mnt/tv")
+	rig.stop(r)
 }
 
 func TestRequestedStoreWithoutAUsableFolder(t *testing.T) {
 	t.Parallel()
 	logs := &logBuffer{}
-	s := newRequestedStore(filepath.Join(t.TempDir(), "missing", "c.mounts.json"), logs.logger())
-	s.add(config.Requested{Cluster: "example", Target: "/mnt/tv"})
+	store := newRequestedStore(filepath.Join(t.TempDir(), "missing", "c.mounts.json"), logs.logger())
+	store.add(config.Requested{Cluster: "example", Target: "/mnt/tv"})
 	if !strings.Contains(logs.String(), "requested mounts not saved") {
 		t.Errorf("log:\n%s", logs.String())
 	}
-	if got := s.list(); len(got) != 1 {
+	if got := store.list(); len(got) != 1 {
 		t.Errorf("list = %v, want the mount kept in memory", got)
 	}
-	if s.remove("/mnt/other") {
+	if store.remove("/mnt/other") {
 		t.Error("removed a mount that was never listed")
 	}
 }
@@ -612,65 +643,65 @@ func TestNilRequestedStoreIsEmpty(t *testing.T) {
 
 func TestReloadKeepsAMountedRequestedMount(t *testing.T) {
 	t.Parallel()
-	g := newRequestRig(t)
-	r := g.begin()
-	g.mustAsk(MountRequest{Cluster: "example", Path: "/media", Target: "/mnt/tv"})
-	g.write("mounts.d/b.yaml", mountFile("other", "/", "/mnt/b"))
+	rig := newRequestRig(t)
+	r := rig.begin()
+	rig.mustAsk(MountRequest{Cluster: "example", Path: "/media", Target: "/mnt/tv"})
+	rig.write("mounts.d/b.yaml", mountFile("other", "/", "/mnt/b"))
 
-	g.reload()
+	rig.reload()
 
-	g.wantMountCalls("/mnt/a", "/mnt/tv", "/mnt/b")
-	if calls := g.h.mounter.get("/mnt/tv").unmountCalls(); len(calls) != 0 {
+	rig.wantMountCalls("/mnt/a", "/mnt/tv", "/mnt/b")
+	if calls := rig.env.mounter.get("/mnt/tv").unmountCalls(); len(calls) != 0 {
 		t.Errorf("the requested mount was unmounted: %v", calls)
 	}
-	g.wantLive("/mnt/a", "/mnt/b", "/mnt/tv")
-	g.waitListed("/mnt/tv")
-	g.h.core.mu.Lock()
-	applied := slices.Clone(g.h.core.applied)
-	g.h.core.mu.Unlock()
+	rig.wantLive("/mnt/a", "/mnt/b", "/mnt/tv")
+	rig.waitListed("/mnt/tv")
+	rig.env.core.mu.Lock()
+	applied := slices.Clone(rig.env.core.applied)
+	rig.env.core.mu.Unlock()
 	last := applied[len(applied)-1]
 	if got := last.Mounts[len(last.Mounts)-1]; got.Name != config.RequestedName("/mnt/tv") {
 		t.Errorf("applied mounts end with %+v, want the requested mount", got)
 	}
-	g.stop(r)
+	rig.stop(r)
 }
 
 func TestReloadDropsARequestedMountThatIsNoLongerValid(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
-		change func(g *requestRig)
+		change func(rig *requestRig)
 	}{
-		{"its cluster was removed", func(g *requestRig) { g.remove("clusters.d/other.yaml") }},
-		{"its target overlaps a new file mount", func(g *requestRig) {
-			g.write("mounts.d/z.yaml", mountFile("example", "/", "/mnt/gone/inner"))
+		{"its cluster was removed", func(rig *requestRig) { rig.remove("clusters.d/other.yaml") }},
+		{"its target overlaps a new file mount", func(rig *requestRig) {
+			rig.write("mounts.d/z.yaml", mountFile("example", "/", "/mnt/gone/inner"))
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newRequestRig(t)
-			r := g.begin()
-			g.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/kept"})
-			g.mustAsk(MountRequest{Cluster: "other", Target: "/mnt/gone"})
-			gone := g.h.mounter.get("/mnt/gone")
-			g.write("mounts.d/y.yaml", mountFile("example", "/", "/mnt/y"))
+			rig := newRequestRig(t)
+			r := rig.begin()
+			rig.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/kept"})
+			rig.mustAsk(MountRequest{Cluster: "other", Target: "/mnt/gone"})
+			gone := rig.env.mounter.get("/mnt/gone")
+			rig.write("mounts.d/y.yaml", mountFile("example", "/", "/mnt/y"))
 
-			tt.change(g)
-			g.reload()
+			tt.change(rig)
+			rig.reload()
 
-			g.wantLogged("requested mount dropped", "/mnt/gone", "configuration applied")
+			rig.wantLogged("requested mount dropped", "/mnt/gone", "configuration applied")
 			if calls := gone.unmountCalls(); !slices.Equal(calls, []bool{true}) {
 				t.Errorf("the dropped mount was unmounted with force = %v, want one", calls)
 			}
-			g.waitListed("/mnt/kept")
+			rig.waitListed("/mnt/kept")
 			live := []string{"/mnt/a", "/mnt/kept", "/mnt/y"}
 			if tt.name != "its cluster was removed" {
 				live = append(live, "/mnt/gone/inner")
 			}
 			slices.Sort(live)
-			g.wantLive(live...)
-			g.stop(r)
+			rig.wantLive(live...)
+			rig.stop(r)
 		})
 	}
 }

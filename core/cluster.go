@@ -47,7 +47,7 @@ type cluster struct {
 }
 
 func newCluster(name string, cfg config.Cluster, password string, ttl time.Duration, opts Options) *cluster {
-	c := &cluster{
+	clus := &cluster{
 		name:     name,
 		cfg:      cfg,
 		meter:    fetch.NewMeter(),
@@ -57,26 +57,26 @@ func newCluster(name string, cfg config.Cluster, password string, ttl time.Durat
 		dialed:   make(map[string]*remote.Node),
 	}
 	if opts.HTTPClient == nil {
-		c.opts.HTTPClient = newHTTPClient(cfg.StreamsPerNode, systemDialer())
-		c.ownHTTP = true
+		clus.opts.HTTPClient = newHTTPClient(cfg.StreamsPerNode, systemDialer())
+		clus.ownHTTP = true
 	}
-	c.session = session.New(session.Options{
+	clus.session = session.New(session.Options{
 		Cluster:        name,
 		EntryURL:       cfg.URL,
 		User:           cfg.User,
 		Password:       password,
-		Dial:           c.dial,
+		Dial:           clus.dial,
 		Now:            opts.Now,
 		IsUnauthorized: isError(remote.ErrUnauthorized),
 		IsUnavailable:  isError(remote.ErrUnavailable),
 		Logger:         opts.Logger,
 	})
-	c.tree = tree.New(lister{c}, tree.Options{
+	clus.tree = tree.New(lister{clus}, tree.Options{
 		TTL:        ttl,
 		Now:        opts.Now,
 		IsNotFound: isError(remote.ErrNotFound),
 	})
-	return c
+	return clus
 }
 
 // matches reports whether a cluster built with cfg, password and ttl would behave as this
@@ -100,15 +100,17 @@ func isError(target error) func(error) bool {
 
 // dial makes the Node for a name and remembers it, because the session hands nodes
 // back as its own small interface and the client needs the full remote API.
+//
+//nolint:ireturn // session.Options.Dial fixes this signature.
 func (c *cluster) dial(name, baseURL string) (session.Node, error) {
-	n, err := remote.New(name, baseURL, c.opts.HTTPClient)
+	node, err := remote.New(name, baseURL, c.opts.HTTPClient)
 	if err != nil {
-		return nil, err
+		return nil, err //nolint:wrapcheck // remote.New names the node and says what is wrong with its URL.
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.dialed[name] = n
-	return n, nil
+	c.dialed[name] = node
+	return node, nil
 }
 
 // node returns the node dialed under name. Every name the session or the tree hands
@@ -130,22 +132,29 @@ func (c *cluster) remotes(nodes []session.Node) []*remote.Node {
 	return out
 }
 
+// nodeSet is the nodes of a cluster at one moment.
+type nodeSet struct {
+	all    []*remote.Node // every node of the cluster
+	usable []*remote.Node // the ones that can be used now
+}
+
 // nodes returns every node of the cluster and the ones that are usable now,
 // connecting first if needed. It also remembers the node names for Status, which must
 // not connect.
-func (c *cluster) nodes(ctx context.Context) (all, usable []*remote.Node, err error) {
+func (c *cluster) nodes(ctx context.Context) (nodeSet, error) {
 	// After a failed Nodes, Usable fails at once with the same error, because the
 	// session holds a failed connect in its backoff; one check covers both.
 	members, errMembers := c.session.Nodes(ctx)
 	ready, errReady := c.session.Usable(ctx)
 	if err := cmp.Or(errMembers, errReady); err != nil {
-		return nil, nil, err
+		// Connect adds the cluster to the message, and the session error says the rest.
+		return nodeSet{}, err //nolint:wrapcheck // See above, a prefix would change the message.
 	}
-	all = c.remotes(members)
+	set := nodeSet{all: c.remotes(members), usable: c.remotes(ready)}
 	c.mu.Lock()
-	c.known = names(all)
+	c.known = names(set.all)
 	c.mu.Unlock()
-	return all, c.remotes(ready), nil
+	return set, nil
 }
 
 // knownNodes returns the node names last seen, without using the network.
@@ -167,18 +176,39 @@ func names(nodes []*remote.Node) []string {
 type lister struct{ c *cluster }
 
 func (l lister) Nodes(ctx context.Context) ([]string, error) {
-	_, usable, err := l.c.nodes(ctx)
-	return names(usable), err
+	set, err := l.c.nodes(ctx)
+	return names(set.usable), err
 }
 
 func (l lister) List(ctx context.Context, node, dir string) ([]wire.Entry, error) {
-	n := l.c.node(node)
-	var entries []wire.Entry
-	err := l.c.session.Do(ctx, n, func(ctx context.Context, token string) (err error) {
-		entries, err = n.List(ctx, token, dir)
+	remoteNode := l.c.node(node)
+	return callNode(ctx, l.c, remoteNode, remoteNode.List, dir)
+}
+
+// callNode runs one request of a node that takes a name and returns a value, such as
+// List, Head or Space, through the cluster's session.
+//
+//nolint:ireturn // T is the result type of the request the caller passes in, not an interface chosen here.
+func callNode[T any](
+	ctx context.Context, clus *cluster, node *remote.Node,
+	method func(ctx context.Context, token, name string) (T, error), name string,
+) (T, error) {
+	var result T
+	err := clus.do(ctx, node, func(ctx context.Context, token string) error {
+		var err error
+		result, err = method(ctx, token, name)
 		return err
 	})
-	return entries, err
+	return result, err
+}
+
+// do runs call on node through the session, which logs in and retries as needed, and
+// names the node in the error.
+func (c *cluster) do(ctx context.Context, node *remote.Node, call func(context.Context, string) error) error {
+	if err := c.session.Do(ctx, node, call); err != nil {
+		return fmt.Errorf("node %s: %w", node.Name(), err)
+	}
+	return nil
 }
 
 // source is one node's copy of one version of a file, for the block reader.
@@ -192,10 +222,10 @@ type source struct {
 func (s source) ID() string { return s.node.Name() }
 
 func (s source) Fetch(ctx context.Context, off int64, buf []byte) error {
-	err := s.c.session.Do(ctx, s.node, func(ctx context.Context, token string) error {
+	err := s.c.do(ctx, s.node, func(ctx context.Context, token string) error {
 		body, err := s.node.Range(ctx, token, s.file, s.etag, off, int64(len(buf)))
 		if err != nil {
-			return err
+			return fmt.Errorf("read range of %q: %w", s.file, err)
 		}
 		_, err = io.ReadFull(body, buf)
 		return errors.Join(err, body.Close())

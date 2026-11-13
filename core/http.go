@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// errNoAddresses ends the message "dial <address>: <host> has no addresses".
+var errNoAddresses = errors.New("has no addresses")
+
 const (
 	dialTimeout           = 10 * time.Second
 	tlsHandshakeTimeout   = 10 * time.Second
@@ -24,7 +27,7 @@ const (
 // newHTTPClient returns the client shared by every node of every cluster. It has no
 // overall timeout on purpose: a block read may take long on a slow link, and every
 // request is bounded by its context instead.
-func newHTTPClient(streamsPerNode int, d addrDialer) *http.Client {
+func newHTTPClient(streamsPerNode int, dialer addrDialer) *http.Client {
 	// HTTP/1.1 only: block requests in flight to one node then travel over separate
 	// connections, so one lost packet stalls one block. Over HTTP/2 they would share
 	// one stream-multiplexed connection, and a loss would stall all of them.
@@ -33,7 +36,7 @@ func newHTTPClient(streamsPerNode int, d addrDialer) *http.Client {
 	perNode := streamsPerNode + connHeadroom
 	return &http.Client{Transport: &http.Transport{
 		Proxy:       http.ProxyFromEnvironment,
-		DialContext: d.DialContext,
+		DialContext: dialer.DialContext,
 		Protocols:   &protocols,
 		// Every stream of every open file wants its own connection; idle ones are kept
 		// so that the next block does not pay for a new TCP and TLS handshake. Requests
@@ -62,8 +65,11 @@ func systemDialer() addrDialer {
 	return addrDialer{lookup: net.DefaultResolver.LookupHost, dial: d.DialContext, shuffle: shuffle}
 }
 
+//nolint:gosec // The order spreads load over addresses; predicting it gains an attacker nothing.
 func shuffle(addrs []string) {
-	rand.Shuffle(len(addrs), func(i, j int) { addrs[i], addrs[j] = addrs[j], addrs[i] }) //nolint:gosec // spreads load over addresses; an attacker gains nothing by predicting the order
+	rand.Shuffle(len(addrs), func(i, j int) {
+		addrs[i], addrs[j] = addrs[j], addrs[i]
+	})
 }
 
 // DialContext has the signature of http.Transport.DialContext.
@@ -77,7 +83,7 @@ func (d addrDialer) DialContext(ctx context.Context, network, addr string) (net.
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}
 	if len(addrs) == 0 {
-		return nil, fmt.Errorf("dial %s: %s has no addresses", addr, host)
+		return nil, fmt.Errorf("dial %s: %s %w", addr, host, errNoAddresses)
 	}
 	d.shuffle(addrs)
 	errs := make([]error, 0, len(addrs))

@@ -2,6 +2,12 @@ package fuse
 
 import "time"
 
+const (
+	defaultEntryTimeout    = 30 * time.Second
+	defaultAttrTimeout     = 30 * time.Second
+	defaultNegativeTimeout = 5 * time.Second
+)
+
 // settings are the tunables of one mount. Production code always uses defaultSettings;
 // the type exists so that tests can lower the timeouts.
 type settings struct {
@@ -18,8 +24,8 @@ type settings struct {
 // remembered only briefly because a file may appear on a node at any moment.
 func defaultSettings() settings {
 	return settings{
-		entryTimeout:    30 * time.Second,
-		attrTimeout:     30 * time.Second,
-		negativeTimeout: 5 * time.Second,
+		entryTimeout:    defaultEntryTimeout,
+		attrTimeout:     defaultAttrTimeout,
+		negativeTimeout: defaultNegativeTimeout,
 	}
 }

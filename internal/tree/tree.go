@@ -133,7 +133,7 @@ func (t *Tree) Stat(ctx context.Context, name string) (Entry, error) {
 	if !validName(name) {
 		return Entry{}, notFound(name)
 	}
-	parent, base := cut(name)
+	parent, base := parentOf(name), baseOf(name)
 	recs, err := t.records(ctx, parent)
 	if err != nil {
 		return Entry{}, err
@@ -149,8 +149,8 @@ func (t *Tree) Stat(ctx context.Context, name string) (Entry, error) {
 func (t *Tree) Forget(dir string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if it, ok := t.items[dir]; ok {
-		t.drop(it)
+	if cached, ok := t.items[dir]; ok {
+		t.drop(cached)
 	}
 }
 
@@ -173,14 +173,14 @@ func (t *Tree) isFile(dir string) bool {
 	if dir == "" {
 		return false
 	}
-	parent, base := cut(dir)
+	parent, base := parentOf(dir), baseOf(dir)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	it, ok := t.items[parent]
-	if !ok || it.missing || !t.fresh(it) {
+	cached, ok := t.items[parent]
+	if !ok || cached.missing || !t.fresh(cached) {
 		return false
 	}
-	r, ok := find(it.recs, base)
+	r, ok := find(cached.recs, base)
 	return ok && !r.entry.Dir
 }
 
@@ -207,8 +207,12 @@ func validSegment(name string) bool {
 	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, "/\x00")
 }
 
-// cut splits a valid, non-empty name into its parent directory and its last segment.
-func cut(name string) (parent, base string) {
-	i := strings.LastIndexByte(name, '/')
-	return name[:max(i, 0)], name[i+1:]
+// parentOf returns the directory that holds a valid, non-empty name; "" is the root.
+func parentOf(name string) string {
+	return name[:max(strings.LastIndexByte(name, '/'), 0)]
+}
+
+// baseOf returns the last segment of a valid, non-empty name.
+func baseOf(name string) string {
+	return name[strings.LastIndexByte(name, '/')+1:]
 }

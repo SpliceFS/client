@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -24,8 +25,26 @@ var ErrAlreadyRunning = errors.New("a client is already running for this configu
 // ErrNotRunning means nothing answers on the control socket of this configuration.
 var ErrNotRunning = errors.New("no client is running for this configuration")
 
-// probeTimeout bounds the check whether a leftover socket still has a client behind it.
-const probeTimeout = 2 * time.Second
+// ErrSocketDirNotDirectory means the place of the socket directory holds something else.
+var ErrSocketDirNotDirectory = errors.New("is not a directory")
+
+// ErrSocketDirForeign means the socket directory belongs to another user.
+var ErrSocketDirForeign = errors.New("belongs to another user")
+
+// ErrSocketDirWritable means other users can write in the socket directory, which would let
+// them replace the socket.
+var ErrSocketDirWritable = errors.New("can be written by other users")
+
+const (
+	// probeTimeout bounds the check whether a leftover socket still has a client behind it.
+	probeTimeout = 2 * time.Second
+	// privateFileMode lets only the owner read and write a file.
+	privateFileMode = 0o600
+	// privateDirMode lets only the owner use a directory.
+	privateDirMode = 0o700
+	// groupOtherWrite is the write permission of the group and of everybody else.
+	groupOtherWrite = 0o022
+)
 
 // system is everything the control socket takes from the operating system, so tests can
 // replace it.
@@ -99,6 +118,7 @@ func (s system) absPath(p string) (string, error) {
 // socket is the listening control socket. Closing it removes the socket file.
 type socket struct {
 	*net.UnixListener
+
 	once sync.Once
 	err  error
 }
@@ -112,39 +132,50 @@ func (s *socket) Close() error {
 // claim creates the control socket at path with mode 0600. A socket file left by a
 // client that crashed is removed, but only after nothing answers on it: deleting the
 // socket of a running client would leave it unreachable and let a second one start.
-func (s system) claim(path string) (*socket, error) {
+func (s system) claim(ctx context.Context, path string) (*socket, error) {
 	if err := s.prepareDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	ln, err := listenUnix(path)
-	if errors.Is(err, syscall.EADDRINUSE) {
-		if err = s.clearStale(path); err != nil {
-			return nil, err
-		}
-		ln, err = listenUnix(path)
-	}
+	listener, err := s.listen(ctx, path)
 	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", path, err)
+		return nil, err
 	}
-	sock := &socket{UnixListener: ln}
-	if err := s.chmod(path, 0o600); err != nil {
+	sock := &socket{UnixListener: listener}
+	if err := s.chmod(path, privateFileMode); err != nil {
 		return nil, errors.Join(fmt.Errorf("restrict %s: %w", path, err), sock.Close())
 	}
 	return sock, nil
 }
 
+// listen creates the socket at path. If a file is already there, it is removed when no
+// client answers on it, and the socket is created again.
+func (s system) listen(ctx context.Context, path string) (*net.UnixListener, error) {
+	listener, err := listenUnix(path)
+	if !errors.Is(err, syscall.EADDRINUSE) {
+		return listener, err
+	}
+	if err := s.clearStale(ctx, path); err != nil {
+		return nil, err
+	}
+	return listenUnix(path)
+}
+
 func listenUnix(path string) (*net.UnixListener, error) {
-	return net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", path, err)
+	}
+	return listener, nil
 }
 
 // clearStale removes the file at path if no client answers on it.
-func (s system) clearStale(path string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+func (s system) clearStale(ctx context.Context, path string) error {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	conn, err := s.dial(ctx, path)
 	switch {
 	case err == nil:
-		_ = conn.Close()
+		closeQuietly(conn)
 		return fmt.Errorf("%w (socket %s)", ErrAlreadyRunning, path)
 	case !errors.Is(err, syscall.ECONNREFUSED) && !errors.Is(err, fs.ErrNotExist):
 		// A client that is too busy to accept is still a client. Only a refusal proves
@@ -161,7 +192,7 @@ func (s system) clearStale(path string) error {
 // could use to take the socket over. The temporary directory is shared, so a directory
 // found there may have been created by another user.
 func (s system) prepareDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, privateDirMode); err != nil {
 		return fmt.Errorf("create socket directory: %w", err)
 	}
 	info, err := s.lstat(dir)
@@ -174,11 +205,18 @@ func (s system) prepareDir(dir string) error {
 func checkDir(dir string, info fs.FileInfo, uid int) error {
 	switch {
 	case !info.IsDir():
-		return fmt.Errorf("socket directory %s is not a directory", dir)
+		return fmt.Errorf("socket directory %s %w", dir, ErrSocketDirNotDirectory)
 	case !ownedBy(info, uid):
-		return fmt.Errorf("socket directory %s belongs to another user", dir)
-	case info.Mode().Perm()&0o022 != 0:
-		return fmt.Errorf("socket directory %s can be written by other users", dir)
+		return fmt.Errorf("socket directory %s %w", dir, ErrSocketDirForeign)
+	case info.Mode().Perm()&groupOtherWrite != 0:
+		return fmt.Errorf("socket directory %s %w", dir, ErrSocketDirWritable)
 	}
 	return nil
+}
+
+// closeQuietly closes closer for a caller that has nothing left to lose when the close
+// fails: the connection was only read, or everything on it was already sent, and it is
+// dropped either way.
+func closeQuietly(closer io.Closer) {
+	_ = closer.Close() //nolint:errcheck // see above: nothing can be done about a failed close
 }

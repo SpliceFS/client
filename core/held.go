@@ -25,7 +25,7 @@ type held struct {
 	nodes   []string
 }
 
-func (h *heldVersions) remember(key cache.Key, v cache.Version, nodes []string) {
+func (h *heldVersions) remember(key cache.Key, version cache.Version, nodes []string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.byFile == nil {
@@ -37,17 +37,17 @@ func (h *heldVersions) remember(key cache.Key, v cache.Version, nodes []string) 
 			break
 		}
 	}
-	h.byFile[key] = held{version: v, nodes: slices.Clone(nodes)}
+	h.byFile[key] = held{version: version, nodes: slices.Clone(nodes)}
 }
 
-// recall returns the nodes that held version v of the file, if that is the version
-// remembered.
-func (h *heldVersions) recall(key cache.Key, v cache.Version) ([]string, bool) {
+// recall returns the nodes that held the given version of the file, if that is the
+// version remembered.
+func (h *heldVersions) recall(key cache.Key, version cache.Version) ([]string, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	r, ok := h.byFile[key]
-	if !ok || r.version != v {
+	remembered, ok := h.byFile[key]
+	if !ok || remembered.version != version {
 		return nil, false
 	}
-	return slices.Clone(r.nodes), true
+	return slices.Clone(remembered.nodes), true
 }

@@ -13,6 +13,19 @@ import (
 // forced. The mount is still in place.
 var ErrBusy = errors.New("mount is in use")
 
+// ErrNoReport means the client answered a status request without a report.
+var ErrNoReport = errors.New("the client sent no report")
+
+// ErrNotClientMount completes a sentence that starts with a target: the running client has
+// no mount there.
+var ErrNotClientMount = errors.New("is not a mount of the running client")
+
+// RemoteError is the text of a failure that the running client reported. The client sends
+// text only, so the kind of failure cannot be told apart.
+type RemoteError string
+
+func (e RemoteError) Error() string { return string(e) }
+
 // Unmount asks the running client that listens on socketPath to unmount the mounts at
 // targets, or all of its mounts when targets is empty. Without force a mount that is in
 // use is refused and stays mounted. It returns an error naming every target that could
@@ -29,7 +42,7 @@ func Status(ctx context.Context, socketPath string) (Report, error) {
 		return Report{}, err
 	}
 	if reply.Report == nil {
-		return Report{}, errors.New("the client sent no report")
+		return Report{}, ErrNoReport
 	}
 	return *reply.Report, nil
 }
@@ -76,9 +89,9 @@ func resultError(r UnmountResult) error {
 	case ResultBusy:
 		return fmt.Errorf("%s: %w", r.Target, ErrBusy)
 	case ResultUnknown:
-		return fmt.Errorf("%s is not a mount of the running client", r.Target)
+		return fmt.Errorf("%s %w", r.Target, ErrNotClientMount)
 	}
-	return fmt.Errorf("%s: %s", r.Target, r.Error)
+	return fmt.Errorf("%s: %w", r.Target, RemoteError(r.Error))
 }
 
 // call sends one request to the client on socketPath and returns its reply.
@@ -90,9 +103,10 @@ func (s system) call(ctx context.Context, socketPath string, req Request) (Reply
 	if err != nil {
 		return Reply{}, fmt.Errorf("connect to the client: %w", err)
 	}
-	defer func() { _ = conn.Close() }()
+	defer closeQuietly(conn)
 	// Closing the connection is what interrupts a blocked read when ctx ends.
-	defer context.AfterFunc(ctx, func() { _ = conn.Close() })()
+	stopClosing := context.AfterFunc(ctx, func() { closeQuietly(conn) })
+	defer stopClosing()
 
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return Reply{}, fmt.Errorf("send request: %w", err)
@@ -102,7 +116,7 @@ func (s system) call(ctx context.Context, socketPath string, req Request) (Reply
 		return Reply{}, fmt.Errorf("read reply: %w", errors.Join(err, ctx.Err()))
 	}
 	if reply.Error != "" {
-		return Reply{}, fmt.Errorf("the client refused the request: %s", reply.Error)
+		return Reply{}, fmt.Errorf("the client refused the request: %w", RemoteError(reply.Error))
 	}
 	return reply, nil
 }

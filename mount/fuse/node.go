@@ -27,7 +27,10 @@ type env struct {
 	files  *openFiles
 }
 
-// newNode returns the node for something the core described.
+// newNode returns the node for something the core described. The result is an
+// interface because the node type depends on a.Dir.
+//
+//nolint:ireturn // fs.NodeFS takes an fs.InodeEmbedder and the concrete type differs per file kind.
 func (e *env) newNode(a core.Attr) fs.InodeEmbedder {
 	if a.Dir {
 		return &dirNode{node{env: e}}
@@ -67,10 +70,9 @@ func join(dir, name string) string {
 type node struct {
 	fs.Inode
 	readOnly
+
 	env *env
 }
-
-func (n *node) path() string { return n.Path(nil) }
 
 var (
 	_ fs.NodeGetattrer = (*node)(nil)
@@ -91,11 +93,11 @@ func (n *node) Getattr(ctx context.Context, _ fs.FileHandle, out *fuse.AttrOut) 
 // empty filesystem: failing here would make df fail for the whole machine.
 func (n *node) Statfs(ctx context.Context, out *fuse.StatfsOut) syscall.Errno {
 	space, err := n.env.fsys.StatFS(ctx)
-	switch {
-	case errors.Is(err, core.ErrUnavailable):
+	if err != nil {
+		if !errors.Is(err, core.ErrUnavailable) {
+			return n.env.mapper.errno(err)
+		}
 		space = core.Space{}
-	case err != nil:
-		return n.env.mapper.errno(err)
 	}
 	c := capacityOf(space)
 	*out = fuse.StatfsOut{
@@ -108,6 +110,8 @@ func (n *node) Statfs(ctx context.Context, out *fuse.StatfsOut) syscall.Errno {
 	}
 	return 0
 }
+
+func (n *node) path() string { return n.Path(nil) }
 
 // dirNode is a directory.
 type dirNode struct{ node }
@@ -134,6 +138,8 @@ func (d *dirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 }
 
 // Readdir implements fs.NodeReaddirer.
+//
+//nolint:ireturn // fs.NodeReaddirer fixes this signature.
 func (d *dirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	attrs, err := d.env.fsys.ReadDir(ctx, d.path())
 	if err != nil {
@@ -154,6 +160,8 @@ var _ fs.NodeOpener = (*fileNode)(nil)
 // Open implements fs.NodeOpener. The kernel is told to keep cached file data across
 // opens, because the contents of a file never change under an open handle, and the
 // kernel itself drops the cache when it sees the size or time of the file change.
+//
+//nolint:ireturn // fs.NodeOpener fixes this signature.
 func (f *fileNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
 	if flags&syscall.O_ACCMODE != syscall.O_RDONLY {
 		return nil, 0, errReadOnly
@@ -184,6 +192,8 @@ var (
 //
 // A read that returned some bytes before failing is answered with those bytes: the
 // kernel asks again for the rest and gets the error then, which is how read(2) behaves.
+//
+//nolint:ireturn // fs.FileReader fixes this signature.
 func (h *handle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	n, err := h.file.ReadAt(ctx, dest, off)
 	if err != nil && !errors.Is(err, io.EOF) && n == 0 {

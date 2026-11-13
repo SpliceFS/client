@@ -135,18 +135,18 @@ func file(name string, reports []report) Entry {
 // that answered drop it later.
 func carry(prev, fresh []record, silentNodes map[string]bool) []record {
 	var kept []record
-	for _, p := range prev {
-		held := heldBy(p.reporters, silentNodes)
+	for _, earlier := range prev {
+		held := heldBy(earlier.reporters, silentNodes)
 		if len(held) == 0 {
 			continue
 		}
-		i, ok := slices.BinarySearchFunc(fresh, p, compareName)
+		i, ok := slices.BinarySearchFunc(fresh, earlier, compareName)
 		if ok {
 			fresh[i].reporters = sortedUnique(append(fresh[i].reporters, held...))
 			continue
 		}
-		p.reporters = held
-		kept = append(kept, p)
+		earlier.reporters = held
+		kept = append(kept, earlier)
 	}
 	fresh = append(fresh, kept...)
 	slices.SortFunc(fresh, compareName)

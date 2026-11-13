@@ -16,6 +16,7 @@ const evictInterval = 10 * time.Minute
 // cacheDir is one opened cache directory and the schedule of its eviction passes.
 type cacheDir struct {
 	*cache.Cache
+
 	dir string
 	now func() time.Time
 	log *slog.Logger
@@ -42,6 +43,6 @@ func (d *cacheDir) maybeEvict() {
 	d.due = now.Add(evictInterval)
 	d.mu.Unlock()
 	if err := d.Evict(); err != nil {
-		d.log.Warn("cache eviction failed", "dir", d.dir, "error", err)
+		d.log.Warn("cache eviction failed", slog.String("dir", d.dir), slog.Any("error", err))
 	}
 }

@@ -18,19 +18,21 @@ var ErrBadCredentials = errors.New("cluster rejected the user or password")
 // cause. A cluster that is not configured is a plain error.
 func (c *Client) Connect(ctx context.Context, cluster string) error {
 	c.mu.Lock()
-	cl, ok := c.clusters[cluster]
+	clus, ok := c.clusters[cluster]
 	c.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("connect: cluster %q is not configured", cluster)
+		return fmt.Errorf("connect: cluster %q %w", cluster, errNotConfigured)
 	}
-	_, _, err := cl.nodes(ctx)
+	_, err := clus.nodes(ctx)
 	switch {
 	case err == nil:
 		return nil
 	case errors.Is(err, session.ErrBadCredentials):
 		return fmt.Errorf("connect to cluster %q: %w: %w", cluster, ErrBadCredentials, err)
 	case ctx.Err() != nil:
-		return ctx.Err()
+		// The caller's own context ended. It is passed on as it is, so that an interrupted call is
+		// not mistaken for an outage, and the caller says what it was doing.
+		return ctx.Err() //nolint:wrapcheck // See above, a prefix would change the message.
 	}
 	return fmt.Errorf("connect to cluster %q: %w: %w", cluster, ErrUnavailable, err)
 }

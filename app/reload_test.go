@@ -21,18 +21,35 @@ import (
 // test instead of hanging it.
 const reloadTimeout = 5 * time.Second
 
-var (
-	reloadA  = config.Mount{Cluster: "example", Path: "/media", Target: "/mnt/a"}
-	reloadA2 = config.Mount{Cluster: "example", Path: "/other", Target: "/mnt/a"}
-	reloadB  = config.Mount{Cluster: "example", Path: "/", Target: "/mnt/b"}
-	reloadC  = config.Mount{Cluster: "other", Path: "/docs", Target: "/mnt/c"}
-	reloadD  = config.Mount{Cluster: "bad", Path: "/", Target: "/mnt/d"}
-	reloadE  = config.Mount{Cluster: "bad", Path: "/x", Target: "/mnt/e"}
-)
+// The mounts that the reload tests ask for. They are functions so that no test can change
+// a value that the others use.
+func reloadA() config.Mount {
+	return config.Mount{Cluster: "example", Path: "/media", Target: "/mnt/a"}
+}
+
+func reloadA2() config.Mount {
+	return config.Mount{Cluster: "example", Path: "/other", Target: "/mnt/a"}
+}
+
+func reloadB() config.Mount {
+	return config.Mount{Cluster: "example", Path: "/", Target: "/mnt/b"}
+}
+
+func reloadC() config.Mount {
+	return config.Mount{Cluster: "other", Path: "/docs", Target: "/mnt/c"}
+}
+
+func reloadD() config.Mount {
+	return config.Mount{Cluster: "bad", Path: "/", Target: "/mnt/d"}
+}
+
+func reloadE() config.Mount {
+	return config.Mount{Cluster: "bad", Path: "/x", Target: "/mnt/e"}
+}
 
 // reloadRig is a running client that a test tells to reload.
 type reloadRig struct {
-	h       *harness
+	env     *harness
 	run     *running
 	signals chan os.Signal
 
@@ -47,82 +64,82 @@ type reloadRig struct {
 // newReloadRig starts a client with mounts, and with targets if there are any.
 func newReloadRig(t *testing.T, mounts []config.Mount, targets ...string) *reloadRig {
 	t.Helper()
-	g := &reloadRig{h: newHarness(t), signals: make(chan os.Signal)}
-	g.h.cfg = &config.Config{Mounts: mounts}
-	g.h.opts.Reload = g.signals
-	g.h.opts.Load = g.load
-	g.run = g.h.start(targets...)
-	return g
+	rig := &reloadRig{env: newHarness(t), signals: make(chan os.Signal)}
+	rig.env.cfg = &config.Config{Mounts: mounts}
+	rig.env.opts.Reload = rig.signals
+	rig.env.opts.Load = rig.load
+	rig.run = rig.env.start(targets...)
+	return rig
 }
 
-func (g *reloadRig) load() (*config.Config, error) {
-	g.mu.Lock()
-	g.loads++
-	cfg, err, hook := g.next, g.nextErr, g.onLoad
-	g.mu.Unlock()
+func (rig *reloadRig) load() (*config.Config, error) {
+	rig.mu.Lock()
+	rig.loads++
+	cfg, err, hook := rig.next, rig.nextErr, rig.onLoad
+	rig.mu.Unlock()
 	if hook != nil {
 		hook()
 	}
 	return cfg, err
 }
 
-func (g *reloadRig) loadCount() int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.loads
+func (rig *reloadRig) loadCount() int {
+	rig.mu.Lock()
+	defer rig.mu.Unlock()
+	return rig.loads
 }
 
 // finished counts the reloads that have logged their outcome.
-func (g *reloadRig) finished() int {
-	out := g.h.log.String()
+func (rig *reloadRig) finished() int {
+	out := rig.env.log.String()
 	return strings.Count(out, "configuration applied") +
 		strings.Count(out, "configuration not applied")
 }
 
 // signal sends one reload request. The channel has no buffer, so it returns once the run
 // loop has taken the request, which is after the previous reload ended.
-func (g *reloadRig) signal() {
-	g.h.t.Helper()
+func (rig *reloadRig) signal() {
+	rig.env.t.Helper()
 	select {
-	case g.signals <- syscall.SIGHUP:
+	case rig.signals <- syscall.SIGHUP:
 	case <-time.After(reloadTimeout):
-		g.h.t.Fatal("the run did not take the reload request")
+		rig.env.t.Fatal("the run did not take the reload request")
 	}
 }
 
 // reloadWith makes Load return cfg and err, asks for a reload and waits until it is done.
-func (g *reloadRig) reloadWith(cfg *config.Config, err error) {
-	g.h.t.Helper()
-	done := g.finished()
-	g.mu.Lock()
-	g.next, g.nextErr = cfg, err
-	g.mu.Unlock()
-	g.signal()
-	waitFor(g.h.t, "the reload to finish", func() bool { return g.finished() > done })
+func (rig *reloadRig) reloadWith(cfg *config.Config, err error) {
+	rig.env.t.Helper()
+	done := rig.finished()
+	rig.mu.Lock()
+	rig.next, rig.nextErr = cfg, err
+	rig.mu.Unlock()
+	rig.signal()
+	waitFor(rig.env.t, "the reload to finish", func() bool { return rig.finished() > done })
 }
 
-func (g *reloadRig) reload(mounts ...config.Mount) *config.Config {
-	g.h.t.Helper()
+func (rig *reloadRig) reload(mounts ...config.Mount) *config.Config {
+	rig.env.t.Helper()
 	cfg := &config.Config{Mounts: mounts}
-	g.reloadWith(cfg, nil)
+	rig.reloadWith(cfg, nil)
 	return cfg
 }
 
 // markStale makes the core report the views of these targets as replaced.
-func (g *reloadRig) markStale(targets ...string) {
-	g.h.core.mu.Lock()
-	defer g.h.core.mu.Unlock()
-	g.h.core.stale = make(map[string]bool)
+func (rig *reloadRig) markStale(targets ...string) {
+	rig.env.core.mu.Lock()
+	defer rig.env.core.mu.Unlock()
+	rig.env.core.stale = make(map[string]bool)
 	for _, target := range targets {
-		g.h.core.stale[target] = true
+		rig.env.core.stale[target] = true
 	}
 }
 
 // live returns the targets the client reports as mounted, sorted.
-func (g *reloadRig) live() []string {
-	g.h.t.Helper()
+func (rig *reloadRig) live() []string {
+	rig.env.t.Helper()
 	live := []string{}
-	for _, m := range g.h.status().Mounts {
+	for _, m := range rig.env.status().Mounts {
 		if m.State == StateMounted {
 			live = append(live, m.Target)
 		}
@@ -131,77 +148,111 @@ func (g *reloadRig) live() []string {
 	return live
 }
 
-func (g *reloadRig) wantLive(want ...string) {
-	g.h.t.Helper()
-	if got := g.live(); !slices.Equal(got, append([]string{}, want...)) {
-		g.h.t.Errorf("live mounts = %v, want %v", got, want)
+func (rig *reloadRig) wantLive(want ...string) {
+	rig.env.t.Helper()
+	if got := rig.live(); !slices.Equal(got, append([]string{}, want...)) {
+		rig.env.t.Errorf("live mounts = %v, want %v", got, want)
 	}
 }
 
-func (g *reloadRig) wantMountCalls(want ...string) {
-	g.h.t.Helper()
-	if got := g.h.mounter.targets(); !slices.Equal(got, want) {
-		g.h.t.Errorf("mount calls = %v, want %v", got, want)
+func (rig *reloadRig) wantMountCalls(want ...string) {
+	rig.env.t.Helper()
+	if got := rig.env.mounter.targets(); !slices.Equal(got, want) {
+		rig.env.t.Errorf("mount calls = %v, want %v", got, want)
 	}
 }
 
-func (g *reloadRig) wantLogged(parts ...string) {
-	g.h.t.Helper()
-	out := g.h.log.String()
-	for _, part := range parts {
-		if !strings.Contains(out, part) {
-			g.h.t.Errorf("log lacks %q:\n%s", part, out)
+// mountsStarted returns the mounts that were started so far, by target.
+func (rig *reloadRig) mountsStarted() map[string]*fakeMounted {
+	started := make(map[string]*fakeMounted)
+	for _, target := range rig.env.mounter.targets() {
+		started[target] = rig.env.mounter.get(target)
+	}
+	return started
+}
+
+// wantForcedUnmounts checks that the mounts in forced were unmounted once with force, and the others not at all.
+func (rig *reloadRig) wantForcedUnmounts(started map[string]*fakeMounted, forced []string) {
+	rig.env.t.Helper()
+	for target, mounted := range started {
+		want := []bool(nil)
+		if slices.Contains(forced, target) {
+			want = []bool{true}
+		}
+		if got := mounted.unmountCalls(); !slices.Equal(got, want) {
+			rig.env.t.Errorf("%s unmount calls (force) = %v, want %v", target, got, want)
 		}
 	}
 }
 
-func (g *reloadRig) stop() {
-	g.h.t.Helper()
-	if err := g.run.stop(); err != nil {
-		g.h.t.Fatalf("Run = %v, want nil after a clean stop", err)
+// wantAppliedOnce checks that the core was given cfg, and nothing else.
+func (rig *reloadRig) wantAppliedOnce(cfg *config.Config) {
+	rig.env.t.Helper()
+	rig.env.core.mu.Lock()
+	applied := slices.Clone(rig.env.core.applied)
+	rig.env.core.mu.Unlock()
+	if len(applied) != 1 || applied[0] != cfg {
+		rig.env.t.Errorf("applied %v, want the loaded configuration once", applied)
+	}
+}
+
+func (rig *reloadRig) wantLogged(parts ...string) {
+	rig.env.t.Helper()
+	out := rig.env.log.String()
+	for _, part := range parts {
+		if !strings.Contains(out, part) {
+			rig.env.t.Errorf("log lacks %q:\n%s", part, out)
+		}
+	}
+}
+
+func (rig *reloadRig) stop() {
+	rig.env.t.Helper()
+	if err := rig.run.stop(); err != nil {
+		rig.env.t.Fatalf("Run = %v, want nil after a clean stop", err)
 	}
 }
 
 func TestRunRejectsReloadWithoutLoad(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.opts.Reload = make(chan os.Signal)
-	err := h.runSync()
+	env := newHarness(t)
+	env.opts.Reload = make(chan os.Signal)
+	err := env.runSync()
 	if err == nil || !strings.Contains(err.Error(), "reload needs") {
 		t.Fatalf("Run = %v, want an error that Load is missing", err)
 	}
-	if got := h.mounter.targets(); len(got) != 0 {
+	if got := env.mounter.targets(); len(got) != 0 {
 		t.Errorf("mounted %v", got)
 	}
 }
 
 func TestRunWithoutMountsIdles(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	h.cfg.Mounts = nil
-	r := h.start()
+	env := newHarness(t)
+	env.cfg.Mounts = nil
+	r := env.start()
 	select {
 	case err := <-r.result:
 		t.Fatalf("Run ended with %v, want it to idle until cancelled", err)
 	default:
 	}
-	if got := len(h.status().Mounts); got != 0 {
+	if got := len(env.status().Mounts); got != 0 {
 		t.Errorf("report lists %d mounts, want none", got)
 	}
 	if err := r.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil", err)
 	}
-	if got := h.notes.got(); !slices.Equal(got, []string{"READY=1", "STOPPING=1"}) {
+	if got := env.notes.got(); !slices.Equal(got, []string{"READY=1", "STOPPING=1"}) {
 		t.Errorf("notifications = %v", got)
 	}
 }
 
 func TestRunReportsAMountThatEndsWhileStopping(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t)
-	r := h.start("/mnt/a")
+	env := newHarness(t)
+	r := env.start("/mnt/a")
 	lost := errors.New("connection to the kernel was lost")
-	m := h.mounter.get("/mnt/a")
+	m := env.mounter.get("/mnt/a")
 	m.setBehavior(func(bool) error {
 		m.end(lost)
 		return nil
@@ -229,50 +280,50 @@ func TestReloadChangesTheMounts(t *testing.T) {
 		wantReleased int
 	}{
 		{
-			name: "new mount", start: []config.Mount{reloadA},
-			next:        []config.Mount{reloadA, reloadB},
+			name: "new mount", start: []config.Mount{reloadA()},
+			next:        []config.Mount{reloadA(), reloadB()},
 			wantMounted: []string{"/mnt/a", "/mnt/b"}, wantLive: []string{"/mnt/a", "/mnt/b"},
 		},
 		{
-			name: "removed mount", start: []config.Mount{reloadA, reloadB},
-			next:        []config.Mount{reloadA},
+			name: "removed mount", start: []config.Mount{reloadA(), reloadB()},
+			next:        []config.Mount{reloadA()},
 			wantMounted: []string{"/mnt/a", "/mnt/b"}, wantLive: []string{"/mnt/a"},
 			wantForced: []string{"/mnt/b"}, wantReleased: 1,
 		},
 		{
-			name: "every mount removed", start: []config.Mount{reloadA, reloadB},
+			name: "every mount removed", start: []config.Mount{reloadA(), reloadB()},
 			wantMounted: []string{"/mnt/a", "/mnt/b"}, wantLive: []string{},
 			wantForced: []string{"/mnt/a", "/mnt/b"}, wantReleased: 2,
 		},
 		{
-			name: "changed mount", start: []config.Mount{reloadA, reloadB},
-			next:        []config.Mount{reloadA2, reloadB},
+			name: "changed mount", start: []config.Mount{reloadA(), reloadB()},
+			next:        []config.Mount{reloadA2(), reloadB()},
 			wantMounted: []string{"/mnt/a", "/mnt/b", "/mnt/a"},
 			wantLive:    []string{"/mnt/a", "/mnt/b"}, wantForced: []string{"/mnt/a"},
 			wantReleased: 1,
 		},
 		{
-			name: "unchanged mounts", start: []config.Mount{reloadA, reloadB},
-			next:        []config.Mount{reloadA, reloadB},
+			name: "unchanged mounts", start: []config.Mount{reloadA(), reloadB()},
+			next:        []config.Mount{reloadA(), reloadB()},
 			wantMounted: []string{"/mnt/a", "/mnt/b"}, wantLive: []string{"/mnt/a", "/mnt/b"},
 		},
 		{
-			name: "cluster or cache replaced", start: []config.Mount{reloadA, reloadB},
-			stale: []string{"/mnt/a"}, next: []config.Mount{reloadA, reloadB},
+			name: "cluster or cache replaced", start: []config.Mount{reloadA(), reloadB()},
+			stale: []string{"/mnt/a"}, next: []config.Mount{reloadA(), reloadB()},
 			wantMounted: []string{"/mnt/a", "/mnt/b", "/mnt/a"},
 			wantLive:    []string{"/mnt/a", "/mnt/b"}, wantForced: []string{"/mnt/a"},
 			wantReleased: 1,
 		},
 		{
-			name: "only the started targets", start: []config.Mount{reloadA, reloadB, reloadC},
+			name: "only the started targets", start: []config.Mount{reloadA(), reloadB(), reloadC()},
 			targets:     []string{"/mnt/a"},
-			next:        []config.Mount{reloadA, reloadB, reloadC},
+			next:        []config.Mount{reloadA(), reloadB(), reloadC()},
 			wantMounted: []string{"/mnt/a"}, wantLive: []string{"/mnt/a"},
 		},
 		{
-			name: "started target no longer configured", start: []config.Mount{reloadA, reloadB},
+			name: "started target no longer configured", start: []config.Mount{reloadA(), reloadB()},
 			targets:     []string{"/mnt/a"},
-			next:        []config.Mount{reloadB, reloadC},
+			next:        []config.Mount{reloadB(), reloadC()},
 			wantMounted: []string{"/mnt/a"}, wantLive: []string{},
 			wantForced: []string{"/mnt/a"}, wantReleased: 1,
 		},
@@ -280,52 +331,36 @@ func TestReloadChangesTheMounts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newReloadRig(t, tt.start, tt.targets...)
-			before := make(map[string]*fakeMounted)
-			for _, target := range g.h.mounter.targets() {
-				before[target] = g.h.mounter.get(target)
-			}
-			g.markStale(tt.stale...)
-			cfg := g.reload(tt.next...)
+			rig := newReloadRig(t, tt.start, tt.targets...)
+			before := rig.mountsStarted()
+			rig.markStale(tt.stale...)
+			cfg := rig.reload(tt.next...)
 
-			g.wantMountCalls(tt.wantMounted...)
-			g.wantLive(tt.wantLive...)
-			for target, m := range before {
-				want := []bool(nil)
-				if slices.Contains(tt.wantForced, target) {
-					want = []bool{true}
-				}
-				if got := m.unmountCalls(); !slices.Equal(got, want) {
-					t.Errorf("%s unmount calls (force) = %v, want %v", target, got, want)
-				}
-			}
+			rig.wantMountCalls(tt.wantMounted...)
+			rig.wantLive(tt.wantLive...)
+			rig.wantForcedUnmounts(before, tt.wantForced)
 			waitFor(t, "the ended mounts to be released", func() bool {
-				return g.h.core.releasedCount() == tt.wantReleased
+				return rig.env.core.releasedCount() == tt.wantReleased
 			})
-			g.h.core.mu.Lock()
-			applied := slices.Clone(g.h.core.applied)
-			g.h.core.mu.Unlock()
-			if len(applied) != 1 || applied[0] != cfg {
-				t.Errorf("applied %v, want the loaded configuration once", applied)
-			}
-			g.wantLogged("configuration applied", fmt.Sprintf("mounts=%d", len(tt.wantLive)))
-			g.stop()
+			rig.wantAppliedOnce(cfg)
+			rig.wantLogged("configuration applied", fmt.Sprintf("mounts=%d", len(tt.wantLive)))
+			rig.stop()
 		})
 	}
 }
 
 func TestReloadRemountsWhatTheAdministratorUnmounted(t *testing.T) {
 	t.Parallel()
-	g := newReloadRig(t, []config.Mount{reloadA, reloadB})
-	g.h.mounter.get("/mnt/a").end(nil)
-	waitFor(t, "the view to be released", func() bool { return g.h.core.releasedCount() == 1 })
-	g.reload(reloadA, reloadB)
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/a")
-	g.wantLive("/mnt/a", "/mnt/b")
-	if calls := g.h.mounter.get("/mnt/b").unmountCalls(); len(calls) != 0 {
+	rig := newReloadRig(t, []config.Mount{reloadA(), reloadB()})
+	rig.env.mounter.get("/mnt/a").end(nil)
+	waitFor(t, "the view to be released", func() bool { return rig.env.core.releasedCount() == 1 })
+	rig.reload(reloadA(), reloadB())
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/a")
+	rig.wantLive("/mnt/a", "/mnt/b")
+	if calls := rig.env.mounter.get("/mnt/b").unmountCalls(); len(calls) != 0 {
 		t.Errorf("the intact mount was unmounted: %v", calls)
 	}
-	g.stop()
+	rig.stop()
 }
 
 func TestReloadKeepsTheConfigurationWhenItCannotBeUsed(t *testing.T) {
@@ -341,43 +376,43 @@ func TestReloadKeepsTheConfigurationWhenItCannotBeUsed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newReloadRig(t, []config.Mount{reloadA})
-			g.h.core.applyErr = tt.applyErr
-			g.reloadWith(&config.Config{Mounts: []config.Mount{reloadB}}, tt.loadErr)
+			rig := newReloadRig(t, []config.Mount{reloadA()})
+			rig.env.core.applyErr = tt.applyErr
+			rig.reloadWith(&config.Config{Mounts: []config.Mount{reloadB()}}, tt.loadErr)
 
-			g.wantMountCalls("/mnt/a")
-			g.wantLive("/mnt/a")
-			if calls := g.h.mounter.get("/mnt/a").unmountCalls(); len(calls) != 0 {
+			rig.wantMountCalls("/mnt/a")
+			rig.wantLive("/mnt/a")
+			if calls := rig.env.mounter.get("/mnt/a").unmountCalls(); len(calls) != 0 {
 				t.Errorf("the mount was unmounted: %v", calls)
 			}
 			want := tt.loadErr
 			if want == nil {
 				want = tt.applyErr
 			}
-			g.wantLogged("configuration not applied", want.Error())
-			if strings.Contains(g.h.log.String(), "configuration applied") {
-				t.Errorf("a configuration that was not applied is reported as applied")
+			rig.wantLogged("configuration not applied", want.Error())
+			if strings.Contains(rig.env.log.String(), "configuration applied") {
+				t.Error("a configuration that was not applied is reported as applied")
 			}
-			g.stop()
+			rig.stop()
 		})
 	}
 }
 
 func TestReloadKeepsAMountThatCannotBeDetached(t *testing.T) {
 	t.Parallel()
-	g := newReloadRig(t, []config.Mount{reloadA})
+	rig := newReloadRig(t, []config.Mount{reloadA()})
 	stuck := errors.New("device is stuck")
-	m := g.h.mounter.get("/mnt/a")
-	m.setBehavior(func(bool) error { return stuck })
-	g.reload(reloadA2)
+	mounted := rig.env.mounter.get("/mnt/a")
+	mounted.setBehavior(func(bool) error { return stuck })
+	rig.reload(reloadA2())
 
-	g.wantLogged("mount not detached", "target=/mnt/a", stuck.Error(), "configuration applied")
-	g.wantMountCalls("/mnt/a")
-	g.wantLive("/mnt/a")
+	rig.wantLogged("mount not detached", "target=/mnt/a", stuck.Error(), "configuration applied")
+	rig.wantMountCalls("/mnt/a")
+	rig.wantLive("/mnt/a")
 	// The stop has to be able to remove the mount.
-	m.setBehavior(nil)
-	g.stop()
-	if calls := m.unmountCalls(); !slices.Equal(calls, []bool{true, false}) {
+	mounted.setBehavior(nil)
+	rig.stop()
+	if calls := mounted.unmountCalls(); !slices.Equal(calls, []bool{true, false}) {
 		t.Errorf("unmount calls (force) = %v, want the forced detach, then the stop", calls)
 	}
 }
@@ -406,94 +441,94 @@ func TestReloadConnectsToNewClusters(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			g := newReloadRig(t, []config.Mount{reloadA})
-			g.h.core.connectErr["bad"] = tt.err
-			g.reload(reloadA, reloadD, reloadE, reloadC)
+			rig := newReloadRig(t, []config.Mount{reloadA()})
+			rig.env.core.connectErr["bad"] = tt.err
+			rig.reload(reloadA(), reloadD(), reloadE(), reloadC())
 
-			g.wantLive(tt.wantLive...)
-			g.wantLogged(tt.wantLog, "cluster=bad", "configuration applied")
+			rig.wantLive(tt.wantLive...)
+			rig.wantLogged(tt.wantLog, "cluster=bad", "configuration applied")
 			// One connection per new cluster, and none for the one that is mounted.
 			want := []string{"bad", "example", "other"}
-			if got := g.h.core.connectedClusters(); !slices.Equal(got, want) {
+			if got := rig.env.core.connectedClusters(); !slices.Equal(got, want) {
 				t.Errorf("connected to %v, want %v", got, want)
 			}
-			g.stop()
+			rig.stop()
 		})
 	}
 }
 
 func TestReloadSkipsAMountThatCannotBeMade(t *testing.T) {
 	t.Parallel()
-	g := newReloadRig(t, []config.Mount{reloadA})
+	rig := newReloadRig(t, []config.Mount{reloadA()})
 	boom := errors.New("fuse is not available")
-	g.h.mounter.fail["/mnt/b"] = boom
-	g.reload(reloadA, reloadB, reloadC)
+	rig.env.mounter.fail["/mnt/b"] = boom
+	rig.reload(reloadA(), reloadB(), reloadC())
 
-	g.wantLive("/mnt/a", "/mnt/c")
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
-	g.wantLogged("mount not made", "target=/mnt/b", boom.Error(), "configuration applied")
+	rig.wantLive("/mnt/a", "/mnt/c")
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
+	rig.wantLogged("mount not made", "target=/mnt/b", boom.Error(), "configuration applied")
 	// The mount never existed, so the failed attempt gives its view back at once.
 	waitFor(t, "the failed view to be released", func() bool {
-		return g.h.core.releasedCount() == 1
+		return rig.env.core.releasedCount() == 1
 	})
-	g.stop()
+	rig.stop()
 }
 
 func TestReloadSeveralTimes(t *testing.T) {
 	t.Parallel()
-	g := newReloadRig(t, []config.Mount{reloadA})
-	a := g.h.mounter.get("/mnt/a")
-	g.reload(reloadA, reloadB)
-	g.reload(reloadB, reloadC)
-	c := g.h.mounter.get("/mnt/c")
-	g.reload(reloadB, reloadC)
+	rig := newReloadRig(t, []config.Mount{reloadA()})
+	mountedA := rig.env.mounter.get("/mnt/a")
+	rig.reload(reloadA(), reloadB())
+	rig.reload(reloadB(), reloadC())
+	mountedC := rig.env.mounter.get("/mnt/c")
+	rig.reload(reloadB(), reloadC())
 
-	g.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
-	g.wantLive("/mnt/b", "/mnt/c")
-	if calls := a.unmountCalls(); !slices.Equal(calls, []bool{true}) {
+	rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
+	rig.wantLive("/mnt/b", "/mnt/c")
+	if calls := mountedA.unmountCalls(); !slices.Equal(calls, []bool{true}) {
 		t.Errorf("/mnt/a unmount calls (force) = %v, want one", calls)
 	}
-	for _, m := range []*fakeMounted{g.h.mounter.get("/mnt/b"), c} {
-		if calls := m.unmountCalls(); len(calls) != 0 {
+	for _, mounted := range []*fakeMounted{rig.env.mounter.get("/mnt/b"), mountedC} {
+		if calls := mounted.unmountCalls(); len(calls) != 0 {
 			t.Errorf("a mount that stayed was unmounted: %v", calls)
 		}
 	}
-	if got := g.finished(); got != 3 {
+	if got := rig.finished(); got != 3 {
 		t.Errorf("%d reloads finished, want 3", got)
 	}
-	g.stop()
+	rig.stop()
 }
 
 func TestRunIgnoresAClosedReloadChannel(t *testing.T) {
 	t.Parallel()
-	g := newReloadRig(t, []config.Mount{reloadA})
-	close(g.signals)
+	rig := newReloadRig(t, []config.Mount{reloadA()})
+	close(rig.signals)
 	// A closed channel always has a value to receive, so a loop that did not drop it
 	// would reload without end or never look at the context again.
-	if got := g.live(); !slices.Equal(got, []string{"/mnt/a"}) {
+	if got := rig.live(); !slices.Equal(got, []string{"/mnt/a"}) {
 		t.Errorf("live mounts = %v", got)
 	}
-	g.stop()
-	if got := g.loadCount(); got != 0 {
+	rig.stop()
+	if got := rig.loadCount(); got != 0 {
 		t.Errorf("the configuration was loaded %d times after the channel closed", got)
 	}
 }
 
 func TestReloadEndingWithTheContext(t *testing.T) {
 	t.Parallel()
-	g := newReloadRig(t, []config.Mount{reloadA})
-	a := g.h.mounter.get("/mnt/a")
+	rig := newReloadRig(t, []config.Mount{reloadA()})
+	mountedA := rig.env.mounter.get("/mnt/a")
 	// Load runs inside the reload, so the context ends in the middle of it.
-	g.mu.Lock()
-	g.onLoad = g.run.cancel
-	g.mu.Unlock()
-	g.reload(reloadA, reloadB)
+	rig.mu.Lock()
+	rig.onLoad = rig.run.cancel
+	rig.mu.Unlock()
+	rig.reload(reloadA(), reloadB())
 
-	g.wantMountCalls("/mnt/a")
-	if err := g.run.wait(); err != nil {
+	rig.wantMountCalls("/mnt/a")
+	if err := rig.run.wait(); err != nil {
 		t.Fatalf("Run = %v, want nil", err)
 	}
-	if calls := a.unmountCalls(); !slices.Equal(calls, []bool{false}) {
+	if calls := mountedA.unmountCalls(); !slices.Equal(calls, []bool{false}) {
 		t.Errorf("unmount calls (force) = %v, want the stop's polite unmount", calls)
 	}
 }
@@ -503,22 +538,22 @@ func TestReloadReplacesAMountThatEndedButIsStillListed(t *testing.T) {
 	// The watcher of an ended mount removes it a moment later, so a reload can meet it in
 	// the set. A set without watchers makes that moment last.
 	log := &logBuffer{}
-	fc := newFakeCore()
+	coreClient := newFakeCore()
 	mounter := newFakeMounter()
-	set := newMountSet(fc.Release, log.logger())
+	set := newMountSet(coreClient.Release, log.logger())
 	t.Cleanup(set.endWatchers)
 	gone := newFakeMounted()
 	gone.end(nil)
 	set.mounts = []*liveMount{{
-		target: reloadA.Target, mounted: gone, cfg: reloadA, fs: namedFS{name: reloadA.Target},
+		target: reloadA().Target, mounted: gone, cfg: reloadA(), fs: namedFS{name: reloadA().Target},
 	}}
-	r := &reloader{cc: fc, set: set, opts: Options{
+	r := &reloader{coreClient: coreClient, set: set, opts: Options{
 		Logger:         log.logger(),
 		Mounter:        mounter.Mount,
 		ConnectTimeout: reloadTimeout,
 		limits:         stopLimits{graceful: reloadTimeout, force: reloadTimeout},
 		Load: func() (*config.Config, error) {
-			return &config.Config{Mounts: []config.Mount{reloadA}}, nil
+			return &config.Config{Mounts: []config.Mount{reloadA()}}, nil
 		},
 	}}
 	r.reload(context.Background())

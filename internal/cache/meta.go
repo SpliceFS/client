@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// bitsPerByte is the number of blocks one byte of a bitmap stands for.
+const bitsPerByte = 8
+
 // maxBlocks bounds the bitmap of one entry, so a bogus size from the network cannot
 // make the cache allocate without limit.
 const maxBlocks = 1 << 24
@@ -67,36 +70,45 @@ type metaFile struct {
 }
 
 // bitmapLen is the number of bytes of a bitmap for n blocks.
-func bitmapLen(n int64) int64 { return (n + 7) / 8 }
+func bitmapLen(n int64) int64 { return (n + bitsPerByte - 1) / bitsPerByte }
 
 // checkBitmap verifies that a stored bitmap fits the version: the right length and no
 // bits set beyond the last block.
 func checkBitmap(v Version, bitmap []byte) error {
 	n := v.blocks()
 	if int64(len(bitmap)) != bitmapLen(n) {
-		return fmt.Errorf("bitmap is %d bytes, want %d", len(bitmap), bitmapLen(n))
+		return fmt.Errorf("%w: bitmap is %d bytes, want %d", ErrInvalidMetadata, len(bitmap), bitmapLen(n))
 	}
-	if extra := n % 8; extra != 0 && bitmap[len(bitmap)-1]>>extra != 0 {
-		return fmt.Errorf("bitmap has blocks beyond the end of the file")
+	if extra := n % bitsPerByte; extra != 0 && bitmap[len(bitmap)-1]>>extra != 0 {
+		return fmt.Errorf("%w: bitmap has blocks beyond the end of the file", ErrInvalidMetadata)
 	}
 	return nil
 }
 
-// countBlocks returns how many blocks the bitmap marks and how many bytes they hold.
-func countBlocks(v Version, bitmap []byte) (present, size int64) {
-	for _, b := range bitmap {
-		present += int64(bits.OnesCount8(b))
-	}
-	size = present * v.BlockSize
-	if last := v.blocks() - 1; last >= 0 && hasBit(bitmap, last) {
-		size -= v.BlockSize - v.blockLen(last)
-	}
-	return present, size
+// blockCount is how many blocks a bitmap marks and how many bytes of data they hold.
+type blockCount struct {
+	present int64
+	bytes   int64
 }
 
-func hasBit(bitmap []byte, i int64) bool { return bitmap[i/8]&(1<<(i%8)) != 0 }
+// countBlocks counts the blocks the bitmap marks and the bytes they hold.
+func countBlocks(version Version, bitmap []byte) blockCount {
+	var count blockCount
+	for _, b := range bitmap {
+		count.present += int64(bits.OnesCount8(b))
+	}
+	count.bytes = count.present * version.BlockSize
+	if last := version.blocks() - 1; last >= 0 && hasBit(bitmap, last) {
+		count.bytes -= version.BlockSize - version.blockLen(last)
+	}
+	return count
+}
 
-func setBit(bitmap []byte, i int64) { bitmap[i/8] |= 1 << (i % 8) }
+func hasBit(bitmap []byte, i int64) bool {
+	return bitmap[i/bitsPerByte]&(1<<(i%bitsPerByte)) != 0
+}
+
+func setBit(bitmap []byte, i int64) { bitmap[i/bitsPerByte] |= 1 << (i % bitsPerByte) }
 
 // baseName is the path, without extension, of the files holding key. It is derived from
 // a hash so that any cluster name and path is safe as a file name. The first two hex

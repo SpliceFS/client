@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -20,35 +21,35 @@ type call struct {
 	abandoned bool
 }
 
-func (g *group) do(ctx context.Context, fn func(ctx context.Context) error) error {
+func (g *group) do(ctx context.Context, run func(ctx context.Context) error) error {
 	for {
 		g.mu.Lock()
-		c := g.cur
-		if c == nil {
-			c = &call{done: make(chan struct{})}
-			g.cur = c
+		flight := g.cur
+		if flight == nil {
+			flight = &call{done: make(chan struct{})}
+			g.cur = flight
 			g.mu.Unlock()
-			return g.lead(ctx, c, fn)
+			return g.lead(ctx, flight, run)
 		}
 		g.mu.Unlock()
 
 		select {
-		case <-c.done:
+		case <-flight.done:
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("wait for the running call: %w", ctx.Err())
 		}
-		if !c.abandoned || ctx.Err() != nil {
-			return c.err
+		if !flight.abandoned || ctx.Err() != nil {
+			return flight.err
 		}
 	}
 }
 
-func (g *group) lead(ctx context.Context, c *call, fn func(ctx context.Context) error) error {
-	c.err = fn(ctx)
-	c.abandoned = ctx.Err() != nil
+func (g *group) lead(ctx context.Context, flight *call, run func(ctx context.Context) error) error {
+	flight.err = run(ctx)
+	flight.abandoned = ctx.Err() != nil
 	g.mu.Lock()
 	g.cur = nil
 	g.mu.Unlock()
-	close(c.done)
-	return c.err
+	close(flight.done)
+	return flight.err
 }

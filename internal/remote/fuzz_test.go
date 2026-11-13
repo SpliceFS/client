@@ -2,6 +2,7 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,41 +68,87 @@ func FuzzResponses(f *testing.F) {
 			seed.crange, seed.length)
 	}
 	f.Fuzz(func(t *testing.T, status int, contentType, body, lastModified, etag, contentRange string,
-		contentLength int64) {
-		h := http.Header{}
-		// Header values with control characters cannot exist on the wire, so they would
-		// only test net/http.
-		for k, v := range map[string]string{
-			"Content-Type": contentType, "Last-Modified": lastModified, "ETag": etag,
-			"Content-Range": contentRange, wire.HeaderHeadDigest: "00ff",
-		} {
-			if strings.ContainsAny(v, "\r\n\x00") {
-				return
-			}
-			h.Set(k, v)
-		}
-		if status < 100 || status > 599 {
+		contentLength int64,
+	) {
+		headers, ok := fuzzHeader(contentType, lastModified, etag, contentRange)
+		if !ok || status < 100 || status > 599 {
 			return
 		}
-		n := answering(t, status, h, contentLength, []byte(body))
-		ctx := context.Background()
-
-		if r, err := n.Login(ctx, "u", "p"); err == nil && r.Token == "" {
-			// An empty token would be sent as no authentication at all.
-			t.Fatalf("Login accepted an answer without a token: %q", body)
-		}
-		_, _ = n.Health(ctx)
-		_, _ = n.Nodes(ctx, "t")
-		_, _ = n.List(ctx, "t", "share/dir")
-		_, _ = n.Space(ctx, "t", "share")
-		if m, err := n.Head(ctx, "t", "share/file"); err == nil {
-			// A file version is pinned by these fields, so none may be missing or invalid.
-			if m.Size < 0 || m.ETag == "" || m.HeadDigest == "" {
-				t.Fatalf("Head accepted %+v", m)
-			}
-		}
-		checkRangeAnswer(t, n, contentRange)
+		n := answering(t, status, headers, contentLength, []byte(body))
+		checkAnswers(t, n, body, contentRange)
 	})
+}
+
+// fuzzHeader builds the response headers of a fuzz case. It reports false for a value with
+// control characters: those cannot exist on the wire, so they would only test net/http.
+func fuzzHeader(contentType, lastModified, etag, contentRange string) (http.Header, bool) {
+	headers := http.Header{}
+	for key, value := range map[string]string{
+		"Content-Type": contentType, "Last-Modified": lastModified, "ETag": etag,
+		"Content-Range": contentRange, wire.HeaderHeadDigest: "00ff",
+	} {
+		if strings.ContainsAny(value, "\r\n\x00") {
+			return nil, false
+		}
+		headers.Set(key, value)
+	}
+	return headers, true
+}
+
+// checkClassified fails for an error that is none of the exported ones, because callers
+// branch on them with errors.Is.
+func checkClassified(t *testing.T, operation string, err error) {
+	t.Helper()
+	if err == nil {
+		return
+	}
+	sentinels := []error{
+		ErrUnauthorized, ErrForbidden, ErrNotFound, ErrChanged, ErrBadRange, ErrRateLimited, ErrProtocol,
+		ErrUnavailable,
+	}
+	for _, sentinel := range sentinels {
+		if errors.Is(err, sentinel) {
+			return
+		}
+	}
+	t.Fatalf("%s failed with %v, which is none of the exported errors", operation, err)
+}
+
+// checkAnswers calls every operation against the fixed answer of n.
+func checkAnswers(t *testing.T, n *Node, body, contentRange string) {
+	t.Helper()
+	ctx := context.Background()
+	checkLogin(t, n, body)
+	_, err := n.Health(ctx)
+	checkClassified(t, "Health", err)
+	_, err = n.Nodes(ctx, "t")
+	checkClassified(t, "Nodes", err)
+	_, err = n.List(ctx, "t", "share/dir")
+	checkClassified(t, "List", err)
+	_, err = n.Space(ctx, "t", "share")
+	checkClassified(t, "Space", err)
+	checkHead(t, n)
+	checkRangeAnswer(t, n, contentRange)
+}
+
+func checkLogin(t *testing.T, n *Node, body string) {
+	t.Helper()
+	login, err := n.Login(context.Background(), "u", "p")
+	checkClassified(t, "Login", err)
+	if err == nil && login.Token == "" {
+		// An empty token would be sent as no authentication at all.
+		t.Fatalf("Login accepted an answer without a token: %q", body)
+	}
+}
+
+func checkHead(t *testing.T, n *Node) {
+	t.Helper()
+	meta, err := n.Head(context.Background(), "t", "share/file")
+	checkClassified(t, "Head", err)
+	// A file version is pinned by these fields, so none may be missing or invalid.
+	if err == nil && (meta.Size < 0 || meta.ETag == "" || meta.HeadDigest == "") {
+		t.Fatalf("Head accepted %+v", meta)
+	}
 }
 
 // checkRangeAnswer reads a block from a server that answered with a fixed
@@ -109,12 +156,13 @@ func FuzzResponses(f *testing.F) {
 func checkRangeAnswer(t *testing.T, n *Node, contentRange string) {
 	t.Helper()
 	const off, length = 0, 10
-	rc, err := n.Range(context.Background(), "t", "share/file", "tag", off, length)
+	block, err := n.Range(context.Background(), "t", "share/file", "tag", off, length)
+	checkClassified(t, "Range", err)
 	if err != nil {
 		return
 	}
-	defer func() { _ = rc.Close() }()
-	data, err := io.ReadAll(rc)
+	closeLater(t, block)
+	data, err := io.ReadAll(block)
 	// The cache stores whatever it is given as a whole block, so a short body without an
 	// error would be saved as if it were complete.
 	if err == nil && len(data) != length {
@@ -135,14 +183,14 @@ func FuzzParseContentRange(f *testing.F) {
 	} {
 		f.Add(s)
 	}
-	f.Fuzz(func(t *testing.T, in string) {
-		first, last, ok := parseContentRange(in)
+	f.Fuzz(func(t *testing.T, input string) {
+		parsed, ok := parseContentRange(input)
 		if !ok {
 			return
 		}
-		a, b, ok := parseContentRange(fmt.Sprintf("bytes %d-%d/*", first, last))
-		if !ok || a != first || b != last {
-			t.Fatalf("parseContentRange(%q) = %d, %d does not survive a round trip", in, first, last)
+		again, ok := parseContentRange(fmt.Sprintf("bytes %d-%d/*", parsed.first, parsed.last))
+		if !ok || again != parsed {
+			t.Fatalf("parseContentRange(%q) = %+v does not survive a round trip", input, parsed)
 		}
 	})
 }
@@ -156,27 +204,35 @@ func FuzzEscapePath(f *testing.F) {
 	} {
 		f.Add(s)
 	}
-	f.Fuzz(func(t *testing.T, p string) {
-		escaped, err := escapePath(p)
+	f.Fuzz(func(t *testing.T, path string) {
+		escaped, err := escapePath(path)
 		if err != nil {
 			if escaped != "" {
-				t.Fatalf("escapePath(%q) failed but returned %q", p, escaped)
+				t.Fatalf("escapePath(%q) failed but returned %q", path, escaped)
 			}
 			return
 		}
-		segments := strings.Split(escaped, "/")
-		if len(segments) != len(strings.Split(p, "/")) {
-			t.Fatalf("escapePath(%q) = %q changed the number of segments", p, escaped)
-		}
-		for i, s := range segments {
-			back, err := url.PathUnescape(s)
-			// Every segment must decode to what was given, or the server would see another name.
-			if err != nil || back != strings.Split(p, "/")[i] || strings.ContainsAny(s, "/?#") {
-				t.Fatalf("escapePath(%q) = %q has the segment %q", p, escaped, s)
-			}
-			if s == "" || s == "." || s == ".." {
-				t.Fatalf("escapePath(%q) = %q has a dot or empty segment", p, escaped)
-			}
-		}
+		checkEscapedSegments(t, path, escaped)
 	})
+}
+
+// checkEscapedSegments checks that each segment of escaped decodes to the segment of path it
+// came from, and that none can be read as another request path.
+func checkEscapedSegments(t *testing.T, path, escaped string) {
+	t.Helper()
+	given := strings.Split(path, "/")
+	segments := strings.Split(escaped, "/")
+	if len(segments) != len(given) {
+		t.Fatalf("escapePath(%q) = %q changed the number of segments", path, escaped)
+	}
+	for i, segment := range segments {
+		back, err := url.PathUnescape(segment)
+		// Every segment must decode to what was given, or the server would see another name.
+		if err != nil || back != given[i] || strings.ContainsAny(segment, "/?#") {
+			t.Fatalf("escapePath(%q) = %q has the segment %q", path, escaped, segment)
+		}
+		if segment == "" || segment == "." || segment == ".." {
+			t.Fatalf("escapePath(%q) = %q has a dot or empty segment", path, escaped)
+		}
+	}
 }

@@ -38,9 +38,9 @@ func (f *flight) wait(ctx context.Context, dir string) ([]record, error) {
 func (t *Tree) acquire(ctx context.Context, dir string) *flight {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if it, ok := t.items[dir]; ok && t.fresh(it) {
-		t.order.MoveToFront(it.elem)
-		return it.answer(dir)
+	if cached, ok := t.items[dir]; ok && t.fresh(cached) {
+		t.order.MoveToFront(cached.elem)
+		return cached.answer(dir)
 	}
 	if f, ok := t.flights[dir]; ok {
 		return f
@@ -52,9 +52,9 @@ func (t *Tree) acquire(ctx context.Context, dir string) *flight {
 }
 
 // answer is the remembered item as a flight that has already finished.
-func (it *item) answer(dir string) *flight {
-	f := &flight{done: make(chan struct{}), recs: it.recs}
-	if it.missing {
+func (cached *item) answer(dir string) *flight {
+	f := &flight{done: make(chan struct{}), recs: cached.recs}
+	if cached.missing {
 		f.err = notFound(dir)
 	}
 	close(f.done)
@@ -94,11 +94,9 @@ func (t *Tree) ask(ctx context.Context, dir string) []reply {
 	replies := make([]reply, len(nodes))
 	var wg sync.WaitGroup
 	for i, node := range nodes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			replies[i] = t.askOne(ctx, node, dir)
-		}()
+		})
 	}
 	wg.Wait()
 	return replies
@@ -107,7 +105,11 @@ func (t *Tree) ask(ctx context.Context, dir string) []reply {
 func (t *Tree) nodes(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, t.opts.NodeTimeout)
 	defer cancel()
-	return t.lister.Nodes(ctx)
+	nodes, err := t.lister.Nodes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list nodes: %w", err)
+	}
+	return nodes, nil
 }
 
 func (t *Tree) askOne(ctx context.Context, node, dir string) reply {
@@ -132,14 +134,13 @@ func (t *Tree) settle(dir string, replies []reply) ([]record, error) {
 	var answered int
 	silentNodes := make(map[string]bool)
 	for _, r := range replies {
-		switch r.state {
-		case listed:
-			have = append(have, r)
-			answered++
-		case absent:
-			answered++
-		default:
+		if r.state == unanswered {
 			silentNodes[r.node] = true
+			continue
+		}
+		answered++
+		if r.state == listed {
+			have = append(have, r)
 		}
 	}
 	prev, hadPrev := t.previous(dir)

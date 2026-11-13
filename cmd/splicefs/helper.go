@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/SpliceFS/client/app"
@@ -23,33 +24,51 @@ const (
 	helperFlags = "sfnv"
 	// exitMountFailed is the status mount(8) documents for a mount that failed.
 	exitMountFailed = 32
+	// helperWordCount is the number of words a helper command line holds besides its flags:
+	// the source and the target.
+	helperWordCount = 2
+)
+
+// The errors of a mount helper command line. Each message is completed with the offending
+// value where there is one.
+var (
+	errNeedSourceAndTarget = errors.New("need exactly a source and a target")
+	errOptionNeedsValue    = errors.New("-o needs a value")
+	errUnknownFlag         = errors.New("unknown flag")
+	errSourceFormat        = errors.New("is not CLUSTER:PATH")
+	errUnsupportedOption   = errors.New("unsupported mount option")
 )
 
 // ignoredOptions are options of mount(8) and fstab that a mount of this client has no use
 // for. They are accepted so that a common fstab line works as written. "rw" is among them
 // because mount(8) passes it to every helper unless the caller asked for "ro"; the mount is
 // read-only whatever is asked.
-var ignoredOptions = map[string]bool{
-	"rw": true, "async": true,
-	"ro": true, "defaults": true, "auto": true, "noauto": true, "nofail": true,
-	"_netdev": true, "user": true, "nouser": true, "users": true, "owner": true,
-	"exec": true, "noexec": true, "suid": true, "nosuid": true, "dev": true, "nodev": true,
-	"atime": true, "noatime": true, "relatime": true,
+func ignoredOptions() []string {
+	return []string{
+		"rw", "async",
+		"ro", "defaults", "auto", "noauto", "nofail",
+		"_netdev", "user", "nouser", "users", "owner",
+		"exec", "noexec", "suid", "nosuid", "dev", "nodev",
+		"atime", "noatime", "relatime",
+	}
 }
 
-// ignoredPrefixes start options that other programs read, such as x-systemd.requires=.
-var ignoredPrefixes = []string{"x-", "comment="}
+// hasIgnoredPrefix tells whether opt starts an option that other programs read, such as
+// x-systemd.requires=.
+func hasIgnoredPrefix(opt string) bool {
+	return strings.HasPrefix(opt, "x-") || strings.HasPrefix(opt, "comment=")
+}
 
 // executeHelper is the program when it runs as the mount helper: it asks the running client
 // for one mount and returns the exit status that mount(8) understands.
 func (b backend) executeHelper(ctx context.Context, args []string, stderr io.Writer) int {
 	req, err := b.parseHelperArgs(args)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "%s: %v\n%s", helperProgram, err, helperUsage)
+		sayf(stderr, "%s: %v\n%s", helperProgram, err, helperUsage)
 		return exitError
 	}
 	if err := b.requestHelperMount(ctx, req); err != nil {
-		_, _ = fmt.Fprintf(stderr, "%s: %v\n", helperProgram, err)
+		sayf(stderr, "%s: %v\n", helperProgram, err)
 		return exitMountFailed
 	}
 	return exitOK
@@ -71,62 +90,79 @@ func (b backend) requestHelperMount(ctx context.Context, req app.MountRequest) e
 // parseHelperArgs reads "<source> <target> [-sfnv] [-o options]". Flags may come before
 // or after the two words, and -o may be repeated.
 func (b backend) parseHelperArgs(args []string) (app.MountRequest, error) {
-	words, options, err := splitHelperArgs(args)
+	parsed, err := splitHelperArgs(args)
 	if err != nil {
 		return app.MountRequest{}, err
 	}
-	if len(words) != 2 {
-		return app.MountRequest{}, errors.New("need exactly a source and a target")
+	if len(parsed.words) != helperWordCount {
+		return app.MountRequest{}, errNeedSourceAndTarget
 	}
-	cluster, path, err := parseSource(words[0])
+	source, err := parseSource(parsed.words[0])
 	if err != nil {
 		return app.MountRequest{}, err
 	}
 	// The client resolves relative paths against its own directory, which is not the
 	// caller's.
-	target, err := b.abs(words[1])
+	target, err := b.abs(parsed.words[1])
 	if err != nil {
-		return app.MountRequest{}, fmt.Errorf("resolve target %q: %w", words[1], err)
+		return app.MountRequest{}, fmt.Errorf("resolve target %q: %w", parsed.words[1], err)
 	}
-	req := app.MountRequest{Cluster: cluster, Path: path, Target: filepath.Clean(target)}
-	return req, applyOptions(&req, options)
+	req := app.MountRequest{Cluster: source.cluster, Path: source.path, Target: filepath.Clean(target)}
+	err = applyOptions(&req, parsed.options)
+	return req, err
+}
+
+// helperArgs is a helper command line sorted by kind.
+type helperArgs struct {
+	// words are the arguments that are not flags: the source and the target.
+	words []string
+	// options are the values given to -o, each a comma separated list.
+	options []string
 }
 
 // splitHelperArgs separates the source and target from the values of -o. The ignored flags
 // are dropped.
-func splitHelperArgs(args []string) (words, options []string, err error) {
+func splitHelperArgs(args []string) (helperArgs, error) {
+	var parsed helperArgs
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
 		case arg == "-o":
-			if i++; i == len(args) {
-				return nil, nil, errors.New("-o needs a value")
+			i++
+			if i == len(args) {
+				return helperArgs{}, errOptionNeedsValue
 			}
-			options = append(options, args[i])
+			parsed.options = append(parsed.options, args[i])
 		case len(arg) > 1 && arg[0] == '-':
 			if strings.ContainsFunc(arg[1:], notHelperFlag) {
-				return nil, nil, fmt.Errorf("unknown flag %q", arg)
+				return helperArgs{}, fmt.Errorf("%w %q", errUnknownFlag, arg)
 			}
 		default:
-			words = append(words, arg)
+			parsed.words = append(parsed.words, arg)
 		}
 	}
-	return words, options, nil
+	return parsed, nil
 }
 
 func notHelperFlag(r rune) bool { return !strings.ContainsRune(helperFlags, r) }
 
+// mountSource is the "<cluster>:<path>" a helper is asked to mount.
+type mountSource struct {
+	cluster string
+	path    string
+}
+
 // parseSource splits "<cluster>:<path>" at the first colon, so that the path may hold
 // colons. An empty path is the whole cluster.
-func parseSource(source string) (cluster, path string, err error) {
-	cluster, path, found := strings.Cut(source, ":")
+func parseSource(text string) (mountSource, error) {
+	cluster, path, found := strings.Cut(text, ":")
 	if !found || cluster == "" {
-		return "", "", fmt.Errorf("source %q is not CLUSTER:PATH", source)
+		return mountSource{}, fmt.Errorf("source %q %w", text, errSourceFormat)
 	}
 	if path == "" {
 		path = "/"
 	}
-	return cluster, path, nil
+	return mountSource{cluster: cluster, path: path}, nil
 }
 
 // applyOptions sets req from the comma separated lists given to -o. The last of offline
@@ -143,7 +179,7 @@ func applyOptions(req *app.MountRequest, lists []string) error {
 				req.Offline = new(false)
 			case opt == "" || isIgnoredOption(opt):
 			default:
-				return fmt.Errorf("unsupported mount option %q", opt)
+				return fmt.Errorf("%w %q", errUnsupportedOption, opt)
 			}
 		}
 	}
@@ -151,13 +187,5 @@ func applyOptions(req *app.MountRequest, lists []string) error {
 }
 
 func isIgnoredOption(opt string) bool {
-	if ignoredOptions[opt] {
-		return true
-	}
-	for _, prefix := range ignoredPrefixes {
-		if strings.HasPrefix(opt, prefix) {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ignoredOptions(), opt) || hasIgnoredPrefix(opt)
 }

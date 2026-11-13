@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -24,12 +25,24 @@ import (
 // is limited to about 100 bytes, which t.TempDir often exceeds.
 func shortDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "sfs")
+	dir, err := os.MkdirTemp("", "sfs") //nolint:usetesting // t.TempDir paths are too long for a socket
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove %s: %v", dir, err)
+		}
+	})
 	return dir
+}
+
+// say writes text to conn for a fake peer. A failed write closes the connection, which the
+// test sees as the failure of the call under test.
+func say(conn net.Conn, text string) {
+	if _, err := io.WriteString(conn, text); err != nil {
+		closeQuietly(conn)
+	}
 }
 
 func dialUnix(path string) (net.Conn, error) {
@@ -124,6 +137,8 @@ func (f *fakeMounted) abortCalls() []int {
 }
 
 // busyUnlessForced refuses a polite unmount the way a mount in use does.
+//
+//nolint:revive // it is a behavior of fakeMounted, whose type takes the flag
 func busyUnlessForced(force bool) error {
 	if force {
 		return nil
@@ -148,6 +163,7 @@ func newFakeMounter() *fakeMounter {
 	return &fakeMounter{mounted: make(map[string]*fakeMounted), fail: make(map[string]error)}
 }
 
+//nolint:ireturn // it implements the Mounter function type, which returns the interface
 func (m *fakeMounter) Mount(fsys core.FS, opts mount.Options) (mount.Mounted, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -156,15 +172,15 @@ func (m *fakeMounter) Mount(fsys core.FS, opts mount.Options) (mount.Mounted, er
 	if err := m.fail[opts.Target]; err != nil {
 		return nil, err
 	}
-	f := newFakeMounted()
+	mounted := newFakeMounted()
 	if m.configure != nil {
-		m.configure(f)
+		m.configure(mounted)
 	}
-	m.mounted[opts.Target] = f
+	m.mounted[opts.Target] = mounted
 	if m.abortable {
-		return abortableMounted{f}, nil
+		return abortableMounted{mounted}, nil
 	}
-	return f, nil
+	return mounted, nil
 }
 
 func (m *fakeMounter) get(target string) *fakeMounted {
@@ -176,7 +192,7 @@ func (m *fakeMounter) get(target string) *fakeMounted {
 func (m *fakeMounter) targets() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	var out []string
+	out := make([]string, 0, len(m.opts))
 	for _, o := range m.opts {
 		out = append(out, o.Target)
 	}
@@ -186,6 +202,7 @@ func (m *fakeMounter) targets() []string {
 // namedFS lets a test tell the filesystems of different mounts apart.
 type namedFS struct {
 	core.FS
+
 	name string
 }
 
@@ -225,14 +242,15 @@ func (f *fakeCore) Connect(ctx context.Context, cluster string) error {
 	return err
 }
 
-func (f *fakeCore) View(m config.Mount) (core.FS, error) {
+//nolint:ireturn // it implements the View method of the Core interface
+func (f *fakeCore) View(mountCfg config.Mount) (core.FS, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.viewedMount = append(f.viewedMount, m)
+	f.viewedMount = append(f.viewedMount, mountCfg)
 	if f.viewErr != nil {
 		return nil, f.viewErr
 	}
-	return namedFS{name: m.Target}, nil
+	return namedFS{name: mountCfg.Target}, nil
 }
 
 func (f *fakeCore) Status() core.Status { return f.status }
@@ -256,14 +274,12 @@ func (f *fakeCore) Release(fsys core.FS) {
 func (f *fakeCore) Current(fsys core.FS) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	named, _ := fsys.(namedFS)
+	named, ok := fsys.(namedFS)
+	if !ok {
+		// Only a view the fake made can be stale.
+		return true
+	}
 	return !f.stale[named.name]
-}
-
-func (f *fakeCore) releasedCount() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.released)
 }
 
 func (f *fakeCore) Close() error {
@@ -271,6 +287,12 @@ func (f *fakeCore) Close() error {
 	defer f.mu.Unlock()
 	f.closed++
 	return f.closeErr
+}
+
+func (f *fakeCore) releasedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.released)
 }
 
 func (f *fakeCore) connectedClusters() []string {
@@ -371,7 +393,7 @@ func testConfig() *config.Config {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	h := &harness{
+	env := &harness{
 		t:       t,
 		cfg:     testConfig(),
 		core:    newFakeCore(),
@@ -380,47 +402,47 @@ func newHarness(t *testing.T) *harness {
 		log:     &logBuffer{},
 		socket:  filepath.Join(shortDir(t), "c.sock"),
 	}
-	h.opts = Options{
-		Logger:     h.log.logger(),
-		Mounter:    h.mounter.Mount,
-		Notify:     h.notes.notify,
-		SocketPath: h.socket,
-		NewCore:    func(*config.Config, core.Options) (Core, error) { return h.core, nil },
+	env.opts = Options{
+		Logger:     env.log.logger(),
+		Mounter:    env.mounter.Mount,
+		Notify:     env.notes.notify,
+		SocketPath: env.socket,
+		NewCore:    func(*config.Config, core.Options) (Core, error) { return env.core, nil },
 		limits:     stopLimits{graceful: time.Minute, force: time.Minute},
 	}
-	return h
+	return env
 }
 
 // running is a Run in progress.
 type running struct {
-	h      *harness
+	env    *harness
 	cancel context.CancelFunc
 	result chan error
 }
 
 // start runs the client in the background and returns once it has reported ready.
-func (h *harness) start(targets ...string) *running {
-	h.t.Helper()
-	r := h.startUnready(targets...)
+func (env *harness) start(targets ...string) *running {
+	env.t.Helper()
+	r := env.startUnready(targets...)
 	select {
-	case <-h.notes.ready:
+	case <-env.notes.ready:
 	case err := <-r.result:
-		h.t.Fatalf("Run ended before it was ready: %v", err)
+		env.t.Fatalf("Run ended before it was ready: %v", err)
 	}
 	return r
 }
 
 // startUnready runs the client in the background without waiting for it.
-func (h *harness) startUnready(targets ...string) *running {
+func (env *harness) startUnready(targets ...string) *running {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &running{h: h, cancel: cancel, result: make(chan error, 1)}
-	h.t.Cleanup(func() {
+	r := &running{env: env, cancel: cancel, result: make(chan error, 1)}
+	env.t.Cleanup(func() {
 		cancel()
 		if err := r.wait(); err != nil {
-			h.t.Logf("Run ended with %v", err)
+			env.t.Logf("Run ended with %v", err)
 		}
 	})
-	go func() { r.result <- Run(ctx, h.cfg, targets, h.opts) }()
+	go func() { r.result <- Run(ctx, env.cfg, targets, env.opts) }()
 	return r
 }
 
@@ -438,18 +460,18 @@ func (r *running) wait() error {
 }
 
 // status asks the running client for its report over the socket.
-func (h *harness) status() Report {
-	h.t.Helper()
-	report, err := Status(context.Background(), h.socket)
+func (env *harness) status() Report {
+	env.t.Helper()
+	report, err := Status(context.Background(), env.socket)
 	if err != nil {
-		h.t.Fatal(err)
+		env.t.Fatal(err)
 	}
 	return report
 }
 
 // runSync runs the client to its end.
-func (h *harness) runSync(targets ...string) error {
-	return Run(context.Background(), h.cfg, targets, h.opts)
+func (env *harness) runSync(targets ...string) error {
+	return Run(context.Background(), env.cfg, targets, env.opts)
 }
 
 func errIs(t *testing.T, err, target error) {

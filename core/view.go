@@ -26,51 +26,52 @@ type view struct {
 
 // Stat describes the file or directory at name.
 func (v *view) Stat(ctx context.Context, name string) (Attr, error) {
-	e, err := v.stat(ctx, "stat", name)
+	treeEntry, err := v.lookup(ctx, "stat", name)
 	if err != nil {
 		return Attr{}, err
 	}
-	return v.attr(name, e), nil
+	return v.attr(name, treeEntry), nil
 }
 
 // ReadDir lists the directory at name, sorted by name, without the names desktop
 // systems probe for.
 func (v *view) ReadDir(ctx context.Context, name string) ([]Attr, error) {
-	const op = "read directory"
+	const operation = "read directory"
 	if refused(name) {
-		return nil, notExist(op, name)
+		return nil, notExist(operation, name)
 	}
 	entries, err := v.c.tree.List(ctx, v.full(name))
 	if err != nil {
-		return nil, v.fail(ctx, op, name, err)
+		return nil, fail(ctx, operation, name, err)
 	}
 	attrs := make([]Attr, 0, len(entries))
-	for _, e := range entries {
-		if !refusedSegment(e.Name) {
-			attrs = append(attrs, v.attr(join(name, e.Name), e))
+	for _, treeEntry := range entries {
+		if !refusedSegment(treeEntry.Name) {
+			attrs = append(attrs, v.attr(join(name, treeEntry.Name), treeEntry))
 		}
 	}
 	return attrs, nil
 }
 
-func (v *view) stat(ctx context.Context, op, name string) (tree.Entry, error) {
+// lookup is the tree's entry for name, with the errors of FS.
+func (v *view) lookup(ctx context.Context, operation, name string) (tree.Entry, error) {
 	if refused(name) {
-		return tree.Entry{}, notExist(op, name)
+		return tree.Entry{}, notExist(operation, name)
 	}
-	e, err := v.c.tree.Stat(ctx, v.full(name))
+	treeEntry, err := v.c.tree.Stat(ctx, v.full(name))
 	if err != nil {
-		return tree.Entry{}, v.fail(ctx, op, name, err)
+		return tree.Entry{}, fail(ctx, operation, name, err)
 	}
-	return e, nil
+	return treeEntry, nil
 }
 
-func (v *view) attr(name string, e tree.Entry) Attr {
+func (v *view) attr(name string, treeEntry tree.Entry) Attr {
 	return Attr{
 		Name:  name[strings.LastIndexByte(name, '/')+1:],
-		Dir:   e.Dir,
-		Size:  e.Size,
-		MTime: e.MTime,
-		Inode: inode(v.c.name, v.full(name), kindOf(e)),
+		Dir:   treeEntry.Dir,
+		Size:  treeEntry.Size,
+		MTime: treeEntry.MTime,
+		Inode: inode(v.c.name, v.full(name), kindOf(treeEntry)),
 	}
 }
 
@@ -95,20 +96,20 @@ func join(dir, name string) string {
 // fail translates an error of the tree or the session into the errors of FS. The
 // caller's own context ending is passed through as it is, so that an interrupted
 // call is not mistaken for an outage.
-func (v *view) fail(ctx context.Context, op, name string, err error) error {
+func fail(ctx context.Context, operation, name string, err error) error {
 	switch {
 	case errors.Is(err, tree.ErrNotFound):
-		return notExist(op, name)
+		return notExist(operation, name)
 	case errors.Is(err, tree.ErrNotDir):
-		return fmt.Errorf("%s %q: %w", op, name, ErrNotDir)
+		return fmt.Errorf("%s %q: %w", operation, name, ErrNotDir)
 	case ctx.Err() != nil && errors.Is(err, ctx.Err()):
 		return err
 	}
-	return fmt.Errorf("%s %q: %w: %w", op, name, ErrUnavailable, err)
+	return fmt.Errorf("%s %q: %w: %w", operation, name, ErrUnavailable, err)
 }
 
-func notExist(op, name string) error {
-	return fmt.Errorf("%s %q: %w", op, name, ErrNotExist)
+func notExist(operation, name string) error {
+	return fmt.Errorf("%s %q: %w", operation, name, ErrNotExist)
 }
 
 // refused reports whether any segment of name is one that desktop systems probe for.
@@ -147,8 +148,8 @@ const (
 	kindDir  kind = 'd'
 )
 
-func kindOf(e tree.Entry) kind {
-	if e.Dir {
+func kindOf(treeEntry tree.Entry) kind {
+	if treeEntry.Dir {
 		return kindDir
 	}
 	return kindFile
@@ -158,20 +159,23 @@ func kindOf(e tree.Entry) kind {
 // cluster name, the path and its kind, so it is the same in every view and after a
 // restart. The kind is part of it because a mount layer keeps one kernel inode per
 // number: a name that turns from a file into a directory must not reuse the number.
-func inode(clusterName, path string, k kind) uint64 {
-	h := fnv.New64a()
+func inode(clusterName, path string, entryKind kind) uint64 {
+	hasher := fnv.New64a()
 	// Writes to a hash never fail.
-	_, _ = h.Write([]byte(clusterName))
-	_, _ = h.Write([]byte{0})
-	_, _ = h.Write([]byte(path))
-	_, _ = h.Write([]byte{0, byte(k)})
-	return remapReserved(h.Sum64())
+	_, _ = hasher.Write([]byte(clusterName))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(path))
+	_, _ = hasher.Write([]byte{0, byte(entryKind)})
+	return remapReserved(hasher.Sum64())
 }
+
+// inodeRemapOffset moves a reserved number to the first number after the reserved ones.
+const inodeRemapOffset = 2
 
 func remapReserved(ino uint64) uint64 {
 	switch ino {
 	case inodeNone, inodeRoot:
-		return ino + 2
+		return ino + inodeRemapOffset
 	}
 	return ino
 }

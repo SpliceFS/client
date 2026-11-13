@@ -19,7 +19,7 @@ func NotifyFunc(socketPath string) func(state string) error {
 		if err != nil {
 			return fmt.Errorf("connect to the service manager: %w", err)
 		}
-		defer func() { _ = conn.Close() }()
+		defer closeQuietly(conn)
 		if _, err := conn.Write([]byte(state)); err != nil {
 			return fmt.Errorf("notify the service manager: %w", err)
 		}

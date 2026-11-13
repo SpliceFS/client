@@ -88,17 +88,17 @@ func newFakeSystem() *fakeSystem {
 func (f *fakeSystem) environment() environment {
 	return environment{
 		run: func(_ context.Context, name string, args ...string) ([]byte, error) {
-			c := command{name: name, args: slices.Clone(args)}
+			cmd := command{name: name, args: slices.Clone(args)}
 			f.mu.Lock()
-			f.commands = append(f.commands, c)
+			f.commands = append(f.commands, cmd)
 			handle := f.handle
 			f.mu.Unlock()
 			if handle == nil {
 				return nil, nil
 			}
-			return handle(c)
+			return handle(cmd)
 		},
-		owner:  testOwner,
+		owner:  testOwner(),
 		listen: listenLoopback,
 		isMounted: func(string, string) (bool, error) {
 			f.mu.Lock()
@@ -127,9 +127,9 @@ func (f *fakeSystem) commandsNamed(name string) []command {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var out []command
-	for _, c := range f.commands {
-		if c.name == name {
-			out = append(out, c)
+	for _, cmd := range f.commands {
+		if cmd.name == name {
+			out = append(out, cmd)
 		}
 	}
 	return out
@@ -153,42 +153,73 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
-// startMount mounts a fake tree on a temporary directory with the fake system and
-// returns the live mount and the resolved target.
-func startMount(t *testing.T, sys *fakeSystem, opts mount.Options) (*mounted, string) {
+// asMounted is the mount of this package behind the interface that mountWith returns.
+func asMounted(t *testing.T, mnt mount.Mounted) *mounted {
 	t.Helper()
-	dir := t.TempDir()
-	opts.Target = dir
-	m, err := mountWith(newFakeFS().addFile("a.txt", []byte("hello")), opts, sys.environment())
+	live, ok := mnt.(*mounted)
+	if !ok {
+		t.Fatalf("mountWith returned a %T, want *mounted", mnt)
+	}
+	return live
+}
+
+// breakServer closes the listening socket under the server of a mount, which makes the
+// server fail the way a broken socket would.
+func breakServer(t *testing.T, live *mounted) {
+	t.Helper()
+	if err := live.srv.guard.Listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// startMount mounts a fake tree on a temporary directory with the fake system. The
+// target of the returned mount is the resolved path of that directory.
+func startMount(t *testing.T, sys *fakeSystem, opts mount.Options) *mounted {
+	t.Helper()
+	opts.Target = t.TempDir()
+	mnt, err := mountWith(newFakeFS().addFile("a.txt", []byte("hello")), opts, sys.environment())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { m.(*mounted).srv.Close() })
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatal(err)
+	live := asMounted(t, mnt)
+	t.Cleanup(func() { live.srv.Close() })
+	return live
+}
+
+// wantOpen fails the test when done is already closed.
+func wantOpen(t *testing.T, done <-chan struct{}, why string) {
+	t.Helper()
+	select {
+	case <-done:
+		t.Fatal(why)
+	default:
 	}
-	return m.(*mounted), resolved
+}
+
+// wantDone fails the test when done is not closed yet.
+func wantDone(t *testing.T, done <-chan struct{}, why string) {
+	t.Helper()
+	select {
+	case <-done:
+	default:
+		t.Fatal(why)
+	}
 }
 
 func TestMountRunsMountNFS(t *testing.T) {
 	t.Parallel()
 	sys := newFakeSystem()
-	m, target := startMount(t, sys, mount.Options{Source: "splicefs:example/media"})
+	live := startMount(t, sys, mount.Options{Source: "splicefs:example/media"})
 
 	calls := sys.commandsNamed("/sbin/mount_nfs")
 	if len(calls) != 1 {
 		t.Fatalf("mount_nfs ran %d times", len(calls))
 	}
-	want := mountArgs(m.srv.Port(), "127.0.0.1:/splicefs:example/media", target)
+	want := mountArgs(live.srv.Port(), "127.0.0.1:/splicefs:example/media", live.target)
 	if !slices.Equal(calls[0].args, want) {
 		t.Errorf("mount_nfs arguments = %q\nwant %q", calls[0].args, want)
 	}
-	select {
-	case <-m.Done():
-		t.Error("Done is closed on a live mount")
-	default:
-	}
+	wantOpen(t, live.Done(), "Done is closed on a live mount")
 	if sys.tickers != 1 {
 		t.Errorf("%d tickers started, want the one that watches the mount table", sys.tickers)
 	}
@@ -199,8 +230,8 @@ func TestMountRunsMountNFS(t *testing.T) {
 // the root, and fails if any of that fails.
 func asMountNFS(t *testing.T, sys *fakeSystem) {
 	t.Helper()
-	sys.handle = func(c command) ([]byte, error) {
-		_, rest, ok := strings.Cut(c.args[1], "port=")
+	sys.handle = func(cmd command) ([]byte, error) {
+		_, rest, ok := strings.Cut(cmd.args[1], "port=")
 		port, _, _ := strings.Cut(rest, ",")
 		if !ok {
 			return nil, errors.New("no port in the options")
@@ -227,120 +258,152 @@ func TestMountSucceedsWhileTheCoreCannotAnswerForTheRoot(t *testing.T) {
 	asMountNFS(t, sys)
 	fsys := newFakeFS().addFile("a.txt", []byte("hello"))
 	failRoot(fsys, core.ErrUnavailable)
-	m, err := mountWith(fsys, mount.Options{Target: t.TempDir()}, sys.environment())
+	mnt, err := mountWith(fsys, mount.Options{Target: t.TempDir()}, sys.environment())
 	if err != nil {
 		t.Fatalf("mount = %v, want a mount that waits for the cluster", err)
 	}
-	t.Cleanup(func() { m.(*mounted).srv.Close() })
+	live := asMounted(t, mnt)
+	t.Cleanup(func() { live.srv.Close() })
 	if len(sys.commandsNamed("/sbin/mount_nfs")) != 1 {
 		t.Errorf("mount_nfs did not run once: %v", sys.commands)
 	}
 }
 
-func TestMountFailures(t *testing.T) {
+func TestMountFailsWithWhatMountNFSPrinted(t *testing.T) {
 	t.Parallel()
-	t.Run("mount_nfs fails", func(t *testing.T) {
-		t.Parallel()
-		sys := newFakeSystem()
-		sys.handle = func(command) ([]byte, error) {
-			return []byte("mount_nfs: can't mount: Operation not permitted\n"), errors.New("exit status 1")
-		}
-		log, _, _ := capturedLog()
-		env := sys.environment()
-		var listener net.Listener
-		env.listen = func(ctx context.Context) (net.Listener, error) {
-			var err error
-			listener, err = listenLoopback(ctx)
-			return listener, err
-		}
-		_, err := mountWith(newFakeFS(), mount.Options{Target: t.TempDir(), Logger: log}, env)
-		if err == nil || !strings.Contains(err.Error(), "Operation not permitted") ||
-			!strings.Contains(err.Error(), "exit status 1") {
-			t.Fatalf("error = %v, want the exit status and what mount_nfs printed", err)
-		}
-		// The server that was started for the mount is gone.
-		wantClosed(t, listener)
-	})
-	t.Run("mount_nfs fails silently", func(t *testing.T) {
-		t.Parallel()
-		sys := newFakeSystem()
-		sys.handle = func(command) ([]byte, error) { return nil, errors.New("exit status 1") }
-		if _, err := mountWith(newFakeFS(), mount.Options{Target: t.TempDir()}, sys.environment()); err == nil ||
-			strings.HasSuffix(err.Error(), ": ") {
-			t.Errorf("error = %v", err)
-		}
-	})
-	t.Run("cannot listen", func(t *testing.T) {
-		t.Parallel()
-		sys := newFakeSystem()
-		env := sys.environment()
-		env.listen = func(context.Context) (net.Listener, error) { return nil, errors.New("no sockets") }
-		if _, err := mountWith(newFakeFS(), mount.Options{Target: t.TempDir()}, env); err == nil {
-			t.Error("no error")
-		}
-		if len(sys.commands) != 0 {
-			t.Errorf("commands ran: %v", sys.commands)
-		}
-	})
-	t.Run("listener that cannot be used", func(t *testing.T) {
-		t.Parallel()
-		sys := newFakeSystem()
-		env := sys.environment()
-		env.listen = func(context.Context) (net.Listener, error) { return newScriptedListener("a pipe"), nil }
-		if _, err := mountWith(newFakeFS(), mount.Options{Target: t.TempDir()}, env); err == nil {
-			t.Error("no error")
-		}
-		if len(sys.commands) != 0 {
-			t.Errorf("commands ran: %v", sys.commands)
-		}
-	})
-	t.Run("target does not exist", func(t *testing.T) {
-		t.Parallel()
-		sys := newFakeSystem()
-		_, err := mountWith(newFakeFS(), mount.Options{Target: filepath.Join(t.TempDir(), "missing")}, sys.environment())
-		if err == nil {
-			t.Fatal("no error")
-		}
-		if len(sys.commands) != 0 {
-			t.Errorf("commands ran: %v", sys.commands)
-		}
-	})
+	sys := newFakeSystem()
+	sys.handle = func(command) ([]byte, error) {
+		return []byte("mount_nfs: can't mount: Operation not permitted\n"), errors.New("exit status 1")
+	}
+	log, _, _ := capturedLog()
+	env := sys.environment()
+	var listener net.Listener
+	env.listen = func(ctx context.Context) (net.Listener, error) {
+		var err error
+		listener, err = listenLoopback(ctx)
+		return listener, err
+	}
+	_, err := mountWith(newFakeFS(), mount.Options{Target: t.TempDir(), Logger: log}, env)
+	if err == nil || !strings.Contains(err.Error(), "Operation not permitted") ||
+		!strings.Contains(err.Error(), "exit status 1") {
+		t.Fatalf("error = %v, want the exit status and what mount_nfs printed", err)
+	}
+	// The server that was started for the mount is gone.
+	wantClosed(t, listener)
 }
 
-func TestUnmount(t *testing.T) {
+func TestMountFailsWhenMountNFSPrintedNothing(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name  string
-		force bool
-		args  func(target string) []string
-	}{
+	sys := newFakeSystem()
+	sys.handle = func(command) ([]byte, error) { return nil, errors.New("exit status 1") }
+	if _, err := mountWith(newFakeFS(), mount.Options{Target: t.TempDir()}, sys.environment()); err == nil ||
+		strings.HasSuffix(err.Error(), ": ") {
+		t.Errorf("error = %v", err)
+	}
+}
+
+func TestMountFailsWithoutRunningMountNFSWhenItCannotListen(t *testing.T) {
+	t.Parallel()
+	sys := newFakeSystem()
+	env := sys.environment()
+	env.listen = func(context.Context) (net.Listener, error) { return nil, errors.New("no sockets") }
+	if _, err := mountWith(newFakeFS(), mount.Options{Target: t.TempDir()}, env); err == nil {
+		t.Error("no error")
+	}
+	if len(sys.commands) != 0 {
+		t.Errorf("commands ran: %v", sys.commands)
+	}
+}
+
+func TestMountFailsWithoutRunningMountNFSOnAListenerThatCannotBeUsed(t *testing.T) {
+	t.Parallel()
+	sys := newFakeSystem()
+	env := sys.environment()
+	env.listen = func(context.Context) (net.Listener, error) { return newScriptedListener("a pipe"), nil }
+	if _, err := mountWith(newFakeFS(), mount.Options{Target: t.TempDir()}, env); err == nil {
+		t.Error("no error")
+	}
+	if len(sys.commands) != 0 {
+		t.Errorf("commands ran: %v", sys.commands)
+	}
+}
+
+func TestMountFailsWithoutRunningMountNFSWhenTheTargetDoesNotExist(t *testing.T) {
+	t.Parallel()
+	sys := newFakeSystem()
+	_, err := mountWith(newFakeFS(), mount.Options{Target: filepath.Join(t.TempDir(), "missing")}, sys.environment())
+	if err == nil {
+		t.Fatal("no error")
+	}
+	if len(sys.commands) != 0 {
+		t.Errorf("commands ran: %v", sys.commands)
+	}
+}
+
+// unmountCase is one way of calling Unmount and the umount arguments it must produce.
+type unmountCase struct {
+	name  string
+	force bool
+	args  func(target string) []string
+}
+
+func unmountCases() []unmountCase {
+	return []unmountCase{
 		{"without force", false, func(target string) []string { return []string{target} }},
 		{"with force", true, func(target string) []string { return []string{"-f", target} }},
 	}
-	for _, tt := range tests {
+}
+
+func TestUnmountRunsUmount(t *testing.T) {
+	t.Parallel()
+	for _, tt := range unmountCases() {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			sys := newFakeSystem()
-			m, target := startMount(t, sys, mount.Options{})
+			live := startMount(t, sys, mount.Options{})
 
-			if err := m.Unmount(t.Context(), tt.force); err != nil {
+			if err := live.Unmount(t.Context(), tt.force); err != nil {
 				t.Fatal(err)
 			}
 			calls := sys.commandsNamed("/sbin/umount")
-			if len(calls) != 1 || !slices.Equal(calls[0].args, tt.args(target)) {
-				t.Errorf("umount calls = %v, want one with %q", calls, tt.args(target))
+			if len(calls) != 1 || !slices.Equal(calls[0].args, tt.args(live.target)) {
+				t.Errorf("umount calls = %v, want one with %q", calls, tt.args(live.target))
 			}
-			select {
-			case <-m.Done():
-			default:
-				t.Fatal("Done is not closed when Unmount returns")
-			}
-			if m.Err() != nil {
-				t.Errorf("Err() = %v after a clean unmount", m.Err())
-			}
-			wantClosed(t, m.srv.guard.Listener)
+		})
+	}
+}
 
-			if err := m.Unmount(t.Context(), tt.force); err != nil { // already gone
+func TestUnmountEndsTheMountAndStopsTheServer(t *testing.T) {
+	t.Parallel()
+	for _, tt := range unmountCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			live := startMount(t, newFakeSystem(), mount.Options{})
+
+			if err := live.Unmount(t.Context(), tt.force); err != nil {
+				t.Fatal(err)
+			}
+			wantDone(t, live.Done(), "Done is not closed when Unmount returns")
+			if live.Err() != nil {
+				t.Errorf("Err() = %v after a clean unmount", live.Err())
+			}
+			wantClosed(t, live.srv.guard.Listener)
+		})
+	}
+}
+
+func TestUnmountOfAMountThatIsGoneRunsUmountOnce(t *testing.T) {
+	t.Parallel()
+	for _, tt := range unmountCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sys := newFakeSystem()
+			live := startMount(t, sys, mount.Options{})
+			if err := live.Unmount(t.Context(), tt.force); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := live.Unmount(t.Context(), tt.force); err != nil { // already gone
 				t.Errorf("second Unmount = %v", err)
 			}
 			if n := len(sys.commandsNamed("/sbin/umount")); n != 1 {
@@ -354,47 +417,39 @@ func TestUnmountOfAMountInUseIsRefusedAndCanBeRepeated(t *testing.T) {
 	t.Parallel()
 	sys := newFakeSystem()
 	busy := true
-	sys.handle = func(c command) ([]byte, error) {
-		if c.name == "/sbin/umount" && busy {
-			return []byte("umount: " + c.args[0] + ": Resource busy\n"), errors.New("exit status 1")
+	sys.handle = func(cmd command) ([]byte, error) {
+		if cmd.name == "/sbin/umount" && busy {
+			return []byte("umount: " + cmd.args[0] + ": Resource busy\n"), errors.New("exit status 1")
 		}
 		return nil, nil
 	}
-	m, _ := startMount(t, sys, mount.Options{})
+	live := startMount(t, sys, mount.Options{})
 
-	err := m.Unmount(t.Context(), false)
+	err := live.Unmount(t.Context(), false)
 	if err == nil || !strings.Contains(err.Error(), "Resource busy") || !errors.Is(err, syscall.EBUSY) {
 		t.Fatalf("Unmount of a busy mount = %v, want an error that is EBUSY", err)
 	}
-	select {
-	case <-m.Done():
-		t.Fatal("the mount ended although umount refused")
-	default:
-	}
-	select {
-	case <-m.srv.Done():
-		t.Fatal("the server stopped although the mount is still there")
-	default:
-	}
+	wantOpen(t, live.Done(), "the mount ended although umount refused")
+	wantOpen(t, live.srv.Done(), "the server stopped although the mount is still there")
 
 	busy = false
-	if err := m.Unmount(t.Context(), true); err != nil {
+	if err := live.Unmount(t.Context(), true); err != nil {
 		t.Fatal(err)
 	}
-	<-m.Done()
+	<-live.Done()
 }
 
 func TestUnmountFailureThatIsNotBusyIsNotEBUSY(t *testing.T) {
 	t.Parallel()
 	sys := newFakeSystem()
-	sys.handle = func(c command) ([]byte, error) {
-		if c.name != "/sbin/umount" {
+	sys.handle = func(cmd command) ([]byte, error) {
+		if cmd.name != "/sbin/umount" {
 			return nil, nil
 		}
 		return []byte("umount: Operation not permitted\n"), errors.New("exit status 1")
 	}
-	m, _ := startMount(t, sys, mount.Options{})
-	err := m.Unmount(t.Context(), false)
+	live := startMount(t, sys, mount.Options{})
+	err := live.Unmount(t.Context(), false)
 	if err == nil || errors.Is(err, syscall.EBUSY) || !strings.Contains(err.Error(), "Operation not permitted") {
 		t.Errorf("Unmount = %v, want the failure without EBUSY", err)
 	}
@@ -404,14 +459,14 @@ func TestUnmountNoticesThatTheMountWentAwayMeanwhile(t *testing.T) {
 	t.Parallel()
 	sys := newFakeSystem()
 	sys.presence = []presence{{mounted: true}, {mounted: false}}
-	m, _ := startMount(t, sys, mount.Options{})
+	live := startMount(t, sys, mount.Options{})
 	sys.handle = func(command) ([]byte, error) {
 		// Someone else unmounts first: the poll sees it while umount is failing.
 		sys.ticks <- time.Time{}
-		<-m.Done()
+		<-live.Done()
 		return nil, errors.New("exit status 1")
 	}
-	if err := m.Unmount(t.Context(), false); err != nil {
+	if err := live.Unmount(t.Context(), false); err != nil {
 		t.Errorf("Unmount = %v, want nil: the mount is gone", err)
 	}
 }
@@ -420,17 +475,17 @@ func TestUnmountGivesUpWaitingWhenItsContextEnds(t *testing.T) {
 	t.Parallel()
 	sys := newFakeSystem()
 	sys.release = make(chan struct{})
-	m, _ := startMount(t, sys, mount.Options{})
+	live := startMount(t, sys, mount.Options{})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
 	// umount succeeds, but the supervisor is held back before it closes Done.
-	err := m.Unmount(ctx, false)
+	err := live.Unmount(ctx, false)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Unmount = %v, want the context error", err)
 	}
 	close(sys.release)
-	<-m.Done()
+	<-live.Done()
 }
 
 func TestMountEndsWhenItDisappears(t *testing.T) {
@@ -443,19 +498,19 @@ func TestMountEndsWhenItDisappears(t *testing.T) {
 		{mounted: false}, // unmounted from outside
 	}
 	log, buf, mu := capturedLog()
-	m, _ := startMount(t, sys, mount.Options{Logger: log})
+	live := startMount(t, sys, mount.Options{Logger: log})
 
 	for range 3 {
 		sys.ticks <- time.Time{}
 	}
-	<-m.Done()
-	if m.Err() != nil {
-		t.Errorf("Err() = %v after an unmount from outside", m.Err())
+	<-live.Done()
+	if live.Err() != nil {
+		t.Errorf("Err() = %v after an unmount from outside", live.Err())
 	}
 	if n := len(sys.commandsNamed("/sbin/umount")); n != 0 {
 		t.Errorf("umount ran %d times for a mount that was already gone", n)
 	}
-	wantClosed(t, m.srv.guard.Listener)
+	wantClosed(t, live.srv.guard.Listener)
 	mu.Lock()
 	defer mu.Unlock()
 	if !strings.Contains(buf.String(), "table gone") {
@@ -474,7 +529,7 @@ func TestMountThatIsNotInTheTableIsNotPolled(t *testing.T) {
 			sys := newFakeSystem()
 			sys.presence = []presence{first}
 			log, buf, mu := capturedLog()
-			m, _ := startMount(t, sys, mount.Options{Logger: log})
+			live := startMount(t, sys, mount.Options{Logger: log})
 			if sys.tickers != 0 {
 				t.Error("polling started for a mount that could not be found")
 			}
@@ -484,42 +539,66 @@ func TestMountThatIsNotInTheTableIsNotPolled(t *testing.T) {
 			if !strings.Contains(logged, "mount not found in the mount table") {
 				t.Errorf("no warning: %s", logged)
 			}
-			if err := m.Unmount(t.Context(), false); err != nil {
+			if err := live.Unmount(t.Context(), false); err != nil {
 				t.Fatal(err)
 			}
 		})
 	}
 }
 
+// systemWhereUmountAnswers is a fake system whose umount fails with umountErr, or
+// works when umountErr is nil.
+func systemWhereUmountAnswers(umountErr error) *fakeSystem {
+	sys := newFakeSystem()
+	sys.handle = func(cmd command) ([]byte, error) {
+		if cmd.name == "/sbin/umount" && umountErr != nil {
+			return []byte("umount: not mounted\n"), umountErr
+		}
+		return nil, nil
+	}
+	return sys
+}
+
+// wantOneForcedUnmount fails the test unless the system ran exactly one forced umount of
+// the target of the mount.
+func wantOneForcedUnmount(t *testing.T, sys *fakeSystem, live *mounted) {
+	t.Helper()
+	calls := sys.commandsNamed("/sbin/umount")
+	if len(calls) != 1 || !slices.Equal(calls[0].args, []string{"-f", live.target}) {
+		t.Errorf("umount calls = %v, want one forced unmount of the dead mount", calls)
+	}
+}
+
 func TestMountEndsWhenTheServerFails(t *testing.T) {
 	t.Parallel()
-	for name, umountErr := range map[string]error{"umount works": nil, "umount fails": errors.New("exit status 1")} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			sys := newFakeSystem()
-			sys.handle = func(c command) ([]byte, error) {
-				if c.name == "/sbin/umount" && umountErr != nil {
-					return []byte("umount: not mounted\n"), umountErr
-				}
-				return nil, nil
-			}
-			m, target := startMount(t, sys, mount.Options{})
+	sys := systemWhereUmountAnswers(nil)
+	live := startMount(t, sys, mount.Options{})
 
-			_ = m.srv.guard.Listener.Close() // the listening socket breaks under the server
-			<-m.Done()
+	breakServer(t, live)
+	<-live.Done()
 
-			if err := m.Err(); err == nil || !strings.Contains(err.Error(), "serve nfs") {
-				t.Fatalf("Err() = %v, want the server failure", err)
-			}
-			if umountErr != nil && !strings.Contains(m.Err().Error(), "not mounted") {
-				t.Errorf("Err() = %v, want the umount failure as well", m.Err())
-			}
-			calls := sys.commandsNamed("/sbin/umount")
-			if len(calls) != 1 || !slices.Equal(calls[0].args, []string{"-f", target}) {
-				t.Errorf("umount calls = %v, want one forced unmount of the dead mount", calls)
-			}
-		})
+	if err := live.Err(); err == nil || !strings.Contains(err.Error(), "serve nfs") {
+		t.Fatalf("Err() = %v, want the server failure", err)
 	}
+	wantOneForcedUnmount(t, sys, live)
+}
+
+func TestMountEndsWithBothFailuresWhenTheServerFailsAndUmountFails(t *testing.T) {
+	t.Parallel()
+	sys := systemWhereUmountAnswers(errors.New("exit status 1"))
+	live := startMount(t, sys, mount.Options{})
+
+	breakServer(t, live)
+	<-live.Done()
+
+	err := live.Err()
+	if err == nil || !strings.Contains(err.Error(), "serve nfs") {
+		t.Fatalf("Err() = %v, want the server failure", err)
+	}
+	if !strings.Contains(err.Error(), "not mounted") {
+		t.Errorf("Err() = %v, want the umount failure as well", err)
+	}
+	wantOneForcedUnmount(t, sys, live)
 }
 
 func statfs(fstype, on, from string) syscall.Statfs_t {
@@ -532,7 +611,7 @@ func statfs(fstype, on, from string) syscall.Statfs_t {
 
 func setCString(dst []int8, s string) {
 	for i := range len(s) {
-		dst[i] = int8(s[i]) //nolint:gosec // a byte is reinterpreted as a C char
+		dst[i] = int8(s[i])
 	}
 }
 
@@ -559,8 +638,8 @@ func TestMountTableHas(t *testing.T) {
 	if got, err := mountTableHas(getfsstat(table), target, from); err != nil || got {
 		t.Errorf("without our mount: %v, %v", got, err)
 	}
-	table = append(table, statfs("nfs", target, from))
-	if got, err := mountTableHas(getfsstat(table), target, from); err != nil || !got {
+	withOurs := slices.Concat(table, []syscall.Statfs_t{statfs("nfs", target, from)})
+	if got, err := mountTableHas(getfsstat(withOurs), target, from); err != nil || !got {
 		t.Errorf("with our mount: %v, %v", got, err)
 	}
 }
@@ -571,7 +650,8 @@ func TestMountTableHasReportsSystemErrors(t *testing.T) {
 	first := func([]syscall.Statfs_t, int) (int, error) { return 0, boom }
 	calls := 0
 	second := func(_ []syscall.Statfs_t, _ int) (int, error) {
-		if calls++; calls == 1 {
+		calls++
+		if calls == 1 {
 			return 2, nil
 		}
 		return 0, boom

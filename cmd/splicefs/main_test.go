@@ -18,6 +18,7 @@ import (
 	"github.com/SpliceFS/client/internal/version"
 )
 
+//nolint:paralleltest // it replaces the exit variable and os.Args, which every other test could read
 func TestMainRunsTheProgram(t *testing.T) {
 	oldExit, oldArgs := exit, os.Args
 	t.Cleanup(func() { exit, os.Args = oldExit, oldArgs })
@@ -51,41 +52,42 @@ type calls struct {
 // fakeBackend returns a backend that records its calls in the returned value and
 // answers with the given errors.
 func fakeBackend(cfg *config.Config, loadErr, runErr, umountErr, statusErr error, report app.Report) (backend, *calls) {
-	c := &calls{}
+	recorded := &calls{}
 	return backend{
 		loadConfig: func(dir string) (*config.Config, error) {
-			c.loadDir = dir
+			recorded.loadDir = dir
 			return cfg, loadErr
 		},
 		defaultConfigDir: func() (string, error) { return defaultDir, nil },
-		run: func(_ context.Context, cfg *config.Config, targets []string, opts app.Options) error {
-			c.runCfg, c.runTargets, c.runOpts = cfg, targets, opts
-			opts.Logger.Debug("debug-line")
-			opts.Logger.Info("info-line")
+		run: func(ctx context.Context, cfg *config.Config, targets []string, opts app.Options) error {
+			recorded.runCfg, recorded.runTargets, recorded.runOpts = cfg, targets, opts
+			opts.Logger.DebugContext(ctx, "debug-line")
+			opts.Logger.InfoContext(ctx, "info-line")
 			return runErr
 		},
 		unmount: func(_ context.Context, socketPath string, targets []string, force bool) error {
-			c.socketPath, c.umountArgs, c.umountForce = socketPath, targets, force
+			recorded.socketPath, recorded.umountArgs, recorded.umountForce = socketPath, targets, force
 			return umountErr
 		},
 		status: func(_ context.Context, socketPath string) (app.Report, error) {
-			c.socketPath = socketPath
-			c.statusCalls++
+			recorded.socketPath = socketPath
+			recorded.statusCalls++
 			return report, statusErr
 		},
 		mounter: nil,
 		notify:  func(string) error { return nil },
-	}, c
+	}, recorded
 }
 
-// execute runs the program with the given backend and returns its status and output.
-func executeWith(b backend, args ...string) (status int, stdout, stderr string) {
+// executeWith runs the program with the given backend and returns its exit status and output.
+func executeWith(b backend, args ...string) result {
 	var out, errOut bytes.Buffer
-	status = execute(context.Background(), args, &out, &errOut, b)
-	return status, out.String(), errOut.String()
+	status := execute(context.Background(), args, &out, &errOut, b)
+	return result{status: status, stdout: out.String(), stderr: errOut.String()}
 }
 
-func execFake(args ...string) (status int, stdout, stderr string) {
+// execFake runs the program with a fake backend and returns what executeWith does.
+func execFake(args ...string) result {
 	b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
 	return executeWith(b, args...)
 }
@@ -103,19 +105,33 @@ func TestRunUsesTheSystemBackend(t *testing.T) {
 func TestSystemBackend(t *testing.T) {
 	t.Parallel()
 	b := systemBackend()
-	if b.loadConfig == nil || b.defaultConfigDir == nil || b.run == nil || b.unmount == nil ||
-		b.status == nil || b.mounter == nil || b.notify == nil || b.requestMount == nil ||
-		b.getenv == nil || b.abs == nil {
-		t.Errorf("incomplete backend: %+v", b)
+	set := map[string]bool{
+		"loadConfig": b.loadConfig != nil, "defaultConfigDir": b.defaultConfigDir != nil,
+		"run": b.run != nil, "unmount": b.unmount != nil, "status": b.status != nil,
+		"mounter": b.mounter != nil, "notify": b.notify != nil, "requestMount": b.requestMount != nil,
+		"getenv": b.getenv != nil, "abs": b.abs != nil,
+	}
+	for name, isSet := range set {
+		if !isSet {
+			t.Errorf("the system backend has no %s", name)
+		}
 	}
 }
 
 func TestHelp(t *testing.T) {
 	t.Parallel()
-	for _, args := range [][]string{{"-h"}, {"--help"}, {"mount", "--help"}, {"umount", "-h"}, {"status", "--help"}, {"--config", "/x", "status", "-h"}} {
-		status, stdout, stderr := execFake(args...)
-		if status != exitOK || stdout != usage || stderr != "" {
-			t.Errorf("%v: status %d stdout %q stderr %q", args, status, stdout, stderr)
+	helpRequests := [][]string{
+		{"-h"},
+		{"--help"},
+		{"mount", "--help"},
+		{"umount", "-h"},
+		{"status", "--help"},
+		{"--config", "/x", "status", "-h"},
+	}
+	for _, args := range helpRequests {
+		ran := execFake(args...)
+		if ran.status != exitOK || ran.stdout != usage || ran.stderr != "" {
+			t.Errorf("%v: status %d stdout %q stderr %q", args, ran.status, ran.stdout, ran.stderr)
 		}
 	}
 }
@@ -147,12 +163,13 @@ func TestBadUsage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			status, stdout, stderr := execFake(tt.args...)
-			if status != exitUsage || stdout != "" {
-				t.Errorf("status %d stdout %q", status, stdout)
+			ran := execFake(tt.args...)
+			if ran.status != exitUsage || ran.stdout != "" {
+				t.Errorf("status %d stdout %q", ran.status, ran.stdout)
 			}
-			if !strings.HasPrefix(stderr, "splicefs: ") || !strings.Contains(stderr, tt.want) || !strings.HasSuffix(stderr, usage) {
-				t.Errorf("stderr = %q", stderr)
+			isUsageError := strings.HasPrefix(ran.stderr, "splicefs: ") && strings.HasSuffix(ran.stderr, usage)
+			if !isUsageError || !strings.Contains(ran.stderr, tt.want) {
+				t.Errorf("stderr = %q", ran.stderr)
 			}
 		})
 	}
@@ -160,66 +177,106 @@ func TestBadUsage(t *testing.T) {
 
 func TestVersionWinsOverACommand(t *testing.T) {
 	t.Parallel()
-	status, stdout, _ := execFake("--version", "mount")
-	if want := "splicefs " + version.String() + "\n"; status != exitOK || stdout != want {
-		t.Errorf("status %d stdout %q", status, stdout)
+	ran := execFake("--version", "mount")
+	if want := "splicefs " + version.String() + "\n"; ran.status != exitOK || ran.stdout != want {
+		t.Errorf("status %d stdout %q", ran.status, ran.stdout)
 	}
 }
 
-func TestMount(t *testing.T) {
+// mountedWith is what a mount command handed to the client library.
+type mountedWith struct {
+	loadDir   string
+	configDir string
+	targets   []string
+}
+
+func TestMountLoadsTheConfigurationAndPassesTargets(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Mounts: []config.Mount{{Target: "/mnt/a"}}}
 	tests := []struct {
-		name      string
-		args      []string
-		wantDir   string
-		wantTargs []string
-		wantDebug bool
+		name string
+		args []string
+		want mountedWith
 	}{
-		{"defaults", []string{"mount"}, defaultDir, nil, false},
-		{"targets and options", []string{"--config", "/etc/example", "--log-level", "debug", "mount", "/mnt/a", "/mnt/b"}, "/etc/example", []string{"/mnt/a", "/mnt/b"}, true},
-		{"warn hides info", []string{"--log-level", "warn", "mount"}, defaultDir, nil, false},
+		{"defaults", []string{"mount"}, mountedWith{defaultDir, defaultDir, nil}},
+		{
+			"targets and options",
+			[]string{"--config", "/etc/example", "--log-level", "debug", "mount", "/mnt/a", "/mnt/b"},
+			mountedWith{"/etc/example", "/etc/example", []string{"/mnt/a", "/mnt/b"}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			b, c := fakeBackend(cfg, nil, nil, nil, nil, app.Report{})
-			var notified []string
-			b.notify = func(state string) error {
-				notified = append(notified, state)
-				return nil
+			b, recorded := fakeBackend(cfg, nil, nil, nil, nil, app.Report{})
+			ran := executeWith(b, tt.args...)
+			if ran.status != exitOK || ran.stdout != "" {
+				t.Fatalf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
-			status, stdout, stderr := executeWith(b, tt.args...)
-			if status != exitOK || stdout != "" {
-				t.Fatalf("status %d stdout %q stderr %q", status, stdout, stderr)
+			got := mountedWith{recorded.loadDir, recorded.runOpts.ConfigDir, recorded.runTargets}
+			if got.loadDir != tt.want.loadDir || got.configDir != tt.want.configDir ||
+				!slices.Equal(got.targets, tt.want.targets) {
+				t.Errorf("mounted with %+v, want %+v", got, tt.want)
 			}
-			if c.loadDir != tt.wantDir || c.runOpts.ConfigDir != tt.wantDir {
-				t.Errorf("configuration directory = %q and %q, want %q", c.loadDir, c.runOpts.ConfigDir, tt.wantDir)
-			}
-			if c.runCfg != cfg {
+			if recorded.runCfg != cfg {
 				t.Error("run did not get the loaded configuration")
 			}
-			if c.runOpts.Reload == nil {
-				t.Error("run got no Reload channel")
+		})
+	}
+}
+
+func TestMountHandsTheClientItsHooks(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{Mounts: []config.Mount{{Target: "/mnt/a"}}}
+	b, recorded := fakeBackend(cfg, nil, nil, nil, nil, app.Report{})
+	var notified []string
+	b.notify = func(state string) error {
+		notified = append(notified, state)
+		return nil
+	}
+	if ran := executeWith(b, "mount"); ran.status != exitOK {
+		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
+	}
+	if recorded.runOpts.Reload == nil {
+		t.Error("run got no Reload channel")
+	}
+	recorded.loadDir = ""
+	if got, err := recorded.runOpts.Load(); err != nil || got != cfg || recorded.loadDir != defaultDir {
+		t.Errorf("Load = %v, %v from %q, want the configuration of %q", got, err, recorded.loadDir, defaultDir)
+	}
+	if err := recorded.runOpts.Notify("READY=1"); err != nil || len(notified) != 1 || notified[0] != "READY=1" {
+		t.Errorf("Notify is not the backend's: %v %v", err, notified)
+	}
+}
+
+func TestMountLogLevel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		args      []string
+		wantDebug bool
+		wantInfo  bool
+	}{
+		{"info is the default", []string{"mount"}, false, true},
+		{"debug shows everything", []string{"--log-level", "debug", "mount"}, true, true},
+		{"warn hides info", []string{"--log-level", "warn", "mount"}, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
+			ran := executeWith(b, tt.args...)
+			if ran.status != exitOK {
+				t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 			}
-			c.loadDir = ""
-			if got, err := c.runOpts.Load(); err != nil || got != cfg || c.loadDir != tt.wantDir {
-				t.Errorf("Load = %v, %v from %q, want the configuration of %q", got, err, c.loadDir, tt.wantDir)
+			if got := strings.Contains(ran.stderr, "debug-line"); got != tt.wantDebug {
+				t.Errorf("debug line logged = %v, want %v\n%s", got, tt.wantDebug, ran.stderr)
 			}
-			if !slices.Equal(c.runTargets, tt.wantTargs) {
-				t.Errorf("targets = %v, want %v", c.runTargets, tt.wantTargs)
+			if got := strings.Contains(ran.stderr, "info-line"); got != tt.wantInfo {
+				t.Errorf("info line logged = %v, want %v\n%s", got, tt.wantInfo, ran.stderr)
 			}
-			if err := c.runOpts.Notify("READY=1"); err != nil || len(notified) != 1 || notified[0] != "READY=1" {
-				t.Errorf("Notify is not the backend's: %v %v", err, notified)
-			}
-			if got := strings.Contains(stderr, "debug-line"); got != tt.wantDebug {
-				t.Errorf("debug line logged = %v, want %v\n%s", got, tt.wantDebug, stderr)
-			}
-			if got, want := strings.Contains(stderr, "info-line"), !strings.Contains(strings.Join(tt.args, " "), "warn"); got != want {
-				t.Errorf("info line logged = %v, want %v\n%s", got, want, stderr)
-			}
-			if tt.wantDebug && !strings.Contains(stderr, "level=DEBUG") {
-				t.Errorf("log is not text:\n%s", stderr)
+			if tt.wantDebug && !strings.Contains(ran.stderr, "level=DEBUG") {
+				t.Errorf("log is not text:\n%s", ran.stderr)
 			}
 		})
 	}
@@ -238,17 +295,18 @@ func TestMountFailures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			b, c := fakeBackend(&config.Config{}, tt.loadErr, tt.runErr, nil, nil, app.Report{})
-			status, stdout, stderr := executeWith(b, "mount")
+			b, recorded := fakeBackend(&config.Config{}, tt.loadErr, tt.runErr, nil, nil, app.Report{})
+			ran := executeWith(b, "mount")
 			want := tt.loadErr
 			if want == nil {
 				want = tt.runErr
 			}
-			if status != exitError || stdout != "" || !strings.HasSuffix(stderr, "splicefs: "+want.Error()+"\n") {
-				t.Errorf("status %d stdout %q stderr %q", status, stdout, stderr)
+			wantStderr := "splicefs: " + want.Error() + "\n"
+			if ran.status != exitError || ran.stdout != "" || !strings.HasSuffix(ran.stderr, wantStderr) {
+				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
-			if (tt.loadErr != nil) != (c.runCfg == nil) {
-				t.Errorf("run was called = %v after a configuration error = %v", c.runCfg != nil, tt.loadErr)
+			if (tt.loadErr != nil) != (recorded.runCfg == nil) {
+				t.Errorf("run was called = %v after a configuration error = %v", recorded.runCfg != nil, tt.loadErr)
 			}
 		})
 	}
@@ -264,24 +322,30 @@ func TestUmount(t *testing.T) {
 		wantForce bool
 	}{
 		{"everything", []string{"umount"}, defaultDir, nil, false},
-		{"targets", []string{"--config", "/etc/example", "umount", "/mnt/a", "/mnt/b"}, "/etc/example", []string{"/mnt/a", "/mnt/b"}, false},
+		{
+			"targets",
+			[]string{"--config", "/etc/example", "umount", "/mnt/a", "/mnt/b"},
+			"/etc/example",
+			[]string{"/mnt/a", "/mnt/b"},
+			false,
+		},
 		{"force", []string{"umount", "--force", "/mnt/a"}, defaultDir, []string{"/mnt/a"}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			b, c := fakeBackend(nil, nil, nil, nil, nil, app.Report{})
-			status, stdout, stderr := executeWith(b, tt.args...)
-			if status != exitOK || stdout != "" || stderr != "" {
-				t.Fatalf("status %d stdout %q stderr %q", status, stdout, stderr)
+			b, recorded := fakeBackend(nil, nil, nil, nil, nil, app.Report{})
+			ran := executeWith(b, tt.args...)
+			if ran.status != exitOK || ran.stdout != "" || ran.stderr != "" {
+				t.Fatalf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
-			if want := app.SocketPath(tt.wantDir); c.socketPath != want {
-				t.Errorf("socket = %q, want %q", c.socketPath, want)
+			if want := app.SocketPath(tt.wantDir); recorded.socketPath != want {
+				t.Errorf("socket = %q, want %q", recorded.socketPath, want)
 			}
-			if !slices.Equal(c.umountArgs, tt.wantTargs) || c.umountForce != tt.wantForce {
-				t.Errorf("unmount(%v, %v), want (%v, %v)", c.umountArgs, c.umountForce, tt.wantTargs, tt.wantForce)
+			if !slices.Equal(recorded.umountArgs, tt.wantTargs) || recorded.umountForce != tt.wantForce {
+				t.Errorf("unmount(%v, %v), want (%v, %v)", recorded.umountArgs, recorded.umountForce, tt.wantTargs, tt.wantForce)
 			}
-			if c.loadDir != "" {
+			if recorded.loadDir != "" {
 				t.Error("umount loaded the configuration; it only needs the directory")
 			}
 		})
@@ -302,33 +366,36 @@ func TestUmountFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			b, _ := fakeBackend(nil, nil, nil, tt.err, nil, app.Report{})
-			status, stdout, stderr := executeWith(b, "umount")
-			if status != exitError || stdout != "" || !strings.HasPrefix(stderr, "splicefs: ") {
-				t.Errorf("status %d stdout %q stderr %q", status, stdout, stderr)
+			ran := executeWith(b, "umount")
+			if ran.status != exitError || ran.stdout != "" || !strings.HasPrefix(ran.stderr, "splicefs: ") {
+				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
-			if got := strings.Contains(stderr, `use "umount --force"`); got != tt.wantHint {
-				t.Errorf("force hint shown = %v, want %v\n%s", got, tt.wantHint, stderr)
+			if got := strings.Contains(ran.stderr, `use "umount --force"`); got != tt.wantHint {
+				t.Errorf("force hint shown = %v, want %v\n%s", got, tt.wantHint, ran.stderr)
 			}
 		})
 	}
 }
 
-var sampleReport = app.Report{
-	Mounts: []app.MountReport{
-		{Target: "/mnt/files", Source: "splicefs:example/", State: app.StateMounted},
-		{Target: "/srv/movies", Source: "splicefs:example/media/movies", State: app.StateEnded},
-	},
-	Clusters: []app.ClusterReport{
-		{Name: "example", Nodes: []app.NodeReport{
-			{Name: "east.example.com", BytesPerSecond: 48_200_000, Measured: true},
-			{Name: "west.example.com"},
-		}},
-		{Name: "standby", Nodes: []app.NodeReport{}},
-	},
-	Caches: []app.CacheReport{
-		{Dir: "/var/cache/splicefs", Entries: 120, Bytes: 3_400_000_000},
-		{Dir: "/data/cache/movies", Entries: 0, Bytes: 0},
-	},
+// sampleReport is a report with every kind of row: mounts, clusters with and without nodes, caches.
+func sampleReport() app.Report {
+	return app.Report{
+		Mounts: []app.MountReport{
+			{Target: "/mnt/files", Source: "splicefs:example/", State: app.StateMounted},
+			{Target: "/srv/movies", Source: "splicefs:example/media/movies", State: app.StateEnded},
+		},
+		Clusters: []app.ClusterReport{
+			{Name: "example", Nodes: []app.NodeReport{
+				{Name: "east.example.com", BytesPerSecond: 48_200_000, Measured: true},
+				{Name: "west.example.com"},
+			}},
+			{Name: "standby", Nodes: []app.NodeReport{}},
+		},
+		Caches: []app.CacheReport{
+			{Dir: "/var/cache/splicefs", Entries: 120, Bytes: 3_400_000_000},
+			{Dir: "/data/cache/movies", Entries: 0, Bytes: 0},
+		},
+	}
 }
 
 const sampleText = `MOUNT        STATE    SOURCE
@@ -349,42 +416,43 @@ CACHE                FILES  SIZE
 
 func TestStatus(t *testing.T) {
 	t.Parallel()
-	b, c := fakeBackend(nil, nil, nil, nil, nil, sampleReport)
-	status, stdout, stderr := executeWith(b, "--config", "/etc/example", "status")
-	if status != exitOK || stderr != "" {
-		t.Fatalf("status %d stderr %q", status, stderr)
+	b, recorded := fakeBackend(nil, nil, nil, nil, nil, sampleReport())
+	ran := executeWith(b, "--config", "/etc/example", "status")
+	if ran.status != exitOK || ran.stderr != "" {
+		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
-	if stdout != sampleText {
-		t.Errorf("output:\n%s\nwant:\n%s", stdout, sampleText)
+	if ran.stdout != sampleText {
+		t.Errorf("output:\n%s\nwant:\n%s", ran.stdout, sampleText)
 	}
-	if want := app.SocketPath("/etc/example"); c.socketPath != want || c.statusCalls != 1 {
-		t.Errorf("socket %q after %d calls, want %q once", c.socketPath, c.statusCalls, want)
+	if want := app.SocketPath("/etc/example"); recorded.socketPath != want || recorded.statusCalls != 1 {
+		t.Errorf("socket %q after %d calls, want %q once", recorded.socketPath, recorded.statusCalls, want)
 	}
 }
 
 func TestStatusJSON(t *testing.T) {
 	t.Parallel()
-	b, _ := fakeBackend(nil, nil, nil, nil, nil, sampleReport)
-	status, stdout, stderr := executeWith(b, "status", "--json")
-	if status != exitOK || stderr != "" {
-		t.Fatalf("status %d stderr %q", status, stderr)
+	b, _ := fakeBackend(nil, nil, nil, nil, nil, sampleReport())
+	ran := executeWith(b, "status", "--json")
+	if ran.status != exitOK || ran.stderr != "" {
+		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
 	var got app.Report
-	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
-		t.Fatalf("%v in %q", err, stdout)
+	if err := json.Unmarshal([]byte(ran.stdout), &got); err != nil {
+		t.Fatalf("%v in %q", err, ran.stdout)
 	}
-	if !reflect.DeepEqual(got, sampleReport) {
-		t.Errorf("report = %+v, want %+v", got, sampleReport)
+	if !reflect.DeepEqual(got, sampleReport()) {
+		t.Errorf("report = %+v, want %+v", got, sampleReport())
 	}
-	if !strings.HasPrefix(stdout, "{\n  \"mounts\": [\n") {
-		t.Errorf("JSON is not indented:\n%s", stdout)
+	if !strings.HasPrefix(ran.stdout, "{\n  \"mounts\": [\n") {
+		t.Errorf("JSON is not indented:\n%s", ran.stdout)
 	}
 }
 
 func TestStatusWithoutCaches(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
-	err := writeReport(&out, app.Report{Mounts: []app.MountReport{{Target: "/mnt/a", Source: "splicefs:x/", State: app.StateMounted}}})
+	report := app.Report{Mounts: []app.MountReport{{Target: "/mnt/a", Source: "splicefs:x/", State: app.StateMounted}}}
+	err := writeReport(&out, report)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,20 +461,31 @@ func TestStatusWithoutCaches(t *testing.T) {
 	}
 }
 
+// TestStatusTableWriteFailsAtTheEnd covers a report of one table: the table writer holds
+// its rows back until the end, so that is where the failure shows.
+func TestStatusTableWriteFailsAtTheEnd(t *testing.T) {
+	t.Parallel()
+	err := writeReport(failingWriter{}, app.Report{Mounts: []app.MountReport{{Target: "/mnt/a"}}})
+	if err == nil || err.Error() != "disk full" {
+		t.Errorf("error = %v", err)
+	}
+}
+
 func TestStatusFailures(t *testing.T) {
 	t.Parallel()
 	t.Run("no client", func(t *testing.T) {
 		t.Parallel()
 		b, _ := fakeBackend(nil, nil, nil, nil, app.ErrNotRunning, app.Report{})
-		status, stdout, stderr := executeWith(b, "status")
-		if status != exitError || stdout != "" || !strings.Contains(stderr, "no client is running for this configuration") {
-			t.Errorf("status %d stdout %q stderr %q", status, stdout, stderr)
+		ran := executeWith(b, "status")
+		wantStderr := "no client is running for this configuration"
+		if ran.status != exitError || ran.stdout != "" || !strings.Contains(ran.stderr, wantStderr) {
+			t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 		}
 	})
 	for _, args := range [][]string{{"status"}, {"status", "--json"}} {
 		t.Run("unwritable output "+strings.Join(args, " "), func(t *testing.T) {
 			t.Parallel()
-			b, _ := fakeBackend(nil, nil, nil, nil, nil, sampleReport)
+			b, _ := fakeBackend(nil, nil, nil, nil, nil, sampleReport())
 			var errOut bytes.Buffer
 			status := execute(context.Background(), args, failingWriter{}, &errOut, b)
 			if status != exitError || !strings.Contains(errOut.String(), "disk full") {
@@ -445,7 +524,10 @@ func TestFormatBytes(t *testing.T) {
 
 func TestParseLevel(t *testing.T) {
 	t.Parallel()
-	for name, want := range map[string]slog.Level{"debug": slog.LevelDebug, "info": slog.LevelInfo, "warn": slog.LevelWarn, "error": slog.LevelError} {
+	levels := map[string]slog.Level{
+		"debug": slog.LevelDebug, "info": slog.LevelInfo, "warn": slog.LevelWarn, "error": slog.LevelError,
+	}
+	for name, want := range levels {
 		if got, ok := parseLevel(name); !ok || got != want {
 			t.Errorf("parseLevel(%q) = %v, %v", name, got, ok)
 		}

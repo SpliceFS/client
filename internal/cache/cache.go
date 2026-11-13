@@ -32,6 +32,13 @@ var (
 	ErrInvalidBlock = errors.New("cache: invalid block")
 	// ErrInvalidVersion means a Version cannot describe a cacheable file.
 	ErrInvalidVersion = errors.New("cache: invalid version")
+	// ErrNoDirectory means Options.Dir is empty.
+	ErrNoDirectory = errors.New("cache: directory not set")
+	// ErrNegativeOffset means a read asked for a negative file offset.
+	ErrNegativeOffset = errors.New("cache: negative offset")
+	// ErrInvalidMetadata means a stored metadata file does not fit its entry. The entry
+	// is dropped when it is found.
+	ErrInvalidMetadata = errors.New("cache: invalid metadata")
 )
 
 // Options configures a Cache.
@@ -104,12 +111,12 @@ func (c *Cache) SetLimits(maxSize int64, maxAge time.Duration, minFree int64) {
 // created are removed; other files are left alone. A damaged entry is dropped and logged;
 // it never makes Open fail.
 func Open(opts Options) (*Cache, error) {
-	return open(opts, osFS{})
+	return openWith(opts, osFS{})
 }
 
-func open(opts Options, fsys fileSystem) (*Cache, error) {
+func openWith(opts Options, fsys fileSystem) (*Cache, error) {
 	if opts.Dir == "" {
-		return nil, errors.New("cache: directory not set")
+		return nil, ErrNoDirectory
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -117,29 +124,29 @@ func open(opts Options, fsys fileSystem) (*Cache, error) {
 	if opts.FreeSpace == nil {
 		opts.FreeSpace = statfsFree
 	}
-	c := &Cache{
+	cache := &Cache{
 		opts:    opts,
 		fs:      fsys,
 		log:     opts.Logger,
 		entries: make(map[Key]*entry),
 	}
-	if c.log == nil {
-		c.log = slog.New(slog.DiscardHandler)
+	if cache.log == nil {
+		cache.log = slog.New(slog.DiscardHandler)
 	}
 	if err := fsys.MkdirAll(opts.Dir); err != nil {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
-	if err := c.scan(); err != nil {
+	if err := cache.scan(); err != nil {
 		return nil, err
 	}
-	return c, nil
+	return cache, nil
 }
 
 // Acquire returns the entry for exactly this version of the file, pinned until its
 // Release. An existing entry for the key with a different version is discarded first;
 // holders of that old entry keep reading their open files until they release.
-func (c *Cache) Acquire(key Key, v Version) (*Entry, error) {
-	if err := v.validate(); err != nil {
+func (c *Cache) Acquire(key Key, version Version) (*Entry, error) {
+	if err := version.validate(); err != nil {
 		return nil, err
 	}
 	c.mu.Lock()
@@ -147,32 +154,32 @@ func (c *Cache) Acquire(key Key, v Version) (*Entry, error) {
 	if c.closed {
 		return nil, ErrClosed
 	}
-	if old, ok := c.entries[key]; ok && old.version != v {
+	if old, ok := c.entries[key]; ok && old.version != version {
 		if err := c.removeLocked(old); err != nil {
 			return nil, fmt.Errorf("discard old version: %w", err)
 		}
 	}
-	e, err := c.pinLocked(key, v)
+	pinned, err := c.pinLocked(key, version)
 	if err != nil {
 		return nil, err
 	}
-	return &Entry{c: c, e: e}, nil
+	return &Entry{c: c, e: pinned}, nil
 }
 
 // Peek reports what is cached for key without pinning it.
 func (c *Cache) Peek(key Key) (Info, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entries[key]
+	cached, ok := c.entries[key]
 	if !ok || c.closed {
 		return Info{}, false
 	}
 	return Info{
-		Version:   e.version,
-		Validated: e.validated,
-		LastRead:  e.lastRead,
-		Complete:  e.present == e.version.blocks(),
-		Bytes:     e.bytes,
+		Version:   cached.version,
+		Validated: cached.validated,
+		LastRead:  cached.lastRead,
+		Complete:  cached.present == cached.version.blocks(),
+		Bytes:     cached.bytes,
 	}, true
 }
 
@@ -180,20 +187,21 @@ func (c *Cache) Peek(key Key) (Info, bool) {
 // nodes, and persists that. It does nothing for an unknown key.
 func (c *Cache) MarkValidated(key Key) {
 	c.mu.Lock()
-	e, ok := c.entries[key]
+	cached, ok := c.entries[key]
 	if !ok || c.closed {
 		c.mu.Unlock()
 		return
 	}
-	e.validated = c.opts.Now()
-	snap := e.snapshotLocked()
+	cached.validated = c.opts.Now()
+	snap := cached.snapshotLocked()
 	// The pin keeps the data handle open while the snapshot is written.
-	e.pins++
+	cached.pins++
 	c.mu.Unlock()
 
-	err := errors.Join(snap.write(c.fs), c.drop(e))
+	err := errors.Join(snap.write(c.fs), c.drop(cached))
 	if err != nil {
-		c.log.Warn("persist validation time", "cluster", key.Cluster, "path", key.Path, "error", err)
+		c.log.Warn("persist validation time",
+			slog.String("cluster", key.Cluster), slog.String("path", key.Path), slog.Any("error", err))
 	}
 }
 
@@ -205,11 +213,11 @@ func (c *Cache) Discard(key Key) error {
 	if c.closed {
 		return ErrClosed
 	}
-	e, ok := c.entries[key]
+	cached, ok := c.entries[key]
 	if !ok {
 		return nil
 	}
-	return c.removeLocked(e)
+	return c.removeLocked(cached)
 }
 
 // Usage reports the number of entries and the bytes of blocks they hold.
@@ -229,18 +237,19 @@ func (c *Cache) Close() error {
 	}
 	c.closed = true
 	snaps := make([]snapshot, 0, len(c.entries))
-	for _, e := range c.entries {
-		snaps = append(snaps, e.snapshotLocked())
+	for _, cached := range c.entries {
+		snaps = append(snaps, cached.snapshotLocked())
 	}
 	c.mu.Unlock()
 
 	var errs []error
-	for _, s := range snaps {
-		errs = append(errs, s.write(c.fs))
+	// Indexed because a snapshot is large enough that copying it per iteration is waste.
+	for i := range snaps {
+		errs = append(errs, snaps[i].write(c.fs))
 	}
 	c.mu.Lock()
-	for _, e := range c.entries {
-		errs = append(errs, e.closeFileLocked())
+	for _, cached := range c.entries {
+		errs = append(errs, cached.closeFileLocked())
 	}
 	c.mu.Unlock()
 	return errors.Join(errs...)

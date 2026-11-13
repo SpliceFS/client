@@ -85,9 +85,9 @@ type Mount struct {
 // Mount returns the mount whose target is target, compared after cleaning.
 func (c *Config) Mount(target string) (Mount, bool) {
 	target = filepath.Clean(target)
-	for _, m := range c.Mounts {
-		if m.Target == target {
-			return m, true
+	for i := range c.Mounts {
+		if c.Mounts[i].Target == target {
+			return c.Mounts[i], true
 		}
 	}
 	return Mount{}, false

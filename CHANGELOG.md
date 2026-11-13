@@ -104,6 +104,11 @@ notable ones.
 - FreeBSD: the client runs on FreeBSD 14 and 15, with the same FUSE mounts as on Linux.
   `make check-freebsd` runs the tests in a FreeBSD virtual machine, and `make package-freebsd`
   builds, installs and tests the package there. The package is not published yet.
+- Code quality checks at their strictest: every linter is on, and each one that is off says
+  why in `.golangci.yml`. The code declares its errors, so callers can test for them.
+  Behavior, the configuration keys and the messages are unchanged, with one exception: when
+  the answer to `--help` or `--version` cannot be written, the program now says so and exits
+  with status 1.
 
 ### Removed
 

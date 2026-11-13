@@ -80,4 +80,12 @@ var (
 	ErrUnavailable = errors.New("fetch: data unavailable from every source")
 	// ErrClosed is returned by reads on a closed Reader.
 	ErrClosed = errors.New("fetch: reader closed")
+	// ErrInvalidOptions is wrapped by the error New returns for Options that
+	// have no sensible meaning.
+	ErrInvalidOptions = errors.New("fetch options")
+	// ErrNoMeter is returned by New when it is given no Meter.
+	ErrNoMeter = errors.New("fetch: no meter")
+	// ErrNegativeOffset is wrapped by the error ReadAt returns for an offset
+	// below zero.
+	ErrNegativeOffset = errors.New("fetch: read at negative offset")
 )

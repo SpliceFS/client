@@ -31,11 +31,25 @@ func (s streak) joins(off, end, slack int64) bool {
 // length is how far the streak has advanced.
 func (s streak) length() int64 { return s.pos - s.start }
 
+// blockRange is the blocks from first through last. It is empty when
+// first > last.
+type blockRange struct {
+	first, last int64
+}
+
+// extent is where a piece of the file lies: its offset and its length.
+type extent struct {
+	start, length int64
+}
+
 // windowAt returns the block at read position pos and the last block of the
 // read-ahead window, clipped to the file. The window is empty when
 // first > last.
-func windowAt(pos, readAhead, blockSize, size int64) (first, last int64) {
-	return pos / blockSize, min((pos+readAhead)/blockSize, ceilDiv(size, blockSize)-1)
+func windowAt(pos, readAhead, blockSize, size int64) blockRange {
+	return blockRange{
+		first: pos / blockSize,
+		last:  min((pos+readAhead)/blockSize, ceilDiv(size, blockSize)-1),
+	}
 }
 
 // windowSpan is the most blocks a read-ahead window can cover.
@@ -108,32 +122,34 @@ type assignment struct {
 func assign(front, backfill []int64, views []sourceView, streams int) []assignment {
 	order := rank(views)
 	reserved := 0
-	for _, s := range order {
-		if s.fast {
+	for _, candidate := range order {
+		if candidate.fast {
 			reserved += streams
 		}
 	}
-	wanted := slices.Clone(front)
-	taken := make([]bool, len(front))
-	for len(front) > 0 && len(wanted) < reserved {
-		wanted = append(wanted, -1)
-		taken = append(taken, true)
+	// Padding (block -1, already taken) pushes backfill past position F.
+	padding := 0
+	if len(front) > 0 {
+		padding = max(0, reserved-len(front))
 	}
-	wanted = append(wanted, backfill...)
-	taken = append(taken, make([]bool, len(backfill))...)
+	wanted := slices.Concat(front, slices.Repeat([]int64{-1}, padding), backfill)
+	taken := make([]bool, len(wanted))
+	for i := range padding {
+		taken[len(front)+i] = true
+	}
 	var out []assignment
-	for _, s := range order {
+	for _, candidate := range order {
 		from := 0
-		if !s.fast {
+		if !candidate.fast {
 			from = reserved
 		}
-		for n := views[s.index].free; n > 0; n-- {
+		for n := views[candidate.index].free; n > 0; n-- {
 			i := firstUntaken(taken, from)
 			if i < 0 {
 				break
 			}
 			taken[i] = true
-			out = append(out, assignment{source: s.index, block: wanted[i]})
+			out = append(out, assignment{source: candidate.index, block: wanted[i]})
 		}
 	}
 	return out
@@ -188,7 +204,7 @@ func pieces(off, end, unit int64) []int64 {
 
 // span returns the offset and length of piece index when a file of size bytes
 // is cut into pieces of unit bytes.
-func span(index, unit, size int64) (start, length int64) {
-	start = index * unit
-	return start, min(unit, size-start)
+func span(index, unit, size int64) extent {
+	start := index * unit
+	return extent{start: start, length: min(unit, size-start)}
 }

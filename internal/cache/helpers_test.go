@@ -18,7 +18,8 @@ import (
 
 var errInjected = errors.New("injected failure")
 
-var epoch = time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+// epoch is the time every test clock starts at. It is a function so that no test can change it.
+func epoch() time.Time { return time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC) }
 
 // clock is a settable time source.
 type clock struct {
@@ -61,6 +62,7 @@ func (b *syncBuffer) String() string {
 // "writeat", "sync", "close") and the file name.
 type faultFS struct {
 	osFS
+
 	fail func(op, name string) error
 }
 
@@ -72,13 +74,6 @@ func failOn(op, suffix string) func(string, string) error {
 		}
 		return nil
 	}
-}
-
-func (f faultFS) check(op, name string) error {
-	if f.fail == nil {
-		return nil
-	}
-	return f.fail(op, name)
 }
 
 func (f faultFS) MkdirAll(path string) error {
@@ -102,6 +97,7 @@ func (f faultFS) ReadFile(name string) ([]byte, error) {
 	return f.osFS.ReadFile(name)
 }
 
+//nolint:ireturn // implements fileSystem, whose OpenFile returns the dataFile interface
 func (f faultFS) OpenFile(name string, flag int) (dataFile, error) {
 	if err := f.check("open", name); err != nil {
 		return nil, err
@@ -127,8 +123,16 @@ func (f faultFS) Rename(oldPath, newPath string) error {
 	return f.osFS.Rename(oldPath, newPath)
 }
 
+func (f faultFS) check(op, name string) error {
+	if f.fail == nil {
+		return nil
+	}
+	return f.fail(op, name)
+}
+
 type faultFile struct {
 	dataFile
+
 	name string
 	fs   faultFS
 }
@@ -172,16 +176,16 @@ type env struct {
 
 func newEnv(t *testing.T) *env {
 	t.Helper()
-	e := &env{t: t, clock: &clock{t: epoch}, logs: &syncBuffer{}}
-	e.opts = Options{
+	env := &env{t: t, clock: &clock{t: epoch()}, logs: &syncBuffer{}}
+	env.opts = Options{
 		Dir:       filepath.Join(t.TempDir(), "cache"),
 		MaxSize:   math.MaxInt64,
 		MaxAge:    math.MaxInt64,
-		Now:       e.clock.Now,
+		Now:       env.clock.Now,
 		FreeSpace: func(string) (uint64, error) { return 1 << 40, nil },
-		Logger:    slog.New(slog.NewTextHandler(e.logs, nil)),
+		Logger:    slog.New(slog.NewTextHandler(env.logs, nil)),
 	}
-	return e
+	return env
 }
 
 func (e *env) open() *Cache {
@@ -191,12 +195,34 @@ func (e *env) open() *Cache {
 
 func (e *env) openFS(fsys fileSystem) *Cache {
 	e.t.Helper()
-	c, err := open(e.opts, fsys)
+	c, err := openWith(e.opts, fsys)
 	if err != nil {
 		e.t.Fatalf("open: %v", err)
 	}
-	e.t.Cleanup(func() { _ = c.Close() })
+	e.t.Cleanup(func() { closeCache(e.t, c) })
 	return c
+}
+
+// closeCache closes cache at the end of a test. A test that closed it already, or that
+// injected the failure Close reports, is not an error.
+func closeCache(t *testing.T, cache *Cache) {
+	t.Helper()
+	if err := cache.Close(); err != nil && !errors.Is(err, ErrClosed) && !errors.Is(err, errInjected) {
+		t.Errorf("Close: %v", err)
+	}
+}
+
+// openCopy opens a second cache on dir, which a test made by copying a cache folder to
+// stand for a crash. It is closed when the test ends.
+func openCopy(t *testing.T, opts Options, dir string) *Cache {
+	t.Helper()
+	opts.Dir = dir
+	cache, err := Open(opts)
+	if err != nil {
+		t.Fatalf("open copy: %v", err)
+	}
+	t.Cleanup(func() { closeCache(t, cache) })
+	return cache
 }
 
 func testKey(name string) Key { return Key{Cluster: "example", Path: "/" + name} }
@@ -281,7 +307,7 @@ func mustNotExist(t *testing.T, path string) {
 
 func copyTree(t *testing.T, src, dst string) {
 	t.Helper()
-	err := filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+	err := filepath.WalkDir(src, func(path string, dirEntry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -290,7 +316,7 @@ func copyTree(t *testing.T, src, dst string) {
 			return err
 		}
 		target := filepath.Join(dst, rel)
-		if d.IsDir() {
+		if dirEntry.IsDir() {
 			return os.MkdirAll(target, 0o700)
 		}
 		data, err := os.ReadFile(path)

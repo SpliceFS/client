@@ -21,11 +21,13 @@ type stubCore struct{ fsys core.FS }
 
 func (stubCore) Connect(context.Context, string) error { return nil }
 
+//nolint:ireturn // implements the client's View, which returns the interface
 func (c stubCore) View(config.Mount) (core.FS, error) { return c.fsys, nil }
 
 func (stubCore) Status() core.Status {
+	east := core.NodeStatus{Name: "east", BytesPerSecond: 12_000_000, Measured: true}
 	return core.Status{
-		Clusters: []core.ClusterStatus{{Name: "example", Nodes: []core.NodeStatus{{Name: "east", BytesPerSecond: 12_000_000, Measured: true}}}},
+		Clusters: []core.ClusterStatus{{Name: "example", Nodes: []core.NodeStatus{east}}},
 		Caches:   []core.CacheStatus{{Dir: "/var/cache/splicefs", Entries: 3, Bytes: 4096}},
 	}
 }
@@ -50,8 +52,9 @@ type stubMount struct {
 }
 
 func (m *stubMount) Done() <-chan struct{} { return m.done }
-func (m *stubMount) Err() error            { return nil }
+func (*stubMount) Err() error              { return nil }
 
+//nolint:revive // flag-parameter: implements the mount layer's Unmount, which takes force
 func (m *stubMount) Unmount(_ context.Context, force bool) error {
 	m.mu.Lock()
 	m.calls = append(m.calls, force)
@@ -62,6 +65,13 @@ func (m *stubMount) Unmount(_ context.Context, force bool) error {
 	}
 	m.once.Do(func() { close(m.done) })
 	return nil
+}
+
+// setBusy makes the mount refuse a polite unmount, as a mount with open files does.
+func (m *stubMount) setBusy(busy bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.busy = busy
 }
 
 func (m *stubMount) unmountCalls() []bool {
@@ -84,8 +94,13 @@ type fullStack struct {
 
 func newFullStack(t *testing.T, fsys core.FS, mounter app.Mounter) *fullStack {
 	t.Helper()
-	f := &fullStack{t: t, configDir: t.TempDir(), mount: &stubMount{done: make(chan struct{})}, ready: make(chan struct{})}
-	cfg := &config.Config{Mounts: []config.Mount{{Cluster: "example", Path: "/", Target: f.configDir + "/mnt"}}}
+	stack := &fullStack{
+		t:         t,
+		configDir: t.TempDir(),
+		mount:     &stubMount{done: make(chan struct{})},
+		ready:     make(chan struct{}),
+	}
+	cfg := &config.Config{Mounts: []config.Mount{{Cluster: "example", Path: "/", Target: stack.configDir + "/mnt"}}}
 	b := systemBackend()
 	b.loadConfig = func(string) (*config.Config, error) { return cfg, nil }
 	realRun := b.run
@@ -95,111 +110,132 @@ func newFullStack(t *testing.T, fsys core.FS, mounter app.Mounter) *fullStack {
 	}
 	b.mounter = mounter
 	if mounter == nil {
-		b.mounter = func(core.FS, mount.Options) (mount.Mounted, error) { return f.mount, nil }
+		b.mounter = func(core.FS, mount.Options) (mount.Mounted, error) { return stack.mount, nil }
 	}
 	b.notify = func(state string) error {
 		if state == "READY=1" {
-			close(f.ready)
+			close(stack.ready)
 		}
 		return nil
 	}
-	f.backend = b
-	return f
+	stack.backend = b
+	return stack
 }
 
 // startMount runs "splicefs mount" and returns a channel that receives its exit status
 // and stderr when it ends.
-func (f *fullStack) startMount() <-chan result {
+func (stack *fullStack) startMount() <-chan result {
 	ended := make(chan result, 1)
 	ctx, stop := context.WithCancel(context.Background())
-	f.stop = stop
-	f.t.Cleanup(stop)
+	stack.stop = stop
+	stack.t.Cleanup(stop)
 	go func() {
 		var out, errOut bytes.Buffer
-		status := execute(ctx, []string{"--config", f.configDir, "mount"}, &out, &errOut, f.backend)
+		status := execute(ctx, []string{"--config", stack.configDir, "mount"}, &out, &errOut, stack.backend)
 		ended <- result{status: status, stdout: out.String(), stderr: errOut.String()}
 	}()
 	return ended
 }
 
 // command runs another command of the program against the running client.
-func (f *fullStack) command(args ...string) result {
-	f.t.Helper()
+func (stack *fullStack) command(args ...string) result {
+	stack.t.Helper()
 	var out, errOut bytes.Buffer
-	status := execute(context.Background(), append([]string{"--config", f.configDir}, args...), &out, &errOut, systemBackend())
+	argv := append([]string{"--config", stack.configDir}, args...)
+	status := execute(context.Background(), argv, &out, &errOut, systemBackend())
 	return result{status: status, stdout: out.String(), stderr: errOut.String()}
 }
 
+// result is what one run of the program produced.
 type result struct {
 	status int
 	stdout string
 	stderr string
 }
 
-func TestStatusAndUmountAgainstARunningMount(t *testing.T) {
-	t.Parallel()
-	f := newFullStack(t, nil, nil)
-	ended := f.startMount()
-	<-f.ready
-
-	status := f.command("status")
-	if status.status != exitOK {
-		t.Fatalf("status: %+v", status)
+// requireStatusReport checks that status, as a table and as JSON, reports the running mount
+// and what the stub client measured.
+func requireStatusReport(t *testing.T, stack *fullStack) {
+	t.Helper()
+	table := stack.command("status")
+	if table.status != exitOK {
+		t.Fatalf("status: %+v", table)
 	}
-	for _, want := range []string{f.configDir + "/mnt", "mounted", "splicefs:example/", "east", "12.0 MB/s", "/var/cache/splicefs", "4.1 kB"} {
-		if !strings.Contains(status.stdout, want) {
-			t.Errorf("status output lacks %q:\n%s", want, status.stdout)
+	wanted := []string{
+		stack.configDir + "/mnt", "mounted", "splicefs:example/", "east", "12.0 MB/s",
+		"/var/cache/splicefs", "4.1 kB",
+	}
+	for _, want := range wanted {
+		if !strings.Contains(table.stdout, want) {
+			t.Errorf("status output lacks %q:\n%s", want, table.stdout)
 		}
 	}
-	if j := f.command("status", "--json"); j.status != exitOK || !strings.Contains(j.stdout, `"bytes_per_second": 12000000`) {
-		t.Errorf("status --json: %+v", j)
+	asJSON := stack.command("status", "--json")
+	if asJSON.status != exitOK || !strings.Contains(asJSON.stdout, `"bytes_per_second": 12000000`) {
+		t.Errorf("status --json: %+v", asJSON)
 	}
+}
 
-	f.mount.mu.Lock()
-	f.mount.busy = true
-	f.mount.mu.Unlock()
-	busy := f.command("umount")
-	if busy.status != exitError || !strings.Contains(busy.stderr, "mount is in use") || !strings.Contains(busy.stderr, "umount --force") {
+// requireBusyMountIsLeftAlone checks that a polite umount of a mount in use is refused, with
+// the hint about --force, and that the mount is still there afterwards.
+func requireBusyMountIsLeftAlone(t *testing.T, stack *fullStack) {
+	t.Helper()
+	stack.mount.setBusy(true)
+	busy := stack.command("umount")
+	if busy.status != exitError || !strings.Contains(busy.stderr, "mount is in use") ||
+		!strings.Contains(busy.stderr, "umount --force") {
 		t.Errorf("umount of a busy mount: %+v", busy)
 	}
-	if got := f.command("status"); !strings.Contains(got.stdout, "mounted") {
+	if got := stack.command("status"); !strings.Contains(got.stdout, "mounted") {
 		t.Errorf("the busy mount was not left alone:\n%s", got.stdout)
 	}
+}
 
-	if forced := f.command("umount", "--force", f.configDir+"/mnt"); forced.status != exitOK {
+func TestStatusAndUmountAgainstARunningMount(t *testing.T) {
+	t.Parallel()
+	stack := newFullStack(t, nil, nil)
+	ended := stack.startMount()
+	<-stack.ready
+
+	requireStatusReport(t, stack)
+
+	requireBusyMountIsLeftAlone(t, stack)
+
+	if forced := stack.command("umount", "--force", stack.configDir+"/mnt"); forced.status != exitOK {
 		t.Errorf("umount --force: %+v", forced)
 	}
 	// The client keeps running with no mounts, so that a reload can mount again.
-	if got := f.command("status"); got.status != exitOK || strings.Contains(got.stdout, "mounted") {
+	if got := stack.command("status"); got.status != exitOK || strings.Contains(got.stdout, "mounted") {
 		t.Errorf("status after the last mount was unmounted: %+v", got)
 	}
-	f.stop()
+	stack.stop()
 	if end := <-ended; end.status != exitOK {
 		t.Errorf("mount ended with %+v after it was stopped", end)
 	}
-	if got := f.command("status"); got.status != exitError || !strings.Contains(got.stderr, "no client is running for this configuration") {
-		t.Errorf("status after the client ended: %+v", got)
+	gone := stack.command("status")
+	if gone.status != exitError || !strings.Contains(gone.stderr, "no client is running for this configuration") {
+		t.Errorf("status after the client ended: %+v", gone)
 	}
-	if calls := f.mount.unmountCalls(); !slices.Equal(calls, []bool{false, true}) {
+	if calls := stack.mount.unmountCalls(); !slices.Equal(calls, []bool{false, true}) {
 		t.Errorf("unmount calls (force) = %v", calls)
 	}
 }
 
 func TestMountRefusesASecondClient(t *testing.T) {
 	t.Parallel()
-	f := newFullStack(t, nil, nil)
-	ended := f.startMount()
-	<-f.ready
+	stack := newFullStack(t, nil, nil)
+	ended := stack.startMount()
+	<-stack.ready
 
 	var out, errOut bytes.Buffer
-	status := execute(context.Background(), []string{"--config", f.configDir, "mount"}, &out, &errOut, f.backend)
+	status := execute(context.Background(), []string{"--config", stack.configDir, "mount"}, &out, &errOut, stack.backend)
 	if status != exitError || !strings.Contains(errOut.String(), "a client is already running for this configuration") {
 		t.Errorf("second mount: status %d stderr %q", status, errOut.String())
 	}
-	if got := f.command("umount", "--force"); got.status != exitOK {
+	if got := stack.command("umount", "--force"); got.status != exitOK {
 		t.Errorf("umount: %+v", got)
 	}
-	f.stop()
+	stack.stop()
 	if end := <-ended; end.status != exitOK {
 		t.Errorf("first mount ended with %+v", end)
 	}

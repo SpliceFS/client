@@ -8,25 +8,25 @@ import (
 
 func TestStreakJoins(t *testing.T) {
 	t.Parallel()
-	s := streak{started: true, start: 0, pos: 1000}
+	running := streak{started: true, start: 0, pos: 1000}
 	tests := []struct {
 		name     string
-		s        streak
+		streak   streak
 		off, end int64
 		want     bool
 	}{
 		{"no streak yet", streak{}, 0, 10, false},
-		{"continues at pos", s, 1000, 1100, true},
-		{"ahead within slack", s, 1300, 1400, true},
-		{"ahead beyond slack", s, 1301, 1400, false},
-		{"behind within slack", s, 600, 700, true},
-		{"behind beyond slack", s, 600, 699, false},
-		{"overlaps pos", s, 900, 1100, true},
+		{"continues at pos", running, 1000, 1100, true},
+		{"ahead within slack", running, 1300, 1400, true},
+		{"ahead beyond slack", running, 1301, 1400, false},
+		{"behind within slack", running, 600, 700, true},
+		{"behind beyond slack", running, 600, 699, false},
+		{"overlaps pos", running, 900, 1100, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := tt.s.joins(tt.off, tt.end, 300); got != tt.want {
+			if got := tt.streak.joins(tt.off, tt.end, 300); got != tt.want {
 				t.Errorf("joins(%d, %d) = %v, want %v", tt.off, tt.end, got, tt.want)
 			}
 		})
@@ -49,9 +49,9 @@ func TestWindowAt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			first, last := windowAt(tt.pos, tt.readAhead, 100, tt.size)
-			if first != tt.wantFirst || last != tt.wantLast {
-				t.Errorf("windowAt = [%d, %d], want [%d, %d]", first, last, tt.wantFirst, tt.wantLast)
+			window := windowAt(tt.pos, tt.readAhead, 100, tt.size)
+			if window.first != tt.wantFirst || window.last != tt.wantLast {
+				t.Errorf("windowAt = [%d, %d], want [%d, %d]", window.first, window.last, tt.wantFirst, tt.wantLast)
 			}
 		})
 	}
@@ -65,9 +65,13 @@ func TestRank(t *testing.T) {
 		want  []ranked
 	}{
 		{
-			name:  "fastest first, slow below half",
-			views: []sourceView{{rate: 40, known: true, usable: true}, {rate: 100, known: true, usable: true}, {rate: 60, known: true, usable: true}},
-			want:  []ranked{{1, true}, {2, true}, {0, false}},
+			name: "fastest first, slow below half",
+			views: []sourceView{
+				{rate: 40, known: true, usable: true},
+				{rate: 100, known: true, usable: true},
+				{rate: 60, known: true, usable: true},
+			},
+			want: []ranked{{1, true}, {2, true}, {0, false}},
 		},
 		{
 			name:  "unknown equals fastest known",
@@ -207,7 +211,9 @@ func TestHedgeDelay(t *testing.T) {
 
 func TestCooldown(t *testing.T) {
 	t.Parallel()
-	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second}
+	want := []time.Duration{
+		time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second,
+	}
 	for i, w := range want {
 		if got := cooldown(i + 1); got != w {
 			t.Errorf("cooldown(%d) = %v, want %v", i+1, got, w)
@@ -220,18 +226,18 @@ func TestCooldown(t *testing.T) {
 
 func TestProbeCache(t *testing.T) {
 	t.Parallel()
-	var c probeCache
+	var cache probeCache
 	for i := range int64(probeChunks) {
-		c.put(i, []byte{byte(i)})
+		cache.put(i, []byte{byte(i)})
 	}
-	if _, ok := c.get(0); !ok {
+	if _, ok := cache.get(0); !ok {
 		t.Fatal("chunk 0 missing")
 	}
-	c.put(probeChunks, nil)
-	if _, ok := c.get(1); ok {
+	cache.put(probeChunks, nil)
+	if _, ok := cache.get(1); ok {
 		t.Error("least recently used chunk 1 kept")
 	}
-	if data, ok := c.get(0); !ok || data[0] != 0 {
+	if data, ok := cache.get(0); !ok || data[0] != 0 {
 		t.Error("recently used chunk 0 dropped")
 	}
 }

@@ -3,12 +3,15 @@ package fetch
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 )
+
+// memCapMargin is how many blocks the Reader keeps in memory beyond the
+// read-ahead window.
+const memCapMargin = 2
 
 // Reader serves reads of one remote file from a set of sources. It is safe
 // for concurrent use; the kernel issues read-ahead in parallel and out of
@@ -64,7 +67,7 @@ func New(opts Options, sources []Source, store Store, meter Meter) (*Reader, err
 		return nil, err
 	}
 	if meter == nil {
-		return nil, errors.New("fetch: no meter")
+		return nil, ErrNoMeter
 	}
 	opts = opts.withDefaults()
 	r := &Reader{
@@ -73,95 +76,41 @@ func New(opts Options, sources []Source, store Store, meter Meter) (*Reader, err
 		meter:        meter,
 		clock:        opts.Clock,
 		trace:        noTrace{},
-		memCap:       windowSpan(opts.ReadAhead, opts.BlockSize) + 2,
+		memCap:       windowSpan(opts.ReadAhead, opts.BlockSize) + memCapMargin,
 		changed:      make(chan struct{}),
 		blocks:       make(map[int64]*block),
 		lowestWaited: -1,
 		ops:          make(map[*op]struct{}),
 		probing:      make(map[int64]bool),
 	}
-	r.bufs.New = func() any {
-		buf := make([]byte, opts.BlockSize)
-		return &buf
-	}
+	r.bufs.New = func() any { return r.newBuffer() }
 	for _, s := range sources {
 		r.sources = append(r.sources, &source{src: s, id: s.ID()})
 	}
 	return r, nil
 }
 
-// ReadAt reads len(p) bytes at off, with io.ReaderAt semantics: at the end of
+// ReadAt reads len(dest) bytes at off, with io.ReaderAt semantics: at the end of
 // the file it returns the bytes there with io.EOF, and at or past the end 0
 // and io.EOF. It fails with ErrUnavailable when no source delivers in time,
 // with the context's error when ctx ends, and with ErrClosed after Close.
-func (r *Reader) ReadAt(ctx context.Context, p []byte, off int64) (int, error) {
+func (r *Reader) ReadAt(ctx context.Context, dest []byte, off int64) (int, error) {
 	if off < 0 {
-		return 0, fmt.Errorf("fetch: read at negative offset %d", off)
+		return 0, fmt.Errorf("%w %d", ErrNegativeOffset, off)
 	}
 	r.mu.Lock()
-	n, stored, err := r.serve(ctx, p, off)
+	result, err := r.serve(ctx, dest, off)
 	r.mu.Unlock()
 	if err != nil {
 		return 0, err
 	}
-	if err := r.readStored(p[:n], off, stored); err != nil {
+	if err := r.readStored(dest[:result.n], off, result.stored); err != nil {
 		return 0, err
 	}
-	if n < len(p) {
-		return n, io.EOF
+	if result.n < len(dest) {
+		return result.n, io.EOF
 	}
-	return n, nil
-}
-
-// serve fills as much of p as the file holds and returns how much that is and
-// which blocks are still to be copied from the Store. Store reads are left to
-// the caller so that disk I/O does not hold the lock. Called with r.mu held.
-func (r *Reader) serve(ctx context.Context, p []byte, off int64) (int, []int64, error) {
-	if r.closed {
-		return 0, nil, ErrClosed
-	}
-	if off >= r.opts.Size {
-		return 0, nil, io.EOF
-	}
-	n := min(int64(len(p)), r.opts.Size-off)
-	if n == 0 {
-		return 0, nil, nil
-	}
-	p = p[:n]
-	sequential := r.track(off, off+n)
-	o := r.beginOp(ctx)
-	defer r.endOp(o)
-	if sequential || r.covered(off, off+n) {
-		stored, err := r.readBlocks(o, p, off)
-		return len(p), stored, err
-	}
-	return len(p), nil, r.readProbe(o, p, off)
-}
-
-// track feeds a read into sequential detection and reports whether the
-// Reader is in block mode. A read that starts a new streak cancels the block
-// fetches nobody needs any more, backfill of the old streak included.
-func (r *Reader) track(off, end int64) bool {
-	if r.streak.joins(off, end, r.opts.Slack) {
-		r.streak.pos = max(r.streak.pos, end)
-	} else {
-		r.streak = streak{started: true, start: off, pos: end}
-		r.cancelOutside(r.keepRange())
-	}
-	return r.blockMode()
-}
-
-// readStored copies the parts of p that lie in the given blocks from the
-// Store.
-func (r *Reader) readStored(p []byte, off int64, blocks []int64) error {
-	for _, b := range blocks {
-		start, length := span(b, r.opts.BlockSize, r.opts.Size)
-		lo, hi := max(off, start), min(off+int64(len(p)), start+length)
-		if n, err := r.store.ReadAt(p[lo-off:hi-off], lo); int64(n) < hi-lo {
-			return fmt.Errorf("fetch: read block %d from cache: %w", b, cmp.Or(err, io.ErrUnexpectedEOF))
-		}
-	}
-	return nil
+	return result.n, nil
 }
 
 // Close cancels every fetch, stops every timer and makes waiting and future
@@ -181,12 +130,71 @@ func (r *Reader) Close() error {
 		r.stop(s.coolTimer)
 		s.coolTimer = nil
 	}
-	for o := range r.ops {
-		o.cancel()
+	for operation := range r.ops {
+		operation.cancel()
 	}
 	r.broadcast()
 	r.mu.Unlock()
 	r.wg.Wait()
+	return nil
+}
+
+// served is what serve leaves to the caller of a read.
+type served struct {
+	n      int     // how much of the destination the file filled
+	stored []int64 // blocks still to be copied from the Store
+}
+
+// serve fills as much of dest as the file holds and returns how much that is
+// and which blocks are still to be copied from the Store. Store reads are left
+// to the caller so that disk I/O does not hold the lock. Called with r.mu held.
+func (r *Reader) serve(ctx context.Context, dest []byte, off int64) (served, error) {
+	if r.closed {
+		return served{}, ErrClosed
+	}
+	if off >= r.opts.Size {
+		return served{}, io.EOF
+	}
+	n := min(int64(len(dest)), r.opts.Size-off)
+	if n == 0 {
+		return served{}, nil
+	}
+	dest = dest[:n]
+	sequential := r.track(off, off+n)
+	operation := r.beginOp(ctx)
+	defer r.endOp(operation)
+	if sequential || r.covered(off, off+n) {
+		//nolint:contextcheck // Block fetches end with the Reader, not with the context of the read that began them.
+		stored, err := r.readBlocks(operation, dest, off)
+		return served{n: len(dest), stored: stored}, err
+	}
+	//nolint:contextcheck // Block fetches end with the Reader, not with the context of the read that began them.
+	return served{n: len(dest)}, r.readProbe(operation, dest, off)
+}
+
+// track feeds a read into sequential detection and reports whether the
+// Reader is in block mode. A read that starts a new streak cancels the block
+// fetches nobody needs any more, backfill of the old streak included.
+func (r *Reader) track(off, end int64) bool {
+	if r.streak.joins(off, end, r.opts.Slack) {
+		r.streak.pos = max(r.streak.pos, end)
+	} else {
+		r.streak = streak{started: true, start: off, pos: end}
+		r.cancelOutside(r.keepRange())
+	}
+	return r.blockMode()
+}
+
+// readStored copies the parts of dest that lie in the given blocks from the
+// Store.
+func (r *Reader) readStored(dest []byte, off int64, blocks []int64) error {
+	for _, b := range blocks {
+		piece := span(b, r.opts.BlockSize, r.opts.Size)
+		lo, hi := max(off, piece.start), min(off+int64(len(dest)), piece.start+piece.length)
+		if n, err := r.store.ReadAt(dest[lo-off:hi-off], lo); int64(n) < hi-lo {
+			return fmt.Errorf("fetch: read block %d from cache: %w", b, cmp.Or(err, io.ErrUnexpectedEOF))
+		}
+	}
 	return nil
 }
 
@@ -204,9 +212,9 @@ type timer struct {
 	stopped bool
 }
 
-// afterFunc arms a timer that calls f with r.mu held. Called with r.mu held,
-// which also keeps f from running before t.t is set.
-func (r *Reader) afterFunc(d time.Duration, f func()) *timer {
+// afterFunc arms a timer that calls callback with r.mu held. Called with r.mu
+// held, which also keeps callback from running before t.t is set.
+func (r *Reader) afterFunc(d time.Duration, callback func()) *timer {
 	t := &timer{}
 	r.wg.Add(1)
 	t.t = r.clock.AfterFunc(d, func() {
@@ -214,7 +222,7 @@ func (r *Reader) afterFunc(d time.Duration, f func()) *timer {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 		if !t.stopped {
-			f()
+			callback()
 		}
 	})
 	return t
@@ -232,69 +240,70 @@ func (r *Reader) stop(t *timer) {
 	}
 }
 
-// op is one ReadAt call in progress.
+// op is one ReadAt call in progress. ctx ends on the end of the caller's
+// context, on timeout and on Close.
 type op struct {
-	parent   context.Context
-	ctx      context.Context // ends on parent's end, on timeout and on Close
-	cancel   context.CancelFunc
-	deadline *timer
-	timedOut bool
+	parentErr func() error    // the error of the caller's context, nil while it lives
+	ctx       context.Context //nolint:containedctx // The op is the scope of one ReadAt call and ends with it.
+	cancel    context.CancelFunc
+	deadline  *timer
+	timedOut  bool
 }
 
 func (r *Reader) beginOp(parent context.Context) *op {
 	ctx, cancel := context.WithCancel(parent)
-	o := &op{parent: parent, ctx: ctx, cancel: cancel}
-	r.ops[o] = struct{}{}
-	return o
+	operation := &op{parentErr: parent.Err, ctx: ctx, cancel: cancel}
+	r.ops[operation] = struct{}{}
+	return operation
 }
 
-func (r *Reader) endOp(o *op) {
-	r.stop(o.deadline)
-	delete(r.ops, o)
-	o.cancel()
+func (r *Reader) endOp(operation *op) {
+	r.stop(operation.deadline)
+	delete(r.ops, operation)
+	operation.cancel()
 }
 
-// armDeadline starts the timeout of o unless it is running. It runs only
-// while o waits, and restarts with every piece of progress.
-func (r *Reader) armDeadline(o *op) {
-	if o.deadline != nil {
+// armDeadline starts the timeout of operation unless it is running. It runs only
+// while operation waits, and restarts with every piece of progress.
+func (r *Reader) armDeadline(operation *op) {
+	if operation.deadline != nil {
 		return
 	}
-	o.deadline = r.afterFunc(r.opts.BlockTimeout, func() {
-		o.deadline = nil
-		o.timedOut = true
-		o.cancel()
+	operation.deadline = r.afterFunc(r.opts.BlockTimeout, func() {
+		operation.deadline = nil
+		operation.timedOut = true
+		operation.cancel()
 	})
 }
 
-// progressed restarts the timeout of o.
-func (r *Reader) progressed(o *op) {
-	r.stop(o.deadline)
-	o.deadline = nil
+// progressed restarts the timeout of operation.
+func (r *Reader) progressed(operation *op) {
+	r.stop(operation.deadline)
+	operation.deadline = nil
 }
 
-// opErr returns why o must stop, or nil.
-func (r *Reader) opErr(o *op) error {
+// opErr returns why operation must stop, or nil.
+func (r *Reader) opErr(operation *op) error {
 	switch {
 	case r.closed:
 		return ErrClosed
-	case o.timedOut:
+	case operation.timedOut:
 		return ErrUnavailable
 	default:
-		return o.parent.Err()
+		return operation.parentErr()
 	}
 }
 
-// wait blocks until the Reader's state changes or o ends. Called with r.mu
+// wait blocks until the Reader's state changes or operation ends. Called with r.mu
 // held; releases it while blocked.
-func (r *Reader) wait(o *op) {
-	r.armDeadline(o)
+func (r *Reader) wait(operation *op) {
+	r.armDeadline(operation)
 	changed := r.changed
 	r.trace.waiting()
 	r.mu.Unlock()
 	select {
 	case <-changed:
-	case <-o.ctx.Done():
+	case <-operation.ctx.Done():
 	}
 	r.mu.Lock()
 }

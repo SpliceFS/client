@@ -50,14 +50,14 @@ func TestKernelHostConnectionIDReadsTheMountTable(t *testing.T) {
 	if err := os.WriteFile(table, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h := kernelHost{mountinfo: table}
-	if id, err := h.ConnectionID("/mnt/data/"); err != nil || id != 44 {
+	sys := kernelHost{mountinfo: table}
+	if id, err := sys.ConnectionID("/mnt/data/"); err != nil || id != 44 {
 		t.Fatalf("ConnectionID = %d, %v; want 44", id, err)
 	}
-	if _, err := h.ConnectionID("/mnt/disk"); !errors.Is(err, errNotListed) {
+	if _, err := sys.ConnectionID("/mnt/disk"); !errors.Is(err, errNotListed) {
 		t.Fatalf("ConnectionID of a mount that is not FUSE = %v, want errNotListed", err)
 	}
-	if _, err := h.ConnectionID("/mnt/other"); !errors.Is(err, errNotListed) {
+	if _, err := sys.ConnectionID("/mnt/other"); !errors.Is(err, errNotListed) {
 		t.Fatalf("ConnectionID of a point that is not mounted = %v, want errNotListed", err)
 	}
 }
@@ -173,6 +173,7 @@ func TestKernelHostUnmountErrorKeepsTheErrno(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // writing a script and running it in parallel with other tests races with fork (ETXTBSY)
 func TestKernelHostUnmountWithoutPrivilegeUsesTheHelper(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -200,6 +201,7 @@ func TestKernelHostUnmountWithoutPrivilegeUsesTheHelper(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // writing a script and running it in parallel with other tests races with fork (ETXTBSY)
 func TestKernelHostHelperFailures(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -246,6 +248,7 @@ func TestKernelHostWithoutHelper(t *testing.T) {
 	}
 }
 
+//nolint:paralleltest // the test replaces PATH for the whole process
 func TestFindFusermount(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -258,23 +261,35 @@ func TestFindFusermount(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			for _, name := range tt.scripts {
-				if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			t.Setenv("PATH", dir)
+			onlyInPath(t, tt.scripts)
 			got, err := findFusermount()
-			if tt.want == "" {
-				if err == nil {
-					t.Fatalf("found %q, want an error", got)
-				}
-				return
-			}
-			if err != nil || filepath.Base(got) != tt.want {
-				t.Fatalf("findFusermount = %q, %v; want %q", got, err, tt.want)
-			}
+			requireFound(t, got, err, tt.want)
 		})
+	}
+}
+
+// onlyInPath makes PATH a new directory that holds the named programs and nothing else.
+func onlyInPath(t *testing.T, programs []string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range programs {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
+}
+
+// requireFound checks the result of findFusermount; an empty want means an error.
+func requireFound(t *testing.T, got string, err error, want string) {
+	t.Helper()
+	if want == "" {
+		if err == nil {
+			t.Fatalf("found %q, want an error", got)
+		}
+		return
+	}
+	if err != nil || filepath.Base(got) != want {
+		t.Fatalf("findFusermount = %q, %v; want %q", got, err, want)
 	}
 }
