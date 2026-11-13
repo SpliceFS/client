@@ -236,7 +236,7 @@ func asMountNFS(t *testing.T, sys *fakeSystem) {
 		if !ok {
 			return nil, errors.New("no port in the options")
 		}
-		client, err := rpc.DialTCP("tcp", "127.0.0.1:"+port, false)
+		client, err := dialRPC("127.0.0.1:" + port)
 		if err != nil {
 			return nil, err
 		}

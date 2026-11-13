@@ -108,6 +108,9 @@ notable ones.
 - macOS: the client now starts and mounts while no server can be reached, as it already did
   on Linux. The mount appears, listings fail with an input/output error until a server
   answers, and then it recovers by itself.
+- Tests: the macOS mount test client in `mount/nfs` picked a random local port itself and
+  failed with "address already in use" when runs overlapped; it now asks again like the
+  other test client, so concurrent test runs no longer collide.
 
 ### Security
 

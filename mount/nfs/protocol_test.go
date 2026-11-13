@@ -22,23 +22,31 @@ import (
 	"github.com/SpliceFS/client/mount"
 )
 
-// dialClient connects to the server. The client library picks its own local port
-// without asking the system, so parallel tests can collide; it is asked again.
-func dialClient(t *testing.T, srv *server) *rpc.Client {
-	t.Helper()
+// dialRPC connects to addr. The client library picks its own local port in the
+// range the system also hands out, without asking the system, so another test or
+// process can hold it; the connection is then tried again, which picks a new port.
+func dialRPC(addr string) (*rpc.Client, error) {
 	var err error
 	for range 100 {
 		var client *rpc.Client
-		client, err = rpc.DialTCP("tcp", fmt.Sprintf("127.0.0.1:%d", srv.Port()), false)
+		client, err = rpc.DialTCP("tcp", addr, false)
 		if err == nil {
-			return client
+			return client, nil
 		}
 		if !errors.Is(err, syscall.EADDRINUSE) {
 			break
 		}
 	}
-	t.Fatal(err)
-	return nil
+	return nil, err
+}
+
+func dialClient(t *testing.T, srv *server) *rpc.Client {
+	t.Helper()
+	client, err := dialRPC(fmt.Sprintf("127.0.0.1:%d", srv.Port()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
 }
 
 func dial(t *testing.T, srv *server) *nfs.Target {
