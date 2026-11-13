@@ -66,6 +66,10 @@ notable ones.
   packaged unit has `WatchdogSec=300`. A client whose run loop is stuck for five minutes is
   killed and started again. On Alpine (OpenRC) there is no heartbeat.
 - Trunk development: one branch, `main`, and one version per change.
+- `make service-test`: on every supported system the package is installed under that system's
+  real service manager (systemd or OpenRC as process 1 of a container) and the service must
+  start by itself, answer `splicefs status`, come back after a reboot and stop when the
+  package is removed.
 
 ### Changed
 
