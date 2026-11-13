@@ -258,6 +258,7 @@ it `SIGHUP`:
 ```
 systemctl reload splicefs         # Linux packages with systemd
 rc-service splicefs reload        # Alpine
+service splicefs reload           # FreeBSD
 kill -HUP <pid>                   # by hand, and on macOS
 ```
 
