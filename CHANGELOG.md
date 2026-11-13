@@ -113,6 +113,8 @@ notable ones.
 - Tests: the macOS mount test client in `mount/nfs` picked a random local port itself and
   failed with "address already in use" when runs overlapped; it now asks again like the
   other test client, so concurrent test runs no longer collide.
+- The package and service tests download each test image with up to 3 tries and name a failed
+  download as one; a service manager that did not start shows the container's own output.
 
 ### Security
 

@@ -18,6 +18,9 @@ esac
 : "${VERSION:?VERSION is not set}"
 : "${PACKAGE_DATE:?PACKAGE_DATE is not set}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# package-lib.sh reads files relative to the repository root.
+cd "$root"
+. scripts/package-lib.sh
 # Named explicitly because after a run with another platform the local image tag can point
 # at the other CPU type, and an empty setting would then silently test the wrong one.
 platform="${PLATFORM:-$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')}"
@@ -43,6 +46,18 @@ while read -r format image; do
     # tests are not written yet; whoever adds scripts/repo-test-<format>.sh starts them here.
     if [ ! -f "$root/scripts/$kind-test-$format.sh" ]; then
         echo "skip $format $image (no $kind test yet)"
+        continue
+    fi
+    # A registry failure must not look like a failed package test.
+    # Errexit is off for the call to read its status; pull_image checks every command itself.
+    set +e
+    pull_image "$platform" "$image"
+    pulled=$?
+    set -e
+    if [ "$pulled" -ne 0 ]; then
+        echo "FAIL $format $image"
+        echo "     could not download the image $image (3 tries)"
+        failed=$((failed + 1))
         continue
     fi
     # $mounts is split on purpose: it holds several -v options.
