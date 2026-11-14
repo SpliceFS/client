@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.16] - 2026-11-14
+
+- Internal: contributors are told to merge `main` down to fix a branch the bot cannot rebuild.
+  Nothing changes for users.
+
 ## [0.5.15] - 2026-11-14
 
 - Internal: whoever changes the client keeps its shared code current by hand. Nothing changes for
