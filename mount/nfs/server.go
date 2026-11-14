@@ -36,6 +36,7 @@ type serverConfig struct {
 // the mount protocol on the same port, so a client mounts with port and mountport set
 // and needs no portmapper.
 type server struct {
+	view    *billyFS
 	guard   *guardListener
 	cancel  context.CancelFunc
 	port    int
@@ -77,6 +78,7 @@ func startServer(fsys core.FS, listener net.Listener, cfg serverConfig) (*server
 		billyView.rootBudget = cfg.rootBudget
 	}
 	srv := &server{
+		view:   billyView,
 		guard:  &guardListener{Listener: listener, log: cfg.logger, conns: make(map[*trackedConn]struct{})},
 		cancel: cancel,
 		port:   int(addr.Port()),
@@ -97,8 +99,8 @@ func (s *server) Done() <-chan struct{} { return s.done }
 // be called after Done is closed.
 func (s *server) Err() error { return s.err }
 
-// Close stops the server, cancels the calls in flight and closes every connection. It
-// returns when the accept loop has ended. The go-nfs goroutine of each connection ends
+// Close stops the server, cancels the calls in flight, closes every connection and the
+// files kept open for reading. It returns when the accept loop has ended. The go-nfs goroutine of each connection ends
 // as soon as its connection is closed. Close is safe to call more than once.
 func (s *server) Close() {
 	s.closing.Store(true)
@@ -107,6 +109,7 @@ func (s *server) Close() {
 		s.guard.log.Warn("close listener", slog.Any("err", err))
 	}
 	<-s.done
+	s.view.close()
 }
 
 func (s *server) run(nfsServer *gonfs.Server) {

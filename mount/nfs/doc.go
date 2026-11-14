@@ -14,12 +14,18 @@
 //
 // # Behavior that differs from the FUSE layer
 //
-// go-nfs is stateless and opens a file for every READ request, so a core.FS sees one
-// Open and one Stat per read request. go-nfs serves the requests of one connection one
-// after another. Its status mapping is fixed: a failed LOOKUP is always reported as
-// "no such file", a failed READDIR as "not a directory" and a failed open for READ as
-// "permission denied", whatever the cause. Only GETATTR and the read itself report an
-// I/O error for core.ErrUnavailable.
+// go-nfs is stateless and opens a file for every READ request, so the billy layer sees
+// one Open and one Stat per read request. The core.FS sees fewer opens: the layer keeps
+// the opened core.File of each path for as long as READs keep coming and closes it after
+// two seconds without one, or when the mount ends. The READs of a file that is being
+// read, also those that arrive together, so read the one version that was chosen at the
+// first open, and a file that is replaced is seen by the first READ after the quiet time,
+// like a new open. A read that fails drops the kept file, so the next READ opens again.
+//
+// go-nfs serves the requests of one connection one after another. Its status mapping is
+// fixed: a failed LOOKUP is always reported as "no such file", a failed READDIR as "not a
+// directory" and a failed open for READ as "permission denied", whatever the cause. Only
+// GETATTR and the read itself report an I/O error for core.ErrUnavailable.
 //
 // The macOS mount is soft, so that a program does not hang when the client is gone. The
 // kernel then gives up on a request that the server has not answered after about nine

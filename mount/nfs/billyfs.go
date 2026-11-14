@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -64,6 +65,9 @@ type billyFS struct {
 
 	spaceMu   sync.Mutex
 	lastSpace core.Space // the last capacity the core reported; zero until it has
+
+	// pins keeps the opened file of each path that is being read; see pinnedFiles.
+	pins *pinnedFiles
 }
 
 // rootAttr is the state of the root's attributes: the last answer of the core and the
@@ -88,6 +92,7 @@ func newBillyFS(
 		log:        log,
 		rootBudget: rootAttrBudget,
 		created:    time.Now(),
+		pins:       newPinnedFiles(fsys, log),
 	}
 }
 
@@ -168,7 +173,9 @@ func (b *billyFS) ReadDir(name string) ([]os.FileInfo, error) {
 	return infos, nil
 }
 
-// Open opens the file at name for reading.
+// Open opens the file at name for reading. go-nfs calls it for every READ request, so
+// the core.File is shared by the READs of one path (see pinnedFiles) and every READ of a
+// busy file reads the one version that was chosen when it was first opened.
 //
 //nolint:ireturn // the signature is fixed by billy.Filesystem.
 func (b *billyFS) Open(name string) (billy.File, error) {
@@ -178,11 +185,11 @@ func (b *billyFS) Open(name string) (billy.File, error) {
 	}
 	ctx, cancel := b.callContext()
 	defer cancel()
-	f, err := b.fsys.Open(ctx, cname)
+	p, err := b.pins.acquire(ctx, cname)
 	if err != nil {
 		return nil, b.mapError("open", name, err)
 	}
-	return &billyFile{fs: b, name: name, file: f}, nil
+	return &billyFile{fs: b, name: name, pin: p, file: p.file}, nil
 }
 
 // OpenFile opens name for reading and refuses every flag that could change it.
@@ -248,6 +255,12 @@ func (*billyFS) Chroot(string) (billy.Filesystem, error) {
 // Root is the root of the view.
 func (*billyFS) Root() string {
 	return "/"
+}
+
+// close ends the sharing of opened files and closes the idle ones. It is called when the
+// mount ends.
+func (b *billyFS) close() {
+	b.pins.closeAll()
 }
 
 func (b *billyFS) callContext() (context.Context, context.CancelFunc) {
@@ -380,12 +393,15 @@ func (i fileInfo) Sys() any {
 	return file.FileInfo{Nlink: 1, UID: i.owner.uid, GID: i.owner.gid, Fileid: i.attr.Inode}
 }
 
-// billyFile is an open core.File. go-nfs only uses ReadAt and Close; Read and Seek
-// exist to satisfy billy.File.
+// billyFile is one use of a shared open core.File. go-nfs only uses ReadAt and Close;
+// Read and Seek exist to satisfy billy.File. Close ends the use; the core.File itself is
+// closed by pinnedFiles.
 type billyFile struct {
-	fs   *billyFS
-	name string
-	file core.File
+	fs       *billyFS
+	name     string
+	pin      *pin
+	file     core.File
+	released atomic.Bool
 
 	mu     sync.Mutex
 	offset int64
@@ -405,6 +421,9 @@ func (f *billyFile) ReadAt(p []byte, off int64) (int, error) {
 	case errors.Is(err, io.EOF):
 		return n, io.EOF
 	default:
+		// The next READ must open the file again instead of meeting this failure
+		// again on the same open.
+		f.fs.pins.discard(f.pin)
 		return n, f.fs.mapError("read", f.name, err)
 	}
 }
@@ -437,9 +456,11 @@ func (f *billyFile) Seek(offset int64, whence int) (int64, error) {
 	return f.offset, nil
 }
 
+// Close gives the file back. A second Close does nothing, so the use is never counted
+// out twice.
 func (f *billyFile) Close() error {
-	if err := f.file.Close(); err != nil {
-		return f.fs.mapError("close", f.name, err)
+	if f.released.CompareAndSwap(false, true) {
+		f.fs.pins.release(f.pin)
 	}
 	return nil
 }
