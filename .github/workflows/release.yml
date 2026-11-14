@@ -147,3 +147,18 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
         run: gh api repos/SpliceFS/org-site/dispatches -f event_type=release-published
+
+  # The Homebrew formulas install the newest release, so the tap is told about this one. It
+  # then opens a pull request that tests the new version on macOS before it is merged. This
+  # job runs outside the publish environment and holds none of its keys. When it fails, the
+  # release is out all the same.
+  homebrew:
+    name: Tell the Homebrew tap about this version
+    needs: release
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Ask the tap to update its formulas
+        env:
+          GH_TOKEN: ${{ secrets.MERGE_BOT_TOKEN }}
+        run: gh api repos/SpliceFS/homebrew-tap/dispatches -f event_type=release-published
