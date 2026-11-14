@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.8] - 2026-11-14
+
+- Internal: a failed release, merge or scheduled check opens an issue that emails the owner. Nothing
+  changes for users.
+
 ## [0.5.7] - 2026-11-14
 
 - Internal: a release uploads the package files before the index files that name them, and stops at
