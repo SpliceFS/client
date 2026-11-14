@@ -63,7 +63,7 @@ fi
 # release fails. The GitHub release with its checksum file is the last step of a server
 # release, after its packages are published. Prints yes or no; any other answer ends the run.
 released() {
-    code="$(curl -sSL --retry 3 -o /dev/null -w '%{http_code}' \
+    code="$(curl -sSL --proto '=https' --proto-redir '=https' --retry 3 -o /dev/null -w '%{http_code}' \
         "https://github.com/SpliceFS/server/releases/download/$1/SHA256SUMS" </dev/null)" ||
         { echo "cannot ask GitHub whether server $1 is released" >&2; exit 1; }
     case "$code" in
