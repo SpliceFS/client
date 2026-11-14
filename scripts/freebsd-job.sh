@@ -20,6 +20,19 @@ version="$5"
 program_version="$6"
 mkdir -p "$out"
 
+# Prints how long the phase that just ended took. timing.sh is not used: this script runs
+# from the job folder on FreeBSD, where no other file of the repository is.
+phase_start="$(date +%s)"
+phase_done() {
+    phase_now="$(date +%s)"
+    echo "[time] $1: $((phase_now - phase_start))s"
+    phase_start="$phase_now"
+}
+
+# Everything before this point, the boot and the first-boot setup, is the time since boot.
+boot_sec="$(sysctl -n kern.boottime | sed -n 's/.*sec = \([0-9]*\).*/\1/p')"
+if [ -n "$boot_sec" ]; then echo "[time] machine boot and first-boot setup: $((phase_start - boot_sec))s"; fi
+
 fail() {
     echo "FAIL: $1" >&2
     exit 1
@@ -33,6 +46,7 @@ machine="$(uname -m)"
 
 # The base system ships only a stub that fetches the real pkg on first use.
 pkg -N >/dev/null 2>&1 || env ASSUME_ALWAYS_YES=yes pkg bootstrap -y >/dev/null
+phase_done "bootstrap pkg"
 
 # One package per CPU type. goarch is how the build names the binary, abiarch how pkg names
 # the CPU type in an ABI string. The folders the package owns are the @dir lines of plist.
@@ -55,7 +69,9 @@ build() {
         -M "/tmp/manifest-$goarch" -p "$in/plist" -r "$stage" -o "$out/FreeBSD-$major-$abiarch"
 }
 build amd64 amd64
+phase_done "build the amd64 package"
 build arm64 aarch64
+phase_done "build the arm64 package"
 
 case "$machine" in
     amd64) mine_abiarch=amd64 ;;
@@ -89,6 +105,7 @@ for abiarch in amd64 aarch64; do
     pkg repo "$folder" "rsa:$keys/splicefs.rsa" || fail "pkg repo could not sign the catalog of $folder"
     [ -f "$folder/meta.conf" ] || fail "pkg repo did not write $folder/meta.conf"
 done
+phase_done "unpack the input and sign the repositories"
 repo_folder="$out/repo/FreeBSD:$major:$mine_abiarch"
 
 # Writes a repository configuration: <file> <repository name> <folder>.
@@ -130,6 +147,7 @@ mkdir -p /usr/local/etc/pkg/repos
 write_repo_conf /usr/local/etc/pkg/repos/splicefs.conf splicefs "$repo_folder"
 pkg update -r splicefs
 pkg install -y -r splicefs "$name"
+phase_done "update the repository and install the package"
 [ -x "/usr/local/bin/$program" ] || fail "the program is not installed"
 "/usr/local/bin/$program" --version | grep -qF "$program_version" ||
     fail "$program --version does not report $program_version"
@@ -152,6 +170,7 @@ service "$program" restart >/dev/null || fail "restart failed"
 wait_for 20 answers
 [ "$wait_status" -eq 0 ] || { show; fail "the service does not do its job after a restart"; }
 echo "installed, enabled, started with one command, running as $expected_user, answering, reload and restart work"
+phase_done "start the service and check it"
 
 # Removing the package stops the service and leaves nothing running.
 pkg delete -y "$name" >/dev/null
@@ -160,6 +179,7 @@ pkg delete -y "$name" >/dev/null
 if answers; then fail "the service still answers after the package was removed"; fi
 [ ! -e "/usr/local/bin/$program" ] || fail "remove left the program behind"
 echo "removed: the service stopped"
+phase_done "remove the package"
 
 # A repository that is not signed with our key is refused. Two copies of the repository are
 # made, one signed again with a key made here and one not signed at all, and the package must
@@ -188,6 +208,7 @@ for kind in otherkey unsigned; do
     fi
 done
 echo "repository: signed catalog accepted; one signed with another key and an unsigned one refused"
+phase_done "refuse the repositories with a wrong signature"
 
 # The packages published before were needed for the catalog, and the host has them already:
 # they do not travel back, so the result stays small however many versions are published.

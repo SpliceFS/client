@@ -11,7 +11,8 @@ set -eu
 
 kind="${1:-package}"
 case "$kind" in
-    package | repo) ;;
+    package) title="Package install tests" ;;
+    repo) title="Repository install tests" ;;
     *) echo "usage: package-test.sh [package|repo]" >&2; exit 2 ;;
 esac
 
@@ -21,6 +22,8 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 # package-lib.sh reads files relative to the repository root.
 cd "$root"
 . scripts/package-lib.sh
+. scripts/timing.sh
+timing_begin
 # Named explicitly because after a run with another platform the local image tag can point
 # at the other CPU type, and an empty setting would then silently test the wrong one.
 platform="${PLATFORM:-$(docker version --format '{{.Server.Os}}/{{.Server.Arch}}')}"
@@ -31,9 +34,20 @@ if [ "$kind" = repo ]; then
 fi
 systems="$(cat "$root/packaging/test-systems")"
 log="$(mktemp)"
-trap 'rm -f "$log"' EXIT
+# The timing report is printed on every way out, so a failed run still shows where time went.
+trap 'rm -f "$log"; timing_report "$title"' EXIT
 passed=0
 failed=0
+
+# Runs one system's test in its own container. The container's output goes to the log, so the
+# redirection is part of this function and not of the timed call, which prints to the console.
+# $mounts is split on purpose: it holds several -v options.
+run_system_test() {
+    # shellcheck disable=SC2086
+    docker run --rm --platform "$platform" \
+        -e VERSION -e PACKAGE_DATE -v "$root":/src:ro $mounts -w /src \
+        "$image" sh "scripts/$kind-test-$format.sh" /out >"$log" 2>&1
+}
 
 # A here-document keeps the counters in this shell; a pipe would run the loop in a subshell.
 while read -r format image; do
@@ -51,7 +65,7 @@ while read -r format image; do
     # A registry failure must not look like a failed package test.
     # Errexit is off for the call to read its status; pull_image checks every command itself.
     set +e
-    pull_image "$platform" "$image"
+    timed "$image: pull the image" pull_image "$platform" "$image"
     pulled=$?
     set -e
     if [ "$pulled" -ne 0 ]; then
@@ -60,11 +74,12 @@ while read -r format image; do
         failed=$((failed + 1))
         continue
     fi
-    # $mounts is split on purpose: it holds several -v options.
-    # shellcheck disable=SC2086
-    if docker run --rm --platform "$platform" \
-        -e VERSION -e PACKAGE_DATE -v "$root":/src:ro $mounts -w /src \
-        "$image" sh "scripts/$kind-test-$format.sh" /out >"$log" 2>&1; then
+    # Errexit is off for the call to read its status; the function is one docker command.
+    set +e
+    timed "$image: $kind test" run_system_test
+    ran=$?
+    set -e
+    if [ "$ran" -eq 0 ]; then
         echo "ok   $format $image"
         passed=$((passed + 1))
     else

@@ -19,6 +19,9 @@ set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+# shellcheck source=timing.sh
+. "$root/scripts/timing.sh"
+
 # The version this client is about to get, as the release sets it in VERSION.
 read -r version <VERSION
 main="${version%%.*}"
@@ -26,9 +29,21 @@ rest="${version#*.}"
 minor="${rest%%.*}"
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+
+# Runs on every way out, so that a failed run reports the times of the parts that did run.
+finish() {
+    status=$?
+    trap - EXIT INT TERM
+    rm -rf "$tmp"
+    timing_report "The real client against the real server"
+    exit "$status"
+}
+trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+# The scripts started below add their own lines to the same record.
+timing_begin
 
 # The tags of the server repository that are releases (v1.2.3), oldest first. sort -V is a
 # GNU option, so the numbers are sorted field by field instead.
@@ -61,7 +76,7 @@ if [ -z "${SERVER_REFUSED+set}" ]; then
             'substr($1, 2) == main && $2 + 0 < minor + 0 { last = $0 } END { print last }')"
 fi
 
-go build -buildvcs=false \
+timed "build the client" go build -buildvcs=false \
     -ldflags "-X github.com/SpliceFS/client/internal/version.version=v$version" \
     -o "$tmp/splicefs" ./cmd/splicefs
 
@@ -87,8 +102,9 @@ run_all() {
     while read -r tag; do
         [ -n "$tag" ] || continue
         # Nothing inside may read the list that this loop is reading.
-        build_server "$tag" </dev/null
-        "$root/scripts/compat-test.sh" "$mode" "$tmp/server-$tag/splicefsd" "$tmp/splicefs" </dev/null
+        timed "build the released server $tag" build_server "$tag" </dev/null
+        timed "compatibility run $mode, server $tag" \
+            "$root/scripts/compat-test.sh" "$mode" "$tmp/server-$tag/splicefsd" "$tmp/splicefs" </dev/null
     done <"$tmp/run-list"
 }
 
