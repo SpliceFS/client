@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.6] - 2026-11-14
+
+- Internal: a release refuses a tag that is not on main or does not match `VERSION`. Nothing changes
+  for users.
+
 ## [0.5.5] - 2026-11-14
 
 - On macOS, `splicefs umount` removes a mount left behind by a client that crashed or was killed,
