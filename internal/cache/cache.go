@@ -7,13 +7,18 @@
 //
 // The bitmap stored on disk never claims a block whose data has not been written: a crash
 // can lose recent blocks, which are then fetched again, but cannot invent them.
+//
+// One process at a time may use a cache folder: Open takes a lock on a file at the top of the
+// folder and Close gives it back.
 package cache
 
 import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -90,6 +95,9 @@ type Cache struct {
 	opts Options
 	fs   fileSystem
 	log  *slog.Logger
+	// lock is the open lock file of the folder. Closing it frees the folder for another
+	// process, so it is closed last.
+	lock *os.File
 
 	mu      sync.Mutex
 	closed  bool
@@ -110,11 +118,15 @@ func (c *Cache) SetLimits(maxSize int64, maxAge time.Duration, minFree int64) {
 // entries found there. Corrupt, orphaned and temporary files that the cache would have
 // created are removed; other files are left alone. A damaged entry is dropped and logged;
 // it never makes Open fail.
+//
+// The folder is locked first, and nothing in it is touched before that. A folder that
+// another process holds makes Open fail with ErrInUse. The lock lasts until Close or the end
+// of the process.
 func Open(opts Options) (*Cache, error) {
-	return openWith(opts, osFS{})
+	return openWith(opts, osFS{}, syscall.Flock)
 }
 
-func openWith(opts Options, fsys fileSystem) (*Cache, error) {
+func openWith(opts Options, fsys fileSystem, flock flocker) (*Cache, error) {
 	if opts.Dir == "" {
 		return nil, ErrNoDirectory
 	}
@@ -136,8 +148,14 @@ func openWith(opts Options, fsys fileSystem) (*Cache, error) {
 	if err := fsys.MkdirAll(opts.Dir); err != nil {
 		return nil, fmt.Errorf("create cache directory: %w", err)
 	}
-	if err := cache.scan(); err != nil {
+	lock, err := lockFolder(opts.Dir, flock)
+	if err != nil {
 		return nil, err
+	}
+	cache.lock = lock
+	// The scan removes files, so it must not run before the lock is held.
+	if err := cache.scan(); err != nil {
+		return nil, errors.Join(err, lock.Close())
 	}
 	return cache, nil
 }
@@ -227,8 +245,9 @@ func (c *Cache) Usage() Usage {
 	return Usage{Entries: len(c.entries), Bytes: c.total}
 }
 
-// Close persists every entry and releases the cache's file handles. Entries still held
-// by callers become unusable. Operations on a closed cache return ErrClosed.
+// Close persists every entry and releases the cache's file handles and the lock on its
+// folder. Entries still held by callers become unusable. Operations on a closed cache
+// return ErrClosed.
 func (c *Cache) Close() error {
 	c.mu.Lock()
 	if c.closed {
@@ -252,5 +271,7 @@ func (c *Cache) Close() error {
 		errs = append(errs, cached.closeFileLocked())
 	}
 	c.mu.Unlock()
+	// Last, so that no other process can start on the folder before everything is written.
+	errs = append(errs, c.lock.Close())
 	return errors.Join(errs...)
 }

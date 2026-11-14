@@ -115,6 +115,24 @@ func newClient(cfg *config.Config, opts Options, clock fetch.Clock) (*Client, er
 type generation struct {
 	clusters map[string]*cluster
 	caches   map[string]*cacheDir
+	// retiredCaches is only set on the generation that build starts from. They are caches
+	// that an earlier reload dropped and that a view still holds, so they are open and
+	// their folders are locked. A mount that comes back on such a folder takes the open
+	// cache again; opening the folder a second time would fail on its own lock.
+	retiredCaches []*cacheDir
+}
+
+// reusableCache returns the cache of dir that this generation has open, or nil.
+func (g generation) reusableCache(dir string) *cacheDir {
+	if kept, ok := g.caches[dir]; ok {
+		return kept
+	}
+	for _, held := range g.retiredCaches {
+		if held.dir == dir {
+			return held
+		}
+	}
+	return nil
 }
 
 // build makes the clusters and caches that cfg asks for. A cluster or cache of old that
@@ -125,7 +143,7 @@ func build(cfg *config.Config, opts Options, old generation) (generation, error)
 	if err != nil {
 		return generation{}, err
 	}
-	caches, err := openCaches(cfg.Mounts, opts, old.caches)
+	caches, err := openCaches(cfg.Mounts, opts, old)
 	if err != nil {
 		for name, clus := range clusters {
 			if old.clusters[name] != clus {
@@ -283,10 +301,11 @@ func checkSharedCaches(mounts []config.Mount) error {
 }
 
 // openCaches opens one cache per distinct cache directory of the mounts. A directory
-// that old has open is reused, and its limits are applied by Apply once the swap is
-// certain, not here.
+// that old has open, retired or not, is reused and never opened a second time, because a
+// process may hold a cache folder only once. Its limits are applied by Apply once the swap
+// is certain, not here.
 func openCaches(mounts []config.Mount, opts Options,
-	old map[string]*cacheDir,
+	old generation,
 ) (map[string]*cacheDir, error) {
 	if err := checkSharedCaches(mounts); err != nil {
 		return nil, err
@@ -299,7 +318,7 @@ func openCaches(mounts []config.Mount, opts Options,
 		if _, ok := caches[dir]; ok {
 			continue
 		}
-		if kept, ok := old[dir]; ok {
+		if kept := old.reusableCache(dir); kept != nil {
 			caches[dir] = kept
 			continue
 		}

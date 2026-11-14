@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/cache"
 	"github.com/SpliceFS/common/units"
 	"github.com/SpliceFS/common/wire"
 )
@@ -80,6 +81,21 @@ func TestNewFailures(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), testCase.want) {
 			t.Errorf("%s: New = %v, want an error containing %q", testCase.name, err, testCase.want)
 		}
+	}
+}
+
+func TestSecondClientOnAHeldCacheFolderFails(t *testing.T) {
+	t.Parallel()
+	env := newHarness(t, "a")
+	env.start()
+
+	second, err := New(env.cfg, env.options())
+	if err == nil {
+		closeFile(t, second)
+		t.Fatal("a second client opened a cache folder that the first one holds")
+	}
+	if !errors.Is(err, cache.ErrInUse) || !strings.Contains(err.Error(), env.cfg.Cache.Dir) {
+		t.Errorf("New = %v, want cache.ErrInUse naming %s", err, env.cfg.Cache.Dir)
 	}
 }
 

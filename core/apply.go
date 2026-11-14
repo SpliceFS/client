@@ -20,7 +20,8 @@ type retired struct {
 // Apply makes the clusters and caches match cfg while mounts keep using the client. A
 // cluster whose settings, password and listing TTL are unchanged is kept, with its
 // session; any other is built new. A cache directory that is already open is kept and
-// gets the new limits, which the next eviction pass uses; a new one is opened. Whatever
+// gets the new limits, which the next eviction pass uses, and so does one that an earlier
+// reload dropped but a view still holds; a new one is opened. Whatever
 // can fail happens before anything changes: on an error the client is as it was and what
 // this call opened is closed. Clusters and caches that are replaced or removed go on
 // serving the views that hold them and are closed when the last of those is released,
@@ -33,7 +34,7 @@ func (c *Client) Apply(cfg *config.Config) error {
 		c.mu.Unlock()
 		return errClosed
 	}
-	old := generation{clusters: c.clusters, caches: c.caches}
+	old := generation{clusters: c.clusters, caches: c.caches, retiredCaches: slices.Clone(c.retiredCaches)}
 	c.mu.Unlock()
 
 	next, err := build(cfg, c.opts, old)
@@ -60,13 +61,25 @@ func (c *Client) install(cfg *config.Config, old, next generation) retired {
 	c.clusters, c.caches = next.clusters, next.caches
 	for i := range cfg.Mounts {
 		cacheCfg := &cfg.Mounts[i].Cache
-		if store, ok := old.caches[cacheCfg.Dir]; ok {
-			store.SetLimits(int64(cacheCfg.MaxSize), cacheCfg.MaxAge.Std(), int64(cacheCfg.MinFree))
-		}
+		next.caches[cacheCfg.Dir].SetLimits(int64(cacheCfg.MaxSize), cacheCfg.MaxAge.Std(), int64(cacheCfg.MinFree))
 	}
+	c.reviveCaches(next.caches)
 	return retired{
 		clusters: c.retireClusters(old.clusters, next.clusters),
 		caches:   c.retireCaches(old.caches, next.caches),
+	}
+}
+
+// reviveCaches takes the caches that next has taken back off the list of retired ones. A
+// cache on both lists would be closed twice, and a retired one is closed when its last
+// view is released. The caller holds c.mu.
+func (c *Client) reviveCaches(next map[string]*cacheDir) {
+	for _, store := range next {
+		if store.retired {
+			store.retired = false
+			c.retiredCaches = slices.DeleteFunc(c.retiredCaches,
+				func(held *cacheDir) bool { return held == store })
+		}
 	}
 }
 
@@ -115,6 +128,11 @@ func (c *Client) Release(fs FS) {
 	if !ok || mountView.client != c {
 		return
 	}
+	// A cache that leaves the list of retired ones here is closed a moment later. Apply must
+	// not look at that list in between: it would not find the cache, open its folder anew
+	// and fail on the lock that the cache still holds.
+	c.applyMu.Lock()
+	defer c.applyMu.Unlock()
 	var done retired
 	c.mu.Lock()
 	if mountView.released {

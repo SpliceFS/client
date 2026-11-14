@@ -77,6 +77,9 @@ Notes on the table:
 - A mount may override any of these keys, see "Mounts". Mounts that share a cache folder share
   cached blocks.
 - The cache folder of a mount is created when the mount is made.
+- Only one splicefs process can use a cache folder at a time. It holds a lock on the file `lock`
+  in the folder until it ends, and a second process that starts on the same folder fails with an
+  error that names the folder. Leave the file in place; a crash or a reboot frees the lock.
 
 ## Clusters
 
