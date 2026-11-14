@@ -17,6 +17,7 @@ import (
 	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
 	"github.com/SpliceFS/client/internal/version"
+	"github.com/SpliceFS/client/mount/nfs"
 )
 
 // Exit statuses.
@@ -80,7 +81,9 @@ type backend struct {
 	defaultConfigDir func() (string, error)
 	run              func(ctx context.Context, cfg *config.Config, targets []string, opts app.Options) error
 	unmount          func(ctx context.Context, socketPath string, targets []string, force bool) error
-	status           func(ctx context.Context, socketPath string) (app.Report, error)
+	// clearLeftBehind removes the mounts a client that died left behind, when none is running.
+	clearLeftBehind func(ctx context.Context, socketPath string, targets []string) ([]nfs.Cleared, error)
+	status          func(ctx context.Context, socketPath string) (app.Report, error)
 	// requestMount, getenv and abs serve the mount helper.
 	requestMount func(ctx context.Context, socketPath string, req app.MountRequest) error
 	getenv       func(key string) string
@@ -95,6 +98,7 @@ func systemBackend() backend {
 		defaultConfigDir: config.DefaultConfigDir,
 		run:              app.Run,
 		unmount:          app.Unmount,
+		clearLeftBehind:  app.ClearLeftBehind,
 		status:           app.Status,
 		requestMount:     app.RequestMount,
 		getenv:           os.Getenv,
@@ -136,11 +140,52 @@ func (b backend) runCommand(ctx context.Context, inv invocation, stdout, stderr 
 	case commandMount:
 		return b.mount(ctx, inv, stderr)
 	case commandUmount:
-		return b.unmount(ctx, app.SocketPath(inv.configDir), inv.targets, inv.force)
+		return b.umount(ctx, inv, stdout, stderr)
 	case commandConfig:
 		return b.runConfig(inv, stdout)
 	}
 	return b.printStatus(ctx, inv, stdout)
+}
+
+// umount asks the running client to unmount. When none is running, it removes the mounts
+// that a client that died left behind, which only macOS keeps a record of. The error of
+// the missing client stays the answer when there was nothing to remove.
+func (b backend) umount(ctx context.Context, inv invocation, stdout, stderr io.Writer) error {
+	socketPath := app.SocketPath(inv.configDir)
+	notRunning := b.unmount(ctx, socketPath, inv.targets, inv.force)
+	if !errors.Is(notRunning, app.ErrNotRunning) {
+		return notRunning
+	}
+	results, recordErr := b.clearLeftBehind(ctx, socketPath, inv.targets)
+	cleared, failures := tellLeftBehind(results, stdout, stderr)
+	if failed := errors.Join(append(failures, recordErr)...); failed != nil || cleared > 0 {
+		return failed
+	}
+	return notRunning
+}
+
+// tellLeftBehind prints what became of each mount and returns how many were removed and why
+// the others could not be.
+func tellLeftBehind(results []nfs.Cleared, stdout, stderr io.Writer) (int, []error) {
+	cleared := 0
+	var failures []error
+	for _, r := range results {
+		switch r.Outcome {
+		case nfs.OutcomeCleared:
+			cleared++
+			sayf(stdout, "removed the mount %s left behind by a client that is no longer running\n", r.Target)
+		case nfs.OutcomeServed:
+			sayf(stderr, "%s is served by a client of another configuration; left alone\n", r.Target)
+		case nfs.OutcomeFailed:
+			failures = append(failures, fmt.Errorf("%s: %w", r.Target, r.Err))
+		case nfs.OutcomeGone:
+			// The mount is not there any more, so there is nothing to tell.
+			continue
+		default:
+			// An outcome that this program does not know says nothing a person could act on.
+		}
+	}
+	return cleared, failures
 }
 
 // runConfig implements config check and config show. A configuration with problems is an

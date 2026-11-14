@@ -340,3 +340,14 @@ func TestAbsPath(t *testing.T) {
 		t.Errorf("absPath = %v", err)
 	}
 }
+
+func TestNFSRecordPathReplacesTheEndingOfTheSocket(t *testing.T) {
+	t.Parallel()
+	const socket = "/run/user/1000/splicefs/0123456789abcdef.sock"
+	if got, want := nfsRecordPath(socket), "/run/user/1000/splicefs/0123456789abcdef.nfs.json"; got != want {
+		t.Errorf("nfsRecordPath = %q, want %q", got, want)
+	}
+	if nfsRecordPath(socket) == requestedPath(socket) {
+		t.Error("the record of NFS mounts shares a file with the requested mounts")
+	}
+}

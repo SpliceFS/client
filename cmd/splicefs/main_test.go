@@ -16,6 +16,7 @@ import (
 	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
 	"github.com/SpliceFS/client/internal/version"
+	"github.com/SpliceFS/client/mount/nfs"
 )
 
 //nolint:paralleltest // it replaces the exit variable and os.Args, which every other test could read
@@ -47,6 +48,10 @@ type calls struct {
 	umountArgs  []string
 	umountForce bool
 	statusCalls int
+	// clearTargets is what the clean-up of left-behind mounts was asked for, and clearCalls how
+	// often it was asked.
+	clearTargets []string
+	clearCalls   int
 }
 
 // fakeBackend returns a backend that records its calls in the returned value and
@@ -68,6 +73,11 @@ func fakeBackend(cfg *config.Config, loadErr, runErr, umountErr, statusErr error
 		unmount: func(_ context.Context, socketPath string, targets []string, force bool) error {
 			recorded.socketPath, recorded.umountArgs, recorded.umountForce = socketPath, targets, force
 			return umountErr
+		},
+		clearLeftBehind: func(_ context.Context, socketPath string, targets []string) ([]nfs.Cleared, error) {
+			recorded.socketPath, recorded.clearTargets = socketPath, targets
+			recorded.clearCalls++
+			return nil, nil
 		},
 		status: func(_ context.Context, socketPath string) (app.Report, error) {
 			recorded.socketPath = socketPath
@@ -109,7 +119,8 @@ func TestSystemBackend(t *testing.T) {
 		"loadConfig": b.loadConfig != nil, "defaultConfigDir": b.defaultConfigDir != nil,
 		"run": b.run != nil, "unmount": b.unmount != nil, "status": b.status != nil,
 		"mounter": b.mounter != nil, "notify": b.notify != nil, "requestMount": b.requestMount != nil,
-		"getenv": b.getenv != nil, "abs": b.abs != nil,
+		"clearLeftBehind": b.clearLeftBehind != nil,
+		"getenv":          b.getenv != nil, "abs": b.abs != nil,
 	}
 	for name, isSet := range set {
 		if !isSet {
@@ -530,6 +541,140 @@ func TestParseLevel(t *testing.T) {
 	for name, want := range levels {
 		if got, ok := parseLevel(name); !ok || got != want {
 			t.Errorf("parseLevel(%q) = %v, %v", name, got, ok)
+		}
+	}
+}
+
+// notRunningBackend is a backend whose client is not running and whose clean-up of
+// left-behind mounts answers results and err.
+func notRunningBackend(results []nfs.Cleared, clearErr error) (backend, *calls) {
+	b, recorded := fakeBackend(nil, nil, nil, app.ErrNotRunning, nil, app.Report{})
+	record := b.clearLeftBehind
+	b.clearLeftBehind = func(ctx context.Context, socketPath string, targets []string) ([]nfs.Cleared, error) {
+		_, _ = record(ctx, socketPath, targets) //nolint:errcheck // Only records the call; it answers nothing.
+		return results, clearErr
+	}
+	return b, recorded
+}
+
+const noClient = "splicefs: no client is running"
+
+// leftBehindCase is one answer of the clean-up of left-behind mounts, and what umount must
+// print and return for it.
+type leftBehindCase struct {
+	name       string
+	results    []nfs.Cleared
+	clearErr   error
+	wantStatus int
+	wantOut    string
+	wantErr    []string
+}
+
+func leftBehindCases() []leftBehindCase {
+	return []leftBehindCase{
+		{
+			name:       "one cleared",
+			results:    []nfs.Cleared{{Target: "/mnt/a", Outcome: nfs.OutcomeCleared}},
+			wantStatus: exitOK,
+			wantOut:    "removed the mount /mnt/a left behind by a client that is no longer running\n",
+		},
+		{
+			name: "cleared, already gone and served",
+			results: []nfs.Cleared{
+				{Target: "/mnt/a", Outcome: nfs.OutcomeCleared},
+				{Target: "/mnt/b", Outcome: nfs.OutcomeGone},
+				{Target: "/mnt/c", Outcome: nfs.OutcomeServed},
+				{Target: "/mnt/d", Outcome: nfs.OutcomeCleared},
+			},
+			wantStatus: exitOK,
+			wantOut: "removed the mount /mnt/a left behind by a client that is no longer running\n" +
+				"removed the mount /mnt/d left behind by a client that is no longer running\n",
+			wantErr: []string{"/mnt/c is served by a client of another configuration; left alone\n"},
+		},
+		{
+			name: "cleared and failed",
+			results: []nfs.Cleared{
+				{Target: "/mnt/a", Outcome: nfs.OutcomeCleared},
+				{Target: "/mnt/b", Outcome: nfs.OutcomeFailed, Err: errors.New("umount: Resource busy")},
+			},
+			wantStatus: exitError,
+			wantOut:    "removed the mount /mnt/a left behind by a client that is no longer running\n",
+			wantErr:    []string{"splicefs: /mnt/b: umount: Resource busy\n"},
+		},
+		{
+			name:       "only failed",
+			results:    []nfs.Cleared{{Target: "/mnt/b", Outcome: nfs.OutcomeFailed, Err: errors.New("stuck")}},
+			wantStatus: exitError,
+			wantErr:    []string{"splicefs: /mnt/b: stuck\n"},
+		},
+		{
+			name:       "damaged record",
+			clearErr:   nfs.ErrRecordDamaged,
+			wantStatus: exitError,
+			wantErr:    []string{"splicefs: " + nfs.ErrRecordDamaged.Error()},
+		},
+		{
+			name:       "nothing recorded",
+			wantStatus: exitError,
+			wantErr:    []string{noClient},
+		},
+		{
+			name:       "everything already gone",
+			results:    []nfs.Cleared{{Target: "/mnt/a", Outcome: nfs.OutcomeGone}},
+			wantStatus: exitError,
+			wantErr:    []string{noClient},
+		},
+		{
+			name:       "only served",
+			results:    []nfs.Cleared{{Target: "/mnt/a", Outcome: nfs.OutcomeServed}},
+			wantStatus: exitError,
+			wantErr: []string{
+				"/mnt/a is served by a client of another configuration; left alone\n", noClient,
+			},
+		},
+	}
+}
+
+func TestUmountWithoutAClientClearsWhatWasLeftBehind(t *testing.T) {
+	t.Parallel()
+	for _, tt := range leftBehindCases() {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			b, recorded := notRunningBackend(tt.results, tt.clearErr)
+			ran := executeWith(b, "--config", "/etc/example", "umount", "--force", "/mnt/a")
+			if ran.status != tt.wantStatus || ran.stdout != tt.wantOut {
+				t.Errorf("status %d stdout %q, want %d %q\nstderr %q",
+					ran.status, ran.stdout, tt.wantStatus, tt.wantOut, ran.stderr)
+			}
+			wantStderr(t, ran.stderr, tt.wantErr)
+			if want := app.SocketPath("/etc/example"); recorded.socketPath != want ||
+				!slices.Equal(recorded.clearTargets, []string{"/mnt/a"}) {
+				t.Errorf("clean-up asked for %q at %q, want /mnt/a at %q", recorded.clearTargets, recorded.socketPath, want)
+			}
+		})
+	}
+}
+
+// wantStderr fails the test unless stderr contains every text in want, or is empty when want is.
+func wantStderr(t *testing.T, stderr string, want []string) {
+	t.Helper()
+	for _, text := range want {
+		if !strings.Contains(stderr, text) {
+			t.Errorf("stderr %q does not contain %q", stderr, text)
+		}
+	}
+	if len(want) == 0 && stderr != "" {
+		t.Errorf("stderr %q, want none", stderr)
+	}
+}
+
+func TestUmountWithAClientDoesNotClearAnything(t *testing.T) {
+	t.Parallel()
+	for name, err := range map[string]error{"unmounted": nil, "in use": app.ErrBusy} {
+		b, recorded := fakeBackend(nil, nil, nil, err, nil, app.Report{})
+		execute(context.Background(), []string{"umount"}, io.Discard, io.Discard, b)
+		if recorded.clearCalls != 0 {
+			t.Errorf("%s: the clean-up of left-behind mounts ran while a client answered", name)
 		}
 	}
 }

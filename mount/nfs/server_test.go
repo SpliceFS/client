@@ -25,6 +25,15 @@ type addrConn struct {
 
 func (c addrConn) RemoteAddr() net.Addr { return c.remote }
 
+// failingCloseConn is a connection whose Close always returns err.
+type failingCloseConn struct {
+	net.Conn
+
+	err error
+}
+
+func (c failingCloseConn) Close() error { return c.err }
+
 // pipeEnds are the two ends of a connection made by pipeFrom.
 type pipeEnds struct {
 	server net.Conn // claims to come from the address given to pipeFrom
@@ -186,6 +195,28 @@ func TestTrackedConnForgetsItselfWhenClosed(t *testing.T) {
 	defer guard.mu.Unlock()
 	if len(guard.conns) != 0 {
 		t.Errorf("%d connections still tracked", len(guard.conns))
+	}
+}
+
+func TestTrackedConnReportsAFailureToClose(t *testing.T) {
+	t.Parallel()
+	guard := newTestGuard(newScriptedListener("127.0.0.1:1"))
+	local := pipeFrom("127.0.0.1:4001")
+	closeAfter(t, local.client)
+	closeAfter(t, local.server)
+	boom := errors.New("boom")
+	conn, err := guard.track(failingCloseConn{Conn: local.server, err: boom})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A pipe never fails to close, so the failure is made by the connection, not by timing.
+	if err := conn.Close(); !errors.Is(err, boom) {
+		t.Errorf("Close = %v, want boom", err)
+	}
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	if len(guard.conns) != 0 {
+		t.Errorf("%d connections still tracked after a failed close", len(guard.conns))
 	}
 }
 

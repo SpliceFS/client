@@ -291,6 +291,7 @@ func mountOne(coreClient Core, mountCfg config.Mount, opts Options) (*liveMount,
 		Source:     source,
 		AllowOther: mountCfg.AllowOther,
 		Logger:     opts.Logger,
+		RecordPath: nfsRecordPath(opts.SocketPath),
 	})
 	if err != nil {
 		// The mount never existed, so nothing else will give the view back.

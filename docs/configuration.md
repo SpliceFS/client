@@ -421,13 +421,29 @@ splicefs [--config DIR] [--log-level LEVEL] mount [TARGET...]
         everything and exits
 splicefs [--config DIR] umount [--force] [TARGET...]
         ask the running client to unmount; a mount in use is refused unless --force is given;
-        the client keeps running
+        the client keeps running; on macOS, when no client is running, remove the mounts an
+        earlier client left behind (see below)
 splicefs [--config DIR] status [--json]
         mounts, nodes with their measured speed, cache use
 splicefs [--config DIR] config check
 splicefs [--config DIR] config show
 splicefs --version
 ```
+
+On macOS, a client that dies without unmounting (a crash, `kill -9`) leaves its mounts in
+place, and every program that touches such a folder waits and fails. The client records each
+NFS mount it makes. When no client is running, `splicefs umount [TARGET...]` looks at the
+recorded mounts, all of them or only the named targets, and removes each one that is still
+mounted and whose port nothing answers, with `umount -f`. It prints one line for each mount
+it removed, on standard output, and exits 0 when nothing failed. A recorded mount whose port
+still answers is served by a client of another configuration and is left alone, with a note
+on standard error. If nothing was recorded, or everything recorded is already unmounted, the
+answer is the same as without this feature: `no client is running for this configuration`,
+exit status 1. A failed removal is printed with its target and gives exit status 1.
+`splicefs mount` does not clear such a mount: if the record holds a mount for a target and
+the mount table still lists it, `mount` does not mount there and says to run
+`splicefs umount TARGET`. Linux and FreeBSD keep no record, because FUSE clears a dead mount
+when the client starts.
 
 `--log-level` takes `debug`, `info`, `warn` or `error`. The client logs to its standard error
 output, which is the journal under systemd and `/var/log/splicefs.log` under OpenRC.
