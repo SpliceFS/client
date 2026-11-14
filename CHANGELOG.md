@@ -6,6 +6,14 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.4.7] - 2026-11-14
+
+- Internal: the checks now run 35 situations with real servers, among them servers that stop during
+  a read, files that change while mounted, and servers that hold different folder trees. Nothing
+  changes for users.
+- Internal: a release now waits for earlier releases to end, so two releases can no longer overlap.
+  Nothing changes for users.
+
 ## [0.4.6] - 2026-11-14
 
 - Internal: the checks now run the real client against three real servers, including servers that
