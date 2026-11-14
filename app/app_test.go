@@ -214,6 +214,25 @@ func TestRunStopsOnBadCredentials(t *testing.T) {
 	}
 }
 
+func TestRunStopsOnAnIncompatibleServer(t *testing.T) {
+	t.Parallel()
+	env := newHarness(t)
+	message := "server files.example.com runs splicefsd 0.3.3, and this client (0.4.4) needs " +
+		"splicefsd 0.4 or newer: upgrade the server, or install an older client"
+	env.core.connectErr["other"] = fmt.Errorf("connect to cluster %q: %w: %s", "other", core.ErrIncompatible, message)
+	err := env.runSync()
+	errIs(t, err, core.ErrIncompatible)
+	if !strings.Contains(err.Error(), message) {
+		t.Errorf("error = %q, want the message %q in it", err, message)
+	}
+	if got := env.mounter.targets(); len(got) != 0 {
+		t.Errorf("mounted %v with an incompatible server", got)
+	}
+	if _, err := os.Stat(env.socket); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("socket left behind: %v", err)
+	}
+}
+
 func TestRunStopsOnOtherConnectError(t *testing.T) {
 	t.Parallel()
 	env := newHarness(t)

@@ -34,6 +34,11 @@ var (
 	// ErrUnavailable means the node could not be reached or failed: a transport error,
 	// a timeout that is not the caller's own context ending, or any 5xx status.
 	ErrUnavailable = errors.New("node unavailable")
+	// ErrIncompatible means the node runs a splicefsd this client cannot work with: its
+	// first version number differs from the client's, or its second number is lower, or it
+	// is too old to report a version. The node is reachable and healthy, so this is not
+	// ErrUnavailable: trying another node of the same version would fail the same way.
+	ErrIncompatible = errors.New("incompatible server version")
 )
 
 // Errors for a request this package refuses to send. They are wrapped with the node name and

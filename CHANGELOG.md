@@ -6,6 +6,14 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.4.4] - 2026-11-14
+
+- The client now refuses a server that is too old and says so, for example: "server HOST runs
+  splicefsd 0.3.3, and this client (0.4.4) needs splicefsd 0.4 or newer". With the same first
+  version number, a client works with every server whose second number is equal or higher.
+- A server older than 0.4.0 does not report its version and is refused. Upgrade the servers to 0.4.0
+  or newer before this client.
+
 ## [0.4.3] - 2026-11-13
 
 - Documentation: the change log now has one entry per version, back to 0.1.0. All parts of SpliceFS

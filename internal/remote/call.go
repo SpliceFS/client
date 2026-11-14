@@ -34,8 +34,9 @@ type call struct {
 	payload any
 }
 
-// send performs the call and returns the response only if its status is want. Any other
-// outcome is an error and the body is already consumed.
+// send performs the call and returns the response only if its status is want and the server
+// is a version this client works with. Any other outcome is an error and the body is already
+// consumed.
 func (n *Node) send(ctx context.Context, request call, want int) (*http.Response, error) {
 	httpReq, err := n.newRequest(ctx, request)
 	if err != nil {
@@ -44,6 +45,11 @@ func (n *Node) send(ctx context.Context, request call, want int) (*http.Response
 	resp, err := n.client.Do(httpReq)
 	if err != nil {
 		return nil, n.transportError(request.operation, ctx.Err(), err)
+	}
+	reported := resp.Header.Values(serverVersionHeader)
+	if err = checkVersion(n.host, n.clientVersion, reported, resp.StatusCode, want); err != nil {
+		closeBody(resp)
+		return nil, err
 	}
 	if resp.StatusCode != want {
 		return nil, n.statusError(request.operation, resp)

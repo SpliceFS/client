@@ -131,6 +131,28 @@ chmod 600 /etc/splicefs/client/secrets/east
 The client reads the password files when it starts and when it reloads. `splicefs config check`
 does not read them.
 
+## Client and server versions
+
+Client and server versions have three numbers, `MAIN.MINOR.FIX`. A client works with every
+server that has the same first number and a second number that is equal or higher. The third
+number does not matter. So client 0.4.4 works with servers 0.4.0, 0.4.9 and 0.5.2, but not with
+0.3.3 or 1.0.0.
+
+Upgrade the servers first, then the clients. A server reports its version with every answer. A
+server older than 0.4.0 does not report one, so the client treats it as too old.
+
+When the client refuses a server, it says why and what to do. For example, with a server that
+is too old:
+
+```
+server files.example.com runs splicefsd 0.3.3, and this client (0.4.4) needs splicefsd 0.4 or newer: upgrade the server, or install an older client
+```
+
+When the cluster host is refused, `splicefs` prints this message and stops at start. At a reload
+it logs the message and skips the mounts of that cluster. A node of a running cluster that is refused is left alone like a node that
+cannot be reached, and the client reads from the other nodes. A build without a release number,
+such as a development build, does not check.
+
 ## Mounts
 
 A mount makes a folder of a cluster appear at a local folder. Each mount is one file in

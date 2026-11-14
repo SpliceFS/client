@@ -432,6 +432,12 @@ func TestReloadConnectsToNewClusters(t *testing.T) {
 			wantLog:  "cluster not usable, its mounts are skipped",
 		},
 		{
+			name:     "incompatible server skips the cluster",
+			err:      fmt.Errorf("connect: %w", core.ErrIncompatible),
+			wantLive: []string{"/mnt/a", "/mnt/c"},
+			wantLog:  "cluster not usable, its mounts are skipped",
+		},
+		{
 			name:     "unreachable cluster mounts anyway",
 			err:      fmt.Errorf("connect: %w", core.ErrUnavailable),
 			wantLive: []string{"/mnt/a", "/mnt/c", "/mnt/d", "/mnt/e"},
