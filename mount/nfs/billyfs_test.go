@@ -27,7 +27,10 @@ func testOwner() owner { return owner{uid: 501, gid: 20} }
 
 func newTestBilly(t *testing.T, fsys core.FS) *billyFS {
 	t.Helper()
-	return newBillyFS(t.Context(), fsys, time.Minute, testOwner(), slog.New(slog.DiscardHandler))
+	b := newBillyFS(t.Context(), fsys, time.Minute, testOwner(), slog.New(slog.DiscardHandler))
+	// The files a test left open are closed at its end instead of by a timer later.
+	t.Cleanup(b.close)
+	return b
 }
 
 func treeFS() *fakeFS {
@@ -543,7 +546,7 @@ func TestBillyOpenErrors(t *testing.T) {
 	}
 }
 
-func TestBillyFileReadFailureAndCloseFailure(t *testing.T) {
+func TestBillyFileReadFailureIsAnIOError(t *testing.T) {
 	t.Parallel()
 	fsys := treeFS()
 	b := newTestBilly(t, fsys)
@@ -552,7 +555,7 @@ func TestBillyFileReadFailureAndCloseFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	fsys.fail = func(op, _ string) error {
-		if op == "read" || op == "close" {
+		if op == "read" {
 			return core.ErrUnavailable
 		}
 		return nil
@@ -560,8 +563,8 @@ func TestBillyFileReadFailureAndCloseFailure(t *testing.T) {
 	if _, err := opened.ReadAt(make([]byte, 4), 0); !errors.Is(err, syscall.EIO) {
 		t.Errorf("ReadAt = %v, want EIO", err)
 	}
-	if err := opened.Close(); !errors.Is(err, syscall.EIO) {
-		t.Errorf("Close = %v, want EIO", err)
+	if err := opened.Close(); err != nil {
+		t.Errorf("Close = %v, want nil", err)
 	}
 }
 

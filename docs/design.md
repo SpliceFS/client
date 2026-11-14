@@ -197,6 +197,14 @@ for a short, configurable time.
   where lateness costs nothing.
 - **Failure.** A read that cannot be satisfied by any node within a time limit returns an
   I/O error. It does not block forever.
+- **One open per busy file on macOS.** The NFS server on macOS gets a separate request for
+  every read and opens the file in `core` for each of them, which would choose the version of
+  the file again every time. The macOS mount layer therefore keeps the opened file of each
+  path for as long as reads keep coming and shares it between the reads, also those that
+  arrive together. It closes the file after 2 seconds without a read, when a read of it
+  fails, and when the mount ends. A file that is replaced on the servers is seen by the first
+  read after the 2 seconds, like a new open. The FUSE layer needs none of this, because the
+  program holds the file open itself.
 
 ## Cache
 
