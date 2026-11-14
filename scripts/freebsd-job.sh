@@ -141,6 +141,30 @@ show() {
     tail -n 30 "/var/log/$program.log" 2>/dev/null || true
 }
 
+# The program says in its log what it did. Counting the lines before a signal lets a check
+# look at what was written after it and nothing older.
+service_log="/var/log/$program.log"
+
+# Status 0 when the program logged, after the first $1 lines of its log, that it applied the
+# configuration. A reload that failed logs "configuration not applied", which does not match.
+reload_logged() {
+    tail -n +"$(($1 + 1))" "$service_log" | grep -q 'configuration applied'
+}
+
+# Reloads the service and proves that the reload happened and that the service works after
+# it. The signal is asynchronous and the old process keeps answering until the program acts
+# on it, so an answer alone proves nothing: the reload is done when the program logs that it
+# applied the configuration. The limit is only a safety stop for a reload that never happens.
+reload_limit=20
+reload_works() {
+    lines_before="$(wc -l < "$service_log")"
+    service "$program" reload || fail "reload failed"
+    wait_for "$reload_limit" reload_logged "$lines_before"
+    [ "$wait_status" -eq 0 ] || { show; fail "the service did not log that it applied the configuration after a reload"; }
+    wait_for 10 answers
+    [ "$wait_status" -eq 0 ] || { show; fail "the service does not do its job after a reload"; }
+}
+
 # The package is installed from the signed repository, as a person would, and from no other
 # repository: -r names ours, so the public FreeBSD ones are not asked.
 mkdir -p /usr/local/etc/pkg/repos
@@ -163,9 +187,7 @@ wait_for 20 answers
 service_pid="$(cat "/var/run/$program/$program.pid")"
 owner="$(ps -o user= -p "$service_pid")"
 [ "$owner" = "$expected_user" ] || fail "the service runs as '$owner', not as $expected_user"
-service "$program" reload || fail "reload failed"
-wait_for 10 answers
-[ "$wait_status" -eq 0 ] || { show; fail "the service does not do its job after a reload"; }
+reload_works
 service "$program" restart >/dev/null || fail "restart failed"
 wait_for 20 answers
 [ "$wait_status" -eq 0 ] || { show; fail "the service does not do its job after a restart"; }
