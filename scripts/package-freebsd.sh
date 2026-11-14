@@ -18,6 +18,10 @@ set -eu
 
 out="${1:?usage: package-freebsd.sh OUTPUT_DIR}"
 . scripts/package-lib.sh
+# shellcheck source=scripts/timing.sh
+. scripts/timing.sh
+timing_begin
+trap 'timing_report "FreeBSD packages"' EXIT
 image="${LINUX_IMAGE:?LINUX_IMAGE is not set}"
 out="$(cd "$out" && pwd)"
 . scripts/freebsd-lib.sh
@@ -53,10 +57,10 @@ build_and_test() {
     echo "FreeBSD $release ($machine): building and testing $name $pkgver"
     major="${release%%.*}"
     archive="$out/freebsd-input/$release.tar"
-    repo_files input "$major" "freebsd-input/$release.tar"
-    freebsd_run "$disk" "$job" "$out/freebsd" "$archive"
+    timed "FreeBSD $release: prepare the repository input" repo_files input "$major" "freebsd-input/$release.tar"
+    timed "FreeBSD $release: machine run" freebsd_run "$disk" "$job" "$out/freebsd" "$archive"
     [ "$run_status" -eq 0 ] || fail "FreeBSD $release ($machine) failed"
-    repo_files merge
+    timed "FreeBSD $release: merge the repository" repo_files merge
     echo "ok   FreeBSD $release ($machine)"
 }
 

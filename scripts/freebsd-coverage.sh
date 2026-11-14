@@ -9,6 +9,15 @@ dir="${1:?usage: freebsd-coverage.sh PROFILE_DIR}"
 profile="$(mktemp)"
 trap 'rm -f "$profile"' EXIT
 
+# Prints how long the phase that just ended took. timing.sh is not used: the host script
+# that reads the timing record is another process, so the lines are left in the output.
+phase_start="$(date +%s)"
+phase_done() {
+    phase_now="$(date +%s)"
+    echo "[time] $1: $((phase_now - phase_start))s"
+    phase_start="$phase_now"
+}
+
 # One profile per package, each with its own header line; one header is kept.
 echo "mode: atomic" > "$profile"
 cat "$dir"/*.out | grep -v '^mode:' >> "$profile"
@@ -16,6 +25,7 @@ cat "$dir"/*.out | grep -v '^mode:' >> "$profile"
 # The build tags of FreeBSD decide which files the profile names.
 export GOOS=freebsd
 total="$(go tool cover -func="$profile" | awk '$1 == "total:" {print $3}')"
+phase_done "compute the coverage"
 if [ "$total" != "100.0%" ]; then
     echo "coverage on FreeBSD is $total, required 100.0%. Uncovered:" >&2
     go tool cover -func="$profile" | awk '$1 != "total:" && $3 != "100.0%"' >&2

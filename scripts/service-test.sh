@@ -30,6 +30,8 @@ set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 . scripts/package-lib.sh
+. scripts/timing.sh
+timing_begin
 
 # What "the service works" means differs per program, so it lives with the packaging:
 # expected_user, run_options (extra docker run options), answers C (status 0 when the
@@ -44,6 +46,8 @@ container=""
 cleanup() {
     rm -f "$log"
     if [ -n "$container" ]; then docker rm -f "$container" >/dev/null 2>&1 || true; fi
+    # Last, so that a failed or interrupted run still shows where the time went.
+    timing_report "Service tests"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
@@ -126,21 +130,24 @@ check_removal() {
 
 # One system. Every command is guarded with fail because errexit is off for anything called
 # from an if; the caller runs this in a subshell so that fail ends only this system.
+# SC2310 says errexit is off inside the timed commands, which it already is in all of this
+# function, as the line above explains.
+# shellcheck disable=SC2310
 run_checks() {
     # The first command of the container (installing the service manager where the image
     # lacks one) writes its own error to the container log; without it the cause stays hidden.
-    wait_ready "$1" || {
+    timed "$image: boot the service manager" wait_ready "$1" || {
         echo "--- last 30 lines of the container output"
         docker logs --tail 30 "$1" 2>&1 || true
         fail "the service manager did not finish booting"
     }
-    install_package "$1" || fail "installing the package failed"
-    check_starts_by_itself "$1"
-    check_user "$1"
-    check_answers "$1"
-    check_restart "$1"
-    check_reboot "$1"
-    check_removal "$1"
+    timed "$image: install the package" install_package "$1" || fail "installing the package failed"
+    timed "$image: starts by itself" check_starts_by_itself "$1"
+    timed "$image: runs as its own user" check_user "$1"
+    timed "$image: does its job" check_answers "$1"
+    timed "$image: restart" check_restart "$1"
+    timed "$image: reboot" check_reboot "$1"
+    timed "$image: removal" check_removal "$1"
 }
 
 passed=0
@@ -168,7 +175,7 @@ while read -r format image; do
     # A registry failure must not look like a failed service test.
     # Errexit is off for the call to read its status; pull_image checks every command itself.
     set +e
-    pull_image "$platform" "$image"
+    timed "$image: pull the image" pull_image "$platform" "$image"
     pulled=$?
     set -e
     if [ "$pulled" -ne 0 ]; then

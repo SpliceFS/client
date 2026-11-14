@@ -64,6 +64,10 @@ case "$0" in
 esac
 script_dir="$(cd "$script_dir" && pwd)"
 
+# cluster-lib.sh calls timed, so timing.sh comes first. Run on its own, this script has no
+# record and the timers only run the command; compat.sh owns the record.
+# shellcheck source=timing.sh
+. "$script_dir/timing.sh"
 # shellcheck source=cluster-lib.sh
 . "$script_dir/cluster-lib.sh"
 
@@ -71,9 +75,9 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-make_shared
-make_source
-make_large_source
+timed "cluster: make the shared folder" make_shared
+timed "cluster: make the source files" make_source
+timed "cluster: make the large source files" make_large_source
 
 for scenario_file in "$script_dir"/cluster-scenarios/*.sh; do
     [ -f "$scenario_file" ] || fail "no scenario file in $script_dir/cluster-scenarios"

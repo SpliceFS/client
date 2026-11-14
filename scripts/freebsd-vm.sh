@@ -16,6 +16,15 @@ job="$3"
 results="$4"
 input="${5:-}"
 
+# Prints how long the step that just ended took. This runs in a container that has no timing
+# record of the host, so the host reads these lines from the output instead.
+step_start="$(date +%s)"
+step_done() {
+    step_now="$(date +%s)"
+    echo "[time] $1: $((step_now - step_start))s"
+    step_start="$step_now"
+}
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq >/dev/null
 case "$machine" in
@@ -23,6 +32,7 @@ case "$machine" in
     arm64) apt-get install -y -qq --no-install-recommends qemu-system-arm qemu-efi-aarch64 qemu-utils >/dev/null 2>&1 ;;
     *) echo "unknown machine $machine" >&2; exit 1 ;;
 esac
+step_done "install QEMU in the container"
 
 work="$(mktemp -d)"
 # The image is never written to: the machine works on a copy-on-write layer over it. The
@@ -65,6 +75,7 @@ timeout "${VM_TIMEOUT:-900}" "$@" -cpu "$cpu" -accel "$accel" -smp 4 -m 2048 \
     $extra \
     -netdev user,id=n0 -device virtio-net-pci,netdev=n0,romfile= \
     -display none -serial "file:$console" -no-reboot || status=$?
+step_done "run the machine (boot, job, power off)"
 
 got="$work/got"
 mkdir -p "$got"

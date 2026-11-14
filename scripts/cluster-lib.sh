@@ -1,8 +1,8 @@
 # shellcheck shell=sh
-# Sourced by cluster-test.sh, which sets work (the temporary folder), server_bin, client_bin
-# and base_port before it sources this file. The scenario files in cluster-scenarios/ call the
-# helpers below and read share, time_old, time_mid, time_new and picked_hash, which ShellCheck
-# cannot see from this file alone, so both warnings are off here.
+# Sourced by cluster-test.sh, which sources timing.sh and sets work (the temporary folder),
+# server_bin, client_bin and base_port before it sources this file. The scenario files in
+# cluster-scenarios/ call the helpers below and read share, time_old, time_mid, time_new and
+# picked_hash, which ShellCheck cannot see from this file alone, so both warnings are off here.
 # shellcheck disable=SC2034,SC2154
 #
 # How a scenario file looks: it defines one function per scenario and registers each with
@@ -663,7 +663,8 @@ run_scenarios() {
             *) continue ;;
         esac
         begin_scenario "$registered_name"
-        "${registered%% *}"
+        # The function name is the label: it is unique and names the function to open.
+        timed "${registered%% *}" "${registered%% *}"
         end_scenario
         scenarios_ran=$((scenarios_ran + 1))
     done 3<"$scenario_list"

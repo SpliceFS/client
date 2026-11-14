@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.2] - 2026-11-14
+
+- Internal: the long test steps report how long each of their parts took. Nothing changes for users.
+
 ## [0.5.1] - 2026-11-14
 
 - Internal: a release now updates the Homebrew formula. Nothing changes for users.

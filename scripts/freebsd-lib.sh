@@ -4,6 +4,15 @@
 # as a virtual machine under QEMU inside the Go container. The caller sets out (the absolute
 # output folder), image (the container image QEMU is installed into) and defines fail.
 
+# This file is shared with repositories that have no timing.sh: without it, timed just runs
+# the command.
+if ! command -v timed >/dev/null 2>&1; then
+    timed() {
+        shift
+        "$@"
+    }
+fi
+
 # The machine has the CPU type of this computer: its own type runs fastest, and with KVM
 # (Linux on amd64) at full speed.
 host_cpu="$(uname -m)"
@@ -47,12 +56,12 @@ freebsd_each_release() {
         disk="${packed%.xz}"
         if [ ! -f "$disk" ]; then
             echo "fetching FreeBSD $release ($machine)"
-            curl -fsS -o "$packed.part" "$url"
-            digest="$(freebsd_checksum "$packed.part")"
+            timed "FreeBSD $release: download the image" curl -fsS -o "$packed.part" "$url"
+            digest="$(timed "FreeBSD $release: check the image checksum" freebsd_checksum "$packed.part")"
             [ "$digest" = "$sum" ] ||
                 fail "$url does not have the checksum in packaging/freebsd/images"
             mv "$packed.part" "$packed"
-            xz -d "$packed"
+            timed "FreeBSD $release: unpack the image" xz -d "$packed"
         fi
         # The loop reads the list on standard input, which the callback must not consume.
         "$each" "$release" "$disk" </dev/null

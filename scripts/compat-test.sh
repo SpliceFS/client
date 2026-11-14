@@ -49,6 +49,17 @@ client_version="$("$client_bin" --version)"
 server_version="$("$server_bin" --version)"
 printf 'client %s against server %s\n' "${client_version##* }" "${server_version##* }"
 
+# The start and the stop of the server are timed under this name. compat.sh owns the record;
+# started on its own, this script has none and the timers only run the command.
+case "$0" in
+    */*) script_dir="${0%/*}" ;;
+    *) script_dir=. ;;
+esac
+script_dir="$(cd "$script_dir" && pwd)"
+# shellcheck source=timing.sh
+. "$script_dir/timing.sh"
+run_label="compatibility run $mode, server ${server_version##* }"
+
 port="${COMPAT_PORT:-18480}"
 health_url="http://127.0.0.1:$port/api/v1/health"
 
@@ -115,7 +126,7 @@ cleanup() {
     if [ "$status" -ne 0 ]; then show_logs >&2; fi
     stop_process "$client_pid"
     umount -l "$work/mnt" 2>/dev/null || true
-    stop_process "$server_pid"
+    timed "$run_label: stop the server" stop_process "$server_pid"
     if mountpoint -q "$work/mnt"; then
         echo "compat-test.sh: $work/mnt is still mounted, folder kept" >&2
     else
@@ -260,7 +271,7 @@ check_refused() {
 }
 
 make_data
-start_server
+timed "$run_label: start the server" start_server
 start_client
 case "$mode" in
     works) check_works ;;
