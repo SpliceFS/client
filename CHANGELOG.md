@@ -6,10 +6,14 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.14] - 2026-11-14
+
+- Internal: a failed release, merge or scheduled check opens an issue that emails the owner. Nothing
+  changes for users.
+
 ## [0.5.13] - 2026-11-14
 
-- Internal: whoever changes the client keeps its shared code current by hand. Nothing changes for
-  users.
+- Internal: the cache lock test no longer depends on timing. Nothing changes for users.
 
 ## [0.5.12] - 2026-11-14
 

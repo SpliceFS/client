@@ -24,8 +24,10 @@ const holderTimeout = time.Minute
 const holderEnv = "SPLICEFS_CACHE_TEST_HOLD_FOLDER"
 
 // TestMain doubles as the second process of the lock tests: when the environment names a
-// folder, the test binary opens a cache there, says so, and waits to be killed. It never
-// closes the cache, so the only thing that frees the lock is the end of the process.
+// folder, the test binary opens a cache there, says so, and waits until its input ends. Its
+// input is a pipe the parent keeps open, so it waits until the parent kills it or the parent
+// itself ends. It never closes the cache, so the only thing that frees the lock is the end of
+// the process.
 func TestMain(m *testing.M) {
 	if dir := os.Getenv(holderEnv); dir != "" {
 		os.Exit(holdFolder(dir))
@@ -39,7 +41,7 @@ func holdFolder(dir string) int {
 		return 2
 	}
 	_, _ = fmt.Fprintln(os.Stdout, "ready") //nolint:errcheck // the parent fails the test when it reads nothing
-	_, _ = io.Copy(io.Discard, os.Stdin)    //nolint:errcheck // the parent ends this process, an error changes nothing
+	_, _ = io.Copy(io.Discard, os.Stdin)    //nolint:errcheck // ends when the parent kills this process or ends
 	return 0
 }
 
@@ -54,6 +56,12 @@ func startHolder(t *testing.T, dir string) *exec.Cmd {
 	cmd.Stderr = &stderr
 	out, err := cmd.StdoutPipe()
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Without a pipe the second process reads an empty input, ends right after "ready" and
+	// frees the folder, and the test then depends on how fast that exit is. The parent's end
+	// of the pipe stays open until Wait in stop.
+	if _, err := cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Start(); err != nil {
