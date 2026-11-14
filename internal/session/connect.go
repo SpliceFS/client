@@ -83,6 +83,10 @@ func (s *Session) badCredentials(what string, err error) error {
 	return fmt.Errorf("cluster %q: %s: %w: %w", s.opts.Cluster, what, ErrBadCredentials, err)
 }
 
+func (s *Session) incompatible(what string, err error) error {
+	return fmt.Errorf("cluster %q: %s: %w: %w", s.opts.Cluster, what, ErrIncompatible, err)
+}
+
 // errNoneUsable ends the text of the error for a node list in which no node could be dialed.
 var errNoneUsable = errors.New("none usable")
 
@@ -232,6 +236,8 @@ func (s *Session) loginAtEntry(ctx context.Context) (Node, wire.LoginResponse, e
 		return entry, login, nil
 	case s.opts.IsUnauthorized(err):
 		return nil, wire.LoginResponse{}, s.badCredentials("log in at entry", err)
+	case s.opts.IsIncompatible(err):
+		return nil, wire.LoginResponse{}, s.incompatible("log in at entry", err)
 	}
 	return nil, wire.LoginResponse{}, s.unavailable("log in at entry", err)
 }

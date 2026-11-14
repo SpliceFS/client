@@ -16,6 +16,9 @@ import (
 var (
 	errDown   = errors.New("node down")
 	errDenied = errors.New("login denied")
+	// errOld is a refusal of the server version. The text is what a person reads.
+	errOld = errors.New("server entry.example.com runs splicefsd 0.3.3, and this client (0.4.4) needs " +
+		"splicefsd 0.4 or newer: upgrade the server, or install an older client")
 )
 
 // entryHost is the host of the entry URL in options, which names the node that is made
@@ -255,7 +258,9 @@ func (e *env) options() Options {
 		Dial:           e.dial,
 		Now:            e.clk.Now,
 		IsUnauthorized: func(err error) bool { return errors.Is(err, errDenied) },
-		IsUnavailable:  func(err error) bool { return errors.Is(err, errDown) },
+		// A refused node rests like a node that is down, as the program configures it.
+		IsUnavailable:  func(err error) bool { return errors.Is(err, errDown) || errors.Is(err, errOld) },
+		IsIncompatible: func(err error) bool { return errors.Is(err, errOld) },
 	}
 }
 

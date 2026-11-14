@@ -5,13 +5,21 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/SpliceFS/client/internal/version"
 )
 
 // Node is a client for one server node. The zero value is not usable; create it with New.
 type Node struct {
-	name   string
-	base   string
+	name string
+	base string
+	// host is the host name and port of base, which is how an incompatible server is named
+	// to a person.
+	host   string
 	client *http.Client
+	// clientVersion is the version this client is compared with the server's. It is a field
+	// so that a test can choose it without a build flag.
+	clientVersion string
 }
 
 // New returns a client for the node called name whose API lives at baseURL, for example
@@ -32,7 +40,13 @@ func New(name, baseURL string, client *http.Client) (*Node, error) {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, fmt.Errorf("remote: node %s: base URL %q %w", name, baseURL, errQueryOrFragURL)
 	}
-	return &Node{name: name, base: strings.TrimRight(baseURL, "/"), client: client}, nil
+	return &Node{
+		name:          name,
+		base:          strings.TrimRight(baseURL, "/"),
+		host:          parsed.Host,
+		client:        client,
+		clientVersion: version.String(),
+	}, nil
 }
 
 // Name returns the node's name as given to New.

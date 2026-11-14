@@ -60,23 +60,29 @@ func newCluster(name string, cfg config.Cluster, password string, ttl time.Durat
 		clus.opts.HTTPClient = newHTTPClient(cfg.StreamsPerNode, systemDialer())
 		clus.ownHTTP = true
 	}
-	clus.session = session.New(session.Options{
-		Cluster:        name,
-		EntryURL:       cfg.URL,
-		User:           cfg.User,
-		Password:       password,
-		Dial:           clus.dial,
-		Now:            opts.Now,
-		IsUnauthorized: isError(remote.ErrUnauthorized),
-		IsUnavailable:  isError(remote.ErrUnavailable),
-		Logger:         opts.Logger,
-	})
+	clus.session = session.New(clus.sessionOptions())
 	clus.tree = tree.New(lister{clus}, tree.Options{
 		TTL:        ttl,
 		Now:        opts.Now,
 		IsNotFound: isError(remote.ErrNotFound),
 	})
 	return clus
+}
+
+// sessionOptions says how the session of the cluster reaches it and judges the errors of its nodes.
+func (c *cluster) sessionOptions() session.Options {
+	return session.Options{
+		Cluster:        c.name,
+		EntryURL:       c.cfg.URL,
+		User:           c.cfg.User,
+		Password:       c.password,
+		Dial:           c.dial,
+		Now:            c.opts.Now,
+		IsUnauthorized: isError(remote.ErrUnauthorized),
+		IsUnavailable:  unreachable,
+		IsIncompatible: isError(remote.ErrIncompatible),
+		Logger:         c.opts.Logger,
+	}
 }
 
 // matches reports whether a cluster built with cfg, password and ttl would behave as this
@@ -92,6 +98,13 @@ func (c *cluster) close() {
 	if c.ownHTTP {
 		c.opts.HTTPClient.CloseIdleConnections()
 	}
+}
+
+// unreachable reports whether a node cannot serve this client now: it is down, or it runs a
+// splicefsd the client refuses. Both rest the node, so that one old server never fails a read
+// that newer servers can deliver.
+func unreachable(err error) bool {
+	return errors.Is(err, remote.ErrUnavailable) || errors.Is(err, remote.ErrIncompatible)
 }
 
 func isError(target error) func(error) bool {

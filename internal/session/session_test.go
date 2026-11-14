@@ -41,6 +41,13 @@ func TestNewDefaults(t *testing.T) {
 	}
 }
 
+func TestNewDefaultTreatsNoErrorAsAVersionRefusal(t *testing.T) {
+	t.Parallel()
+	if New(Options{}).opts.IsIncompatible(errOld) {
+		t.Error("the default predicate must report false")
+	}
+}
+
 func TestFirstUseConnects(t *testing.T) {
 	t.Parallel()
 	cluster := newEnv(t, "a", "b", "c")
@@ -129,6 +136,33 @@ func TestBadCredentialsAreRetriedOnlyAfterBackoff(t *testing.T) {
 	cluster.entry.setLogin(cluster.grant)
 	cluster.clk.Advance(2 * time.Second)
 	checkNames(t, "Nodes", mustNodes(t, session), []string{"a"})
+}
+
+func TestRefusedVersionAtLoginKeepsTheMessage(t *testing.T) {
+	t.Parallel()
+	cluster := newEnv(t, "a")
+	cluster.entry.setLogin(failWith(errOld))
+	session := cluster.session()
+
+	_, err := session.Nodes(context.Background())
+	if !errors.Is(err, ErrIncompatible) || errors.Is(err, ErrUnavailable) || errors.Is(err, ErrBadCredentials) {
+		t.Fatalf("Nodes = %v, want ErrIncompatible only", err)
+	}
+	if !strings.Contains(err.Error(), errOld.Error()) {
+		t.Errorf("Nodes = %q, want the refusal's message in it", err)
+	}
+}
+
+func TestRefusedNodeRestsLikeANodeThatIsDown(t *testing.T) {
+	t.Parallel()
+	cluster := newEnv(t, "a", "b")
+	session := cluster.session()
+	nodeA := nodeOf(t, session, "a")
+	err := session.Do(context.Background(), nodeA, func(context.Context, string) error { return errOld })
+	if !errors.Is(err, errOld) {
+		t.Fatalf("Do = %v, want the refusal", err)
+	}
+	checkNames(t, "Usable after a refusal", mustUsable(t, session), []string{"b"})
 }
 
 func TestConnectFailures(t *testing.T) {
@@ -247,6 +281,7 @@ func TestRenewalFailures(t *testing.T) {
 		{"cluster host unreachable", errDown, ErrUnavailable, ErrBadCredentials},
 		{"cluster host fails otherwise", errors.New("server error"), ErrUnavailable, ErrBadCredentials},
 		{"cluster host rejects the credentials", errDenied, ErrBadCredentials, ErrUnavailable},
+		{"cluster host refuses its version", errOld, ErrIncompatible, ErrUnavailable},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

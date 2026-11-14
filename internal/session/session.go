@@ -18,6 +18,9 @@ import (
 var (
 	// ErrBadCredentials means the cluster rejected the user or the password.
 	ErrBadCredentials = errors.New("cluster rejected the user or password")
+	// ErrIncompatible means the cluster host runs a splicefsd this client refuses, because of
+	// its version. Unlike ErrUnavailable it does not go away by waiting.
+	ErrIncompatible = errors.New("cluster server version does not fit this client")
 	// ErrUnavailable means no node of the cluster could be reached.
 	ErrUnavailable = errors.New("no cluster node could be reached")
 	// ErrClosed means the session was closed.
@@ -68,9 +71,13 @@ type Options struct {
 	// IsUnauthorized reports whether an error from a node means the token or the
 	// credentials were refused.
 	IsUnauthorized func(error) bool
-	// IsUnavailable reports whether an error from a node means the node could not
-	// be reached or is failing, as opposed to having answered.
+	// IsUnavailable reports whether an error from a node means the node cannot serve
+	// requests now: it could not be reached, is failing, or is refused as incompatible.
+	// Such a node rests and the others are tried.
 	IsUnavailable func(error) bool
+	// IsIncompatible reports whether an error from the cluster host means its version is
+	// refused. At login that ends the connect with ErrIncompatible instead of ErrUnavailable.
+	IsIncompatible func(error) bool
 	// Logger receives operational messages; the default discards them.
 	Logger *slog.Logger
 }
@@ -113,6 +120,9 @@ func New(opts Options) *Session {
 	}
 	if opts.IsUnavailable == nil {
 		opts.IsUnavailable = never
+	}
+	if opts.IsIncompatible == nil {
+		opts.IsIncompatible = never
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)

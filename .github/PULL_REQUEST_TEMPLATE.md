@@ -6,8 +6,22 @@
 
 - [ ] `make check` and `make lint` pass
 - [ ] Tests cover the change; coverage is still 100%
-- [ ] `CHANGELOG.md` updated, if a user would notice the change
 - [ ] `docs/` updated, if behavior, API or configuration changed
+
+## Change log
+
+<!--
+Required. What a person who installs and runs this would notice, as a list. The release bot
+writes these lines into CHANGELOG.md under the new version, and the website shows them.
+
+  - One full sentence per entry, in plain words.
+  - Nothing for users? Write one entry that starts with "Internal:", for example
+    "- Internal: stricter code checks. Nothing changes for users."
+
+Do not edit CHANGELOG.md yourself.
+-->
+
+- 
 
 ## Change scope
 
