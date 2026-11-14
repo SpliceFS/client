@@ -14,7 +14,7 @@ const maxHeld = 10000
 // heldVersions remembers, for each file, the version that a HEAD round chose last and
 // the nodes that held it. A recent cache entry lets an open skip HEAD, but the tree
 // only knows which nodes report the same tag; a node whose copy has that tag and other
-// bytes is excluded only by the head digest, which this record keeps.
+// bytes is excluded only by the head and tail digests, which this record keeps.
 type heldVersions struct {
 	mu     sync.Mutex
 	byFile map[cache.Key]held

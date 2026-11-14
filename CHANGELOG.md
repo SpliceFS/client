@@ -6,6 +6,15 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.0] - 2026-11-14
+
+- The client now also compares a digest of the last 64 KiB of a file when it decides whether copies
+  on different servers are the same file. Before, two copies with the same size, time and first 64
+  KiB that differed further in were taken for one file, and a read could return a mix of both.
+- This client needs servers of version 0.5.0 or newer, and says so when a server is older.
+- After the upgrade every cached file is downloaded once more, because what identifies a copy of a
+  file has changed.
+
 ## [0.4.7] - 2026-11-14
 
 - Internal: the checks now run 35 situations with real servers, among them servers that stop during
@@ -23,6 +32,8 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 - Internal: added a check that runs the real client against released servers. Nothing changes for
   users.
+- This version was not published as packages: its release started while the one before was still
+  running and was stopped at the publish step. Version 0.4.6 contains it.
 
 ## [0.4.4] - 2026-11-14
 

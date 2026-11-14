@@ -217,9 +217,9 @@ from the nodes each time.
 
 **Revalidation.** A cache entry records when its file was last checked against the nodes.
 Once that is older than the configured revalidation time, the next open asks the nodes
-again and compares name, size, modification time and head digest. If anything differs, the
-entry is discarded and the file is read fresh. If no node can be reached, a file that is
-completely cached is still served from the cache, and the check is made at the next open
+again and compares name, size, modification time, head digest and tail digest. If anything
+differs, the entry is discarded and the file is read fresh. If no node can be reached, a file
+that is completely cached is still served from the cache, and the check is made at the next open
 after a node returns. Each mount can turn this off, in which case such reads fail.
 
 The cache directory must not be a mount target, lie inside one, or contain one. The client

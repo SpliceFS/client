@@ -85,7 +85,7 @@ func fuzzHeader(contentType, lastModified, etag, contentRange string) (http.Head
 	headers := http.Header{}
 	for key, value := range map[string]string{
 		"Content-Type": contentType, "Last-Modified": lastModified, "ETag": etag,
-		"Content-Range": contentRange, wire.HeaderHeadDigest: "00ff",
+		"Content-Range": contentRange, wire.HeaderHeadDigest: "00ff", wire.HeaderTailDigest: "00ff",
 	} {
 		if strings.ContainsAny(value, "\r\n\x00") {
 			return nil, false
@@ -146,7 +146,7 @@ func checkHead(t *testing.T, n *Node) {
 	meta, err := n.Head(context.Background(), "t", "share/file")
 	checkClassified(t, "Head", err)
 	// A file version is pinned by these fields, so none may be missing or invalid.
-	if err == nil && (meta.Size < 0 || meta.ETag == "" || meta.HeadDigest == "") {
+	if err == nil && (meta.Size < 0 || meta.ETag == "" || meta.HeadDigest == "" || meta.TailDigest == "") {
 		t.Fatalf("Head accepted %+v", meta)
 	}
 }

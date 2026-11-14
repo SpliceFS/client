@@ -96,6 +96,59 @@ func TestOpenDropsUnusableEntries(t *testing.T) {
 	}
 }
 
+// removeTailDigest turns a metadata file into one written by a client that did not know
+// the tail digest: the field is absent, not empty.
+func removeTailDigest(t *testing.T, base string) {
+	t.Helper()
+	raw, err := os.ReadFile(base + metaExt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old map[string]any
+	if err = json.Unmarshal(raw, &old); err != nil {
+		t.Fatal(err)
+	}
+	version, ok := old["version"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata has no version: %s", raw)
+	}
+	delete(version, "tail_digest")
+	if raw, err = json.Marshal(old); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(base+metaExt, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An entry written before the tail digest existed has no such field, so its version
+// differs from the current one and the next acquire throws its data away.
+func TestEntryWithoutTailDigestIsReplacedAtNextAcquire(t *testing.T) {
+	t.Parallel()
+	env := newEnv(t)
+	c := env.open()
+	key := testKey("a")
+	fill(t, c, key, testVersion(8), 0)
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	removeTailDigest(t, baseName(env.opts.Dir, key))
+
+	reopened := env.open()
+	info, ok := reopened.Peek(key)
+	if !ok || info.Version.TailDigest != "" || info.Bytes == 0 {
+		t.Fatalf("old entry after reopen: %+v, %v", info, ok)
+	}
+	fresh := acquire(t, reopened, key, testVersion(8))
+	if fresh.Has(0) {
+		t.Error("the entry of an older client kept its blocks")
+	}
+	release(t, fresh)
+	if info, _ := reopened.Peek(key); info.Version != testVersion(8) || info.Bytes != 0 {
+		t.Errorf("entry after acquire: %+v", info)
+	}
+}
+
 func TestOpenRemovesLeftoverTemporaryFiles(t *testing.T) {
 	t.Parallel()
 	env := newEnv(t)

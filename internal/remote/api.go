@@ -23,6 +23,9 @@ type Meta struct {
 	ETag string
 	// HeadDigest is the hex SHA-256 of the first wire.HeadDigestBytes bytes of the file.
 	HeadDigest string
+	// TailDigest is the hex SHA-256 of the last wire.TailDigestBytes bytes of the file.
+	// Together with the head digest it tells apart copies that differ only near the end.
+	TailDigest string
 }
 
 // Health asks the node whether it is up. It needs no login.
@@ -94,7 +97,7 @@ func (n *Node) Space(ctx context.Context, token, share string) (wire.Space, erro
 	return space, err
 }
 
-// Head returns the size, modification time, tag and head digest of a file, given as
+// Head returns the size, modification time, tag and head and tail digests of a file, given as
 // "share/a/b/name", unescaped.
 func (n *Node) Head(ctx context.Context, token, file string) (Meta, error) {
 	const operation = "head"
@@ -123,11 +126,15 @@ func (n *Node) metaFrom(operation string, resp *http.Response) (Meta, error) {
 	if etag == "" {
 		return Meta{}, n.protocolError(operation, "missing ETag")
 	}
-	digest := resp.Header.Get(wire.HeaderHeadDigest)
-	if digest == "" {
+	head := resp.Header.Get(wire.HeaderHeadDigest)
+	if head == "" {
 		return Meta{}, n.protocolError(operation, "missing %s", wire.HeaderHeadDigest)
 	}
-	return Meta{Size: resp.ContentLength, MTime: mtime.UTC(), ETag: etag, HeadDigest: digest}, nil
+	tail := resp.Header.Get(wire.HeaderTailDigest)
+	if tail == "" {
+		return Meta{}, n.protocolError(operation, "missing %s", wire.HeaderTailDigest)
+	}
+	return Meta{Size: resp.ContentLength, MTime: mtime.UTC(), ETag: etag, HeadDigest: head, TailDigest: tail}, nil
 }
 
 // Range reads length bytes of a file starting at off, provided the node's copy still has
