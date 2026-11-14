@@ -13,8 +13,27 @@ permissions:
   pull-requests: read
 
 jobs:
+  # The files that exist only on macOS are tested only there. Without their coverage the
+  # scan below, which runs on Linux, would count every line of them as untested.
+  macos-coverage:
+    name: Coverage on macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Tests with coverage
+        run: scripts/coverage.sh coverage-darwin.out
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-darwin
+          path: coverage-darwin.out
+          retention-days: 1
+
   scan:
     name: Scan
+    needs: macos-coverage
     runs-on: ubuntu-latest
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -39,5 +58,10 @@ jobs:
       - name: Tests with coverage
         if: steps.gate.outputs.enabled == 'true'
         run: sudo -E env "PATH=$PATH" scripts/coverage.sh coverage.out
+      # Lands next to coverage.out; sonar-project.properties names both reports.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          name: coverage-darwin
       - uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
         if: steps.gate.outputs.enabled == 'true'
