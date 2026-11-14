@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.4.6] - 2026-11-14
+
+- Internal: the checks now run the real client against three real servers, including servers that
+  are down and servers that hold different files. Nothing changes for users.
+
 ## [0.4.5] - 2026-11-14
 
 - Internal: added a check that runs the real client against released servers. Nothing changes for
