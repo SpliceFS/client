@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.10] - 2026-11-14
+
+- Only one splicefs process at a time may use a cache folder; a second one is refused before it
+  touches the folder.
+
 ## [0.5.9] - 2026-11-14
 
 - On macOS, a program reading a file gets one version of it from start to end, even when the file is
