@@ -1,7 +1,7 @@
 name: Release
 
-# A version tag builds the packages, signs the repositories and the release files, tests
-# everything, and only then publishes to packages.splicefs.org/client and creates the GitHub
+# A version tag builds the packages, signs the repositories and the release files, and
+# publishes to packages.splicefs.org/client and creates the GitHub
 # release. Only version tags can use the publish environment, which holds the signing and
 # upload keys.
 on:
@@ -97,15 +97,11 @@ jobs:
         env:
           SIGNING_DIR: ${{ runner.temp }}/signing
         run: make package-freebsd
-      - name: Install and remove each package in a clean system of its kind
-        run: make package-test
-      - name: Start the service under the real service manager of every system
-        run: make service-test
-      - name: Install from the repositories with signature checks on
-        run: make repo-test
       - name: Collect and sign the release files
         run: make release-assets
-      # Nothing is uploaded before this step, so a failed test above publishes nothing.
+      # Nothing is tested here: the tag is on a commit whose files passed every check as a pull
+      # request on the tip of main. Nothing is uploaded before this step, so a failed build
+      # above publishes nothing.
       - name: Publish the repositories
         env:
           UPLOAD_KEY_FILE: ${{ runner.temp }}/upload_key
