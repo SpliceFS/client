@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.9] - 2026-11-14
+
+- On macOS, a program reading a file gets one version of it from start to end, even when the file is
+  replaced on the servers during the read.
+
 ## [0.5.8] - 2026-11-14
 
 - Internal: a failed release, merge or scheduled check opens an issue that emails the owner. Nothing
