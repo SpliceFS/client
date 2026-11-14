@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.13] - 2026-11-14
+
+- Internal: whoever changes the client keeps its shared code current by hand. Nothing changes for
+  users.
+
 ## [0.5.11] - 2026-11-14
 
 - The protocol names the server and client version headers and the digests a block request carries.
