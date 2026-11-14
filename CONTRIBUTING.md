@@ -103,6 +103,14 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
   imports the other. What both need (the JSON types of the HTTP API and the size and duration
   types) lives in the [common](https://github.com/SpliceFS/common) module. A change there is
   released first, and then the version in `go.mod` is raised here.
+- Nothing raises the version of common in `go.mod` by itself, because whether a new version
+  of common is compatible is a judgment no workflow can make. Whoever changes this repository,
+  a person or an AI, looks at the newest release of common and raises `go.mod` to the newest
+  version the client can take without becoming incompatible for no reason. A version that
+  changes the protocol or the JSON types is taken only when the change needs it, and only
+  once a server built with it has been released, so that no client is ever newer than every
+  server; the pull request then says what becomes incompatible and has the change scope
+  `minor`.
 
 ### Tests
 
