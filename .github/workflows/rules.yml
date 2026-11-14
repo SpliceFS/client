@@ -15,3 +15,5 @@ jobs:
     uses: SpliceFS/.github/.github/workflows/pull-request-rules-v1.yml@main
     secrets:
       bot-private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+      # Drafts the change log entry of a pull request whose description has none.
+      claude-api-key: ${{ secrets.CLAUDE_API_KEY }}

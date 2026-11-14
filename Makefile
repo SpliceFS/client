@@ -6,8 +6,9 @@ LDFLAGS := -s -w -X github.com/SpliceFS/client/internal/version.version=$(VERSIO
 LINUX_IMAGE ?= golang:1.27
 # Privileged, so that the tests see what a real machine and the CI runners see: /sys is
 # writable, which the abort of a FUSE connection needs.
-LINUX_RUN := docker run --rm --privileged --device /dev/fuse \
-	-v "$(CURDIR)":/src:ro -v splicefs-gomod:/go/pkg/mod $(LINUX_IMAGE)
+LINUX_DOCKER := docker run --rm --privileged --device /dev/fuse \
+	-v "$(CURDIR)":/src:ro -v splicefs-gomod:/go/pkg/mod
+LINUX_RUN := $(LINUX_DOCKER) $(LINUX_IMAGE)
 
 # Every package format is built by its own distribution's tool inside that distribution's
 # container, on every system, so a package built here is the package CI builds.
@@ -81,6 +82,24 @@ fuzz:
 check-linux:
 	$(LINUX_RUN) sh -c 'apt-get update -qq && apt-get install -y -qq fuse3 >/dev/null && \
 		cp -r /src /tmp/w && cd /tmp/w && make check'
+
+# Proves the compatibility rule: with the same first version number, this client works with
+# every released server whose second number is equal or higher, and refuses one with a lower
+# second number. It builds the client of this working copy and the released servers, mounts
+# for real and compares every file, so it needs Linux, FUSE and root. scripts/compat.sh says
+# which servers it uses; SERVER_WORKS and SERVER_REFUSED replace that choice.
+.PHONY: compat compat-linux
+compat:
+	scripts/compat.sh
+
+# The same from any system that has Docker. SERVER_WORKS and SERVER_REFUSED go into the
+# container only when the caller has set them. docker run takes its options before the
+# image, so this line uses LINUX_DOCKER and names the image itself.
+COMPAT_ENV := $(foreach v,SERVER_WORKS SERVER_REFUSED,$(if $(filter undefined,$(origin $(v))),,-e $(v)))
+compat-linux:
+	$(LINUX_DOCKER) $(COMPAT_ENV) $(LINUX_IMAGE) sh -c 'apt-get update -qq && \
+		apt-get install -y -qq fuse3 curl >/dev/null && \
+		cp -r /src /tmp/w && cd /tmp/w && scripts/compat.sh'
 
 # Runs the tests on FreeBSD itself: the test programs are built for FreeBSD in the Go
 # container and run as root in a virtual machine of every FreeBSD release in

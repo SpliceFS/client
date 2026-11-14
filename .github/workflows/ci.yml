@@ -40,6 +40,12 @@ jobs:
       # is measured in locally (make check-linux).
       - name: Format, vet, tests with race detector, 100% coverage
         run: sudo -E env "PATH=$PATH" make check
+      # The compatibility rule: with the same first version number, this client works with
+      # every released server whose second number is equal or higher. So the server is
+      # released first, and a client whose second number is above every released server
+      # fails here. The test mounts for real, so it runs as root like the step above.
+      - name: The real client against the real server
+        run: sudo -E env "PATH=$PATH" make compat
       # One report per commit is enough, so only the stable Go release uploads. Forks
       # cannot get an OIDC token for this repository. The upload must never fail the
       # build, for example before the organization is enabled on Codecov.
