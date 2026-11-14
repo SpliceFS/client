@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.5] - 2026-11-14
+
+- On macOS, `splicefs umount` removes a mount left behind by a client that crashed or was killed,
+  and `splicefs mount` says to run it instead of hanging on that folder.
+
 ## [0.5.4] - 2026-11-14
 
 - Internal: a release of the shared code now opens the pull request that moves the server to it, and
