@@ -32,6 +32,12 @@ freebsd_checksum() {
     echo "${digest_line%% *}"
 }
 
+# freebsd_unpack <packed image> <disk image>: the disk appears only when it is whole.
+freebsd_unpack() {
+    xz -dc "$1" >"$2.part"
+    mv "$2.part" "$2"
+}
+
 # Calls "$1 <release> <disk image>" for every release in the list that fits this machine,
 # after fetching its image when it is not in the cache yet. FREEBSD limits the run to one
 # release. An image is the official one of the FreeBSD project and must match the checksum
@@ -61,7 +67,10 @@ freebsd_each_release() {
             [ "$digest" = "$sum" ] ||
                 fail "$url does not have the checksum in packaging/freebsd/images"
             mv "$packed.part" "$packed"
-            timed "FreeBSD $release: unpack the image" xz -d "$packed"
+            # Unpacked under a temporary name and renamed when complete: a run that is killed
+            # while unpacking must not leave a short disk that the next run takes as cached.
+            timed "FreeBSD $release: unpack the image" freebsd_unpack "$packed" "$disk"
+            rm -f "$packed"
         fi
         # The loop reads the list on standard input, which the callback must not consume.
         "$each" "$release" "$disk" </dev/null
