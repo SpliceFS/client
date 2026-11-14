@@ -93,4 +93,11 @@ run_all() {
 run_all works "$SERVER_WORKS"
 run_all refused "$SERVER_REFUSED"
 
+# Several servers as one cluster are tried with the newest server this client works with:
+# all running, some of the listed ones not running, and servers that hold different files.
+cluster_tag="$(printf '%s\n' "$SERVER_WORKS" | tr ' ' '\n' | awk 'NF { last = $0 } END { print last }')"
+if [ -n "$cluster_tag" ]; then
+    "$root/scripts/cluster-test.sh" "$tmp/server-$cluster_tag/splicefsd" "$tmp/splicefs" </dev/null
+fi
+
 echo "compat: all runs as expected"
