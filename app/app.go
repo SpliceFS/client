@@ -105,11 +105,14 @@ type Options struct {
 	sys    *system
 	limits stopLimits
 
-	// The health round: where its ticks come from, how it asks a mount for the probe name,
-	// and how long and how often a mount may fail before it is counted as hung.
+	// The health round: where its ticks and the timeouts of its checks come from, how it
+	// asks a mount for the probe name, and how many checks in a row a mount may fail before it
+	// is counted as hung. answerSent is called with the target once the answer of a check is
+	// in its channel, which is when a test can know that a late answer is there to be found.
 	newTicker     func(time.Duration) tickSource
+	newTimer      func(time.Duration) tickSource
 	lstat         func(string) (os.FileInfo, error)
-	probeTimeout  time.Duration
+	answerSent    func(target string)
 	probeFailures int
 }
 
@@ -153,11 +156,14 @@ func (o Options) withHostDefaults() Options {
 	if o.newTicker == nil {
 		o.newTicker = systemTicker
 	}
+	if o.newTimer == nil {
+		o.newTimer = systemTimer
+	}
 	if o.lstat == nil {
 		o.lstat = os.Lstat
 	}
-	if o.probeTimeout == 0 {
-		o.probeTimeout = defaultProbeTimeout
+	if o.answerSent == nil {
+		o.answerSent = func(string) {}
 	}
 	if o.probeFailures == 0 {
 		o.probeFailures = defaultProbeFailures

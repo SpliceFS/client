@@ -461,7 +461,7 @@ func TestRunReportsAMountThatCannotBeRemoved(t *testing.T) {
 
 func TestRunKeepsRunningWhenEveryMountEnds(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, defaultProbeFailures, defaultProbeTimeout)
+	rig := newHealthRig(t, defaultProbeFailures)
 	env := rig.env
 	rig.start()
 	for _, target := range env.mounter.targets() {

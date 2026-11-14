@@ -216,7 +216,7 @@ func TestUnmountOverTheSocket(t *testing.T) {
 
 func TestUnmountEverythingKeepsTheRunGoing(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, defaultProbeFailures, defaultProbeTimeout)
+	rig := newHealthRig(t, defaultProbeFailures)
 	env := rig.env
 	rig.start()
 	if err := Unmount(context.Background(), env.socket, nil, false); err != nil {

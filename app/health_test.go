@@ -16,14 +16,11 @@ import (
 	"github.com/SpliceFS/client/mount"
 )
 
-// hungTimeout is how long a round waits for a mount that does not answer. It is long
-// enough that a mount that answers at once cannot miss it on a busy machine.
-const hungTimeout = 250 * time.Millisecond
-
 // probeAnswer is what the test lstat answers for one target.
 type probeAnswer struct {
 	err error
-	// hang makes the answer wait until the test releases every waiting lstat.
+	// hang makes the answer wait until the test releases every waiting lstat, and reports
+	// the target on blocked when it does.
 	hang bool
 }
 
@@ -34,7 +31,7 @@ type probes struct {
 	answers map[string]probeAnswer
 	calls   map[string]int
 	paths   map[string]string
-	started chan string
+	blocked chan string
 	hold    chan struct{}
 	once    sync.Once
 }
@@ -44,7 +41,7 @@ func newProbes() *probes {
 		answers: make(map[string]probeAnswer),
 		calls:   make(map[string]int),
 		paths:   make(map[string]string),
-		started: make(chan string, 64),
+		blocked: make(chan string, 64),
 		hold:    make(chan struct{}),
 	}
 }
@@ -56,14 +53,11 @@ func (p *probes) lstat(path string) (os.FileInfo, error) {
 	p.paths[target] = path
 	answer, set := p.answers[target]
 	p.mu.Unlock()
-	select {
-	case p.started <- target:
-	default:
-	}
 	if !set {
 		return nil, &os.PathError{Op: "lstat", Path: path, Err: syscall.ENOENT}
 	}
 	if answer.hang {
+		p.blocked <- target
 		<-p.hold
 	}
 	return nil, answer.err
@@ -95,22 +89,28 @@ type healthRig struct {
 	env    *harness
 	probes *probes
 	ticks  chan time.Time
-	beats  chan struct{}
-	run    *running
+	// timeouts delivers the timeout of the check that waits for an answer. Nothing is ever
+	// sent unless the test means that mount to count as hung.
+	timeouts chan time.Time
+	beats    chan struct{}
+	run      *running
 	// rounds counts the ticks sent.
 	rounds int
 	// interval is what the run asked of its ticker. Read it after the first round, whose
 	// tick the run took after it asked.
 	interval time.Duration
+	// timeout is what the run asked of its timer for a check, read like interval.
+	timeout time.Duration
 }
 
-// wireHealth replaces the clock, the lstat and the limits of h, and counts the heartbeats.
-func wireHealth(env *harness, failures int, timeout time.Duration) *healthRig {
+// wireHealth replaces the clocks, the lstat and the limit of env, and counts the heartbeats.
+func wireHealth(env *harness, failures int) *healthRig {
 	rig := &healthRig{
-		env:    env,
-		probes: newProbes(),
-		ticks:  make(chan time.Time),
-		beats:  make(chan struct{}, 64),
+		env:      env,
+		probes:   newProbes(),
+		ticks:    make(chan time.Time),
+		timeouts: make(chan time.Time),
+		beats:    make(chan struct{}, 64),
 	}
 	env.t.Cleanup(rig.probes.release)
 	notify := env.opts.Notify
@@ -125,15 +125,18 @@ func wireHealth(env *harness, failures int, timeout time.Duration) *healthRig {
 		rig.interval = d
 		return tickSource{ticks: rig.ticks, stop: func() {}}
 	}
+	env.opts.newTimer = func(d time.Duration) tickSource {
+		rig.timeout = d
+		return tickSource{ticks: rig.timeouts, stop: func() {}}
+	}
 	env.opts.lstat = rig.probes.lstat
 	env.opts.probeFailures = failures
-	env.opts.probeTimeout = timeout
 	return rig
 }
 
-func newHealthRig(t *testing.T, failures int, timeout time.Duration) *healthRig {
+func newHealthRig(t *testing.T, failures int) *healthRig {
 	t.Helper()
-	return wireHealth(newHarness(t), failures, timeout)
+	return wireHealth(newHarness(t), failures)
 }
 
 func (rig *healthRig) start() {
@@ -157,10 +160,48 @@ func (rig *healthRig) tick() {
 	}
 }
 
-// round sends one tick and waits for the heartbeat that ends the round.
+// round sends one tick and waits for the heartbeat that ends the round. Every mount in it
+// answers, or has a check from an earlier round that fails it without a timer.
 func (rig *healthRig) round() {
 	rig.env.t.Helper()
 	rig.tick()
+	rig.awaitBeat()
+}
+
+// roundTimingOut sends one tick, gives each of these targets the timeout of its check, and
+// waits for the heartbeat that ends the round. The targets are the ones whose answer is a
+// hang that a new check waits for, in the order the round asks them.
+func (rig *healthRig) roundTimingOut(targets ...string) {
+	rig.env.t.Helper()
+	rig.tick()
+	for _, target := range targets {
+		rig.timeOut(target)
+	}
+	rig.awaitBeat()
+}
+
+// timeOut sends the timeout to the check of target. It first waits until the lstat of that
+// target is blocked, because a timeout sent before the mount was asked would end a wait for
+// nothing. The send is taken only by the check that is waiting.
+func (rig *healthRig) timeOut(target string) {
+	rig.env.t.Helper()
+	select {
+	case got := <-rig.probes.blocked:
+		if got != target {
+			rig.env.t.Fatalf("the lstat that blocked asked %s, want %s", got, target)
+		}
+	case <-time.After(reloadTimeout):
+		rig.env.t.Fatalf("the round did not ask %s", target)
+	}
+	select {
+	case rig.timeouts <- time.Now():
+	case <-time.After(reloadTimeout):
+		rig.env.t.Fatalf("the round did not wait for the answer of %s", target)
+	}
+}
+
+func (rig *healthRig) awaitBeat() {
+	rig.env.t.Helper()
 	select {
 	case <-rig.beats:
 	case <-time.After(reloadTimeout):
@@ -247,7 +288,7 @@ const (
 
 func TestHealthHealthyMountsPassRoundAfterRound(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 2, 0)
+	rig := newHealthRig(t, 2)
 	rig.start()
 
 	targets := []string{"/mnt/a", "/mnt/b", "/mnt/c"}
@@ -260,6 +301,9 @@ func TestHealthHealthyMountsPassRoundAfterRound(t *testing.T) {
 
 	if rig.interval != probeInterval {
 		t.Errorf("ticker interval = %v, want %v", rig.interval, probeInterval)
+	}
+	if rig.timeout != defaultProbeTimeout {
+		t.Errorf("check timeout = %v, want %v", rig.timeout, defaultProbeTimeout)
 	}
 	for _, target := range targets {
 		want := filepath.Join(target, mount.ProbeName)
@@ -286,12 +330,16 @@ func TestHealthFailingMountIsMountedAgain(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			rig := newHealthRig(t, 2, hungTimeout)
+			rig := newHealthRig(t, 2)
 			rig.start()
 			old := rig.env.mounter.get("/mnt/a")
 			rig.probes.set("/mnt/a", tt.answer)
 
-			rig.round()
+			if tt.answer.hang {
+				rig.roundTimingOut("/mnt/a")
+			} else {
+				rig.round()
+			}
 			// One failure is below the limit, so nothing is done yet.
 			rig.wantUnmounts(old)
 			rig.wantMountCalls("/mnt/a", "/mnt/b", "/mnt/c")
@@ -313,7 +361,7 @@ func TestHealthFailingMountIsMountedAgain(t *testing.T) {
 
 func TestHealthHungMountThatCanBeAbortedIsAbortedOnceAfterItsUnmount(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 2, hungTimeout)
+	rig := newHealthRig(t, 2)
 	rig.env.mounter.abortable = true
 	rig.start()
 	old := rig.env.mounter.get("/mnt/a")
@@ -342,7 +390,7 @@ func TestHealthHungMountThatCanBeAbortedIsAbortedOnceAfterItsUnmount(t *testing.
 
 func TestHealthFailedAbortIsLoggedAndTheMountIsMadeAgain(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 1, hungTimeout)
+	rig := newHealthRig(t, 1)
 	rig.env.mounter.abortable = true
 	rig.env.mounter.configure = func(f *fakeMounted) { f.abortErr = errors.New("permission denied") }
 	rig.start()
@@ -363,7 +411,7 @@ func TestHealthFailedAbortIsLoggedAndTheMountIsMadeAgain(t *testing.T) {
 
 func TestHealthMountThatWasNotDetachedIsNotAborted(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 1, hungTimeout)
+	rig := newHealthRig(t, 1)
 	rig.env.mounter.abortable = true
 	rig.start()
 	old := rig.env.mounter.get("/mnt/a")
@@ -406,16 +454,19 @@ func TestReloadAndStopDetachMountsWithoutAbortingThem(t *testing.T) {
 
 func TestHealthWaitingCheckCountsWithoutAskingAgain(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 3, hungTimeout)
+	rig := newHealthRig(t, 3)
 	rig.start()
 	old := rig.env.mounter.get("/mnt/a")
 	rig.probes.set("/mnt/a", probeAnswer{hang: true})
 
-	for round := 1; round <= 2; round++ {
-		rig.round()
-		rig.wantCalls("/mnt/a", 1)
-		rig.wantUnmounts(old)
-	}
+	// Only the first check waits for a timeout. The rounds after it find that check still
+	// waiting for its answer, and fail the mount without a timer.
+	rig.roundTimingOut("/mnt/a")
+	rig.wantCalls("/mnt/a", 1)
+	rig.wantUnmounts(old)
+	rig.round()
+	rig.wantCalls("/mnt/a", 1)
+	rig.wantUnmounts(old)
 	rig.round()
 
 	// The second and third round counted a failure each without asking, which is how the
@@ -428,7 +479,7 @@ func TestHealthWaitingCheckCountsWithoutAskingAgain(t *testing.T) {
 
 func TestHealthOnePassResetsTheCount(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 2, hungTimeout)
+	rig := newHealthRig(t, 2)
 	rig.start()
 	old := rig.env.mounter.get("/mnt/a")
 
@@ -450,27 +501,34 @@ func TestHealthOnePassResetsTheCount(t *testing.T) {
 
 func TestHealthLateAnswerIsDiscarded(t *testing.T) {
 	t.Parallel()
-	// The limit is far away so that rounds that find the answer not yet in are harmless.
-	rig := newHealthRig(t, 1000, hungTimeout)
+	// One failure is below the limit. A second one would be the late answer counted.
+	rig := newHealthRig(t, 2)
+	var once sync.Once
+	late := make(chan struct{})
+	rig.env.opts.answerSent = func(target string) {
+		if target == "/mnt/a" {
+			once.Do(func() { close(late) })
+		}
+	}
 	rig.start()
 	rig.probes.set("/mnt/a", probeAnswer{err: fs.ErrNotExist, hang: true})
 
-	rig.round()
+	rig.roundTimingOut("/mnt/a")
 	rig.wantCalls("/mnt/a", 1)
 	rig.probes.release()
-
-	// The answer is sent right after the release, and the test cannot see it. A round
-	// before it counts a failure without asking, so rounds go on until one asks again.
-	for i := 0; rig.probes.count("/mnt/a") < 2; i++ {
-		if i == 1000 {
-			t.Fatal("no new check was started after the late answer")
-		}
-		rig.round()
+	select {
+	case <-late:
+	case <-time.After(reloadTimeout):
+		t.Fatal("the late answer was not sent")
 	}
-	// With the late answer used up, every round asks anew.
-	asked := rig.probes.count("/mnt/a")
+
+	// The answer is in the channel of the check that gave up, so this round discards it
+	// and asks anew.
 	rig.round()
-	rig.wantCalls("/mnt/a", asked+1)
+	rig.wantCalls("/mnt/a", 2)
+	// With the late answer used up, every round asks anew.
+	rig.round()
+	rig.wantCalls("/mnt/a", 3)
 	rig.wantUntouched("/mnt/a", "/mnt/b", "/mnt/c")
 	rig.wantBeats()
 }
@@ -478,13 +536,13 @@ func TestHealthLateAnswerIsDiscarded(t *testing.T) {
 func TestHealthHungRequestedMountStaysRequested(t *testing.T) {
 	t.Parallel()
 	requested := newRequestRig(t)
-	rig := wireHealth(requested.env, 2, hungTimeout)
+	rig := wireHealth(requested.env, 2)
 	rig.run = requested.begin()
 	requested.mustAsk(MountRequest{Cluster: "example", Target: "/mnt/tv"})
 	old := requested.env.mounter.get("/mnt/tv")
 	rig.probes.set("/mnt/tv", probeAnswer{hang: true})
 
-	rig.round()
+	rig.roundTimingOut("/mnt/tv")
 	rig.round()
 
 	rig.wantUnmounts(old, true)
@@ -502,7 +560,7 @@ func TestHealthHungRequestedMountStaysRequested(t *testing.T) {
 
 func TestHealthUnmountThatFailsLeavesTheMount(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 2, hungTimeout)
+	rig := newHealthRig(t, 2)
 	rig.start()
 	old := rig.env.mounter.get("/mnt/a")
 	old.setBehavior(func(bool) error { return errors.New("device is busy") })
@@ -525,7 +583,7 @@ func TestHealthUnmountThatFailsLeavesTheMount(t *testing.T) {
 
 func TestHealthMountThatCannotBeMadeAgainIsLogged(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 2, hungTimeout)
+	rig := newHealthRig(t, 2)
 	rig.start()
 	old := rig.env.mounter.get("/mnt/a")
 	rig.probes.set("/mnt/a", probeAnswer{err: syscall.EIO})
@@ -553,7 +611,7 @@ func TestHealthMountThatCannotBeMadeAgainIsLogged(t *testing.T) {
 
 func TestHealthMountAgainStopsWhenTheConfigurationIsNotUsable(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 1, hungTimeout)
+	rig := newHealthRig(t, 1)
 	// The configuration of this run names clusters it does not define, so the requested
 	// mount left by an earlier run cannot be added to it. It stays on the list.
 	list := `[{"cluster":"example","path":"/","target":"/mnt/r"}]`
@@ -574,16 +632,18 @@ func TestHealthMountAgainStopsWhenTheConfigurationIsNotUsable(t *testing.T) {
 
 func TestHealthHeartbeatIsSentWhateverTheRoundFound(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 2, hungTimeout)
+	rig := newHealthRig(t, 2)
 	rig.env.notes.fail["WATCHDOG=1"] = errors.New("no socket")
 	rig.start()
 	old := rig.env.mounter.get("/mnt/a")
 	rig.probes.set("/mnt/a", probeAnswer{hang: true})
 
-	// A hung mount and a refused heartbeat in every round change nothing for the rest.
-	for range 3 {
-		rig.round()
-	}
+	// A hung mount and a refused heartbeat in every round change nothing for the rest. The
+	// second round reaches the limit, so the third one asks the mount that was made again,
+	// and that check waits for its own timeout.
+	rig.roundTimingOut("/mnt/a")
+	rig.round()
+	rig.roundTimingOut("/mnt/a")
 
 	rig.wantBeats()
 	rig.wantUnmounts(old, true)
@@ -596,7 +656,7 @@ func TestHealthHeartbeatIsSentWhateverTheRoundFound(t *testing.T) {
 
 func TestHealthRunWithoutMountsSendsHeartbeats(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, 1, 0)
+	rig := newHealthRig(t, 1)
 	rig.env.cfg = &config.Config{}
 	rig.start()
 
@@ -614,14 +674,14 @@ func TestHealthRunWithoutMountsSendsHeartbeats(t *testing.T) {
 func TestHealthContextEndingDuringARoundCountsNoFailure(t *testing.T) {
 	t.Parallel()
 	// With a limit of one, a failure counted for the answer not waited for would unmount.
-	rig := newHealthRig(t, 1, reloadTimeout)
+	rig := newHealthRig(t, 1)
 	rig.start()
 	old := rig.env.mounter.get("/mnt/a")
 	rig.probes.set("/mnt/a", probeAnswer{hang: true})
 
 	rig.tick()
 	select {
-	case <-rig.probes.started:
+	case <-rig.probes.blocked:
 	case <-time.After(reloadTimeout):
 		t.Fatal("the round did not ask the mount")
 	}
@@ -632,6 +692,28 @@ func TestHealthContextEndingDuringARoundCountsNoFailure(t *testing.T) {
 	// The stop unmounts politely. A forced unmount would be the round's doing.
 	rig.wantUnmounts(old, false)
 	rig.wantNotLogged(hungLogText)
+}
+
+func TestSystemTimer(t *testing.T) {
+	t.Parallel()
+	source := systemTimer(5 * time.Millisecond)
+	defer source.stop()
+	select {
+	case <-source.ticks:
+	case <-time.After(reloadTimeout):
+		t.Fatal("no timeout arrived")
+	}
+}
+
+func TestSystemTimerStoppedBeforeItsTimeoutSendsNothing(t *testing.T) {
+	t.Parallel()
+	source := systemTimer(time.Hour)
+	source.stop()
+	select {
+	case <-source.ticks:
+		t.Error("a timeout arrived from a stopped timer")
+	default:
+	}
 }
 
 func TestSystemTicker(t *testing.T) {

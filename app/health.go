@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"slices"
 	"time"
@@ -24,7 +23,8 @@ const (
 	defaultProbeFailures = 3
 )
 
-// tickSource delivers the ticks of the health round and is stopped when the round ends.
+// tickSource delivers the ticks of a ticker, or the one tick of a timer, and is stopped
+// when nobody waits for them any more.
 type tickSource struct {
 	ticks <-chan time.Time
 	stop  func()
@@ -37,15 +37,25 @@ func systemTicker(interval time.Duration) tickSource {
 	return tickSource{ticks: ticker.C, stop: ticker.Stop}
 }
 
+// systemTimer is the default source of the timeout of one check. It has the shape of
+// systemTicker so that a test sends the timeout by hand: a real timer would decide that a
+// mount that answers is hung whenever the machine stalls for longer than the timeout.
+func systemTimer(timeout time.Duration) tickSource {
+	timer := time.NewTimer(timeout)
+	return tickSource{ticks: timer.C, stop: func() { timer.Stop() }}
+}
+
 // startCheck asks for the probe name in the root of target in a goroutine of its own, so
 // that a mount that never answers holds up nothing but that goroutine. The channel has
 // room for the answer, so the goroutine ends whenever the answer comes, even if nobody
-// waits for it any more.
-func startCheck(lstat func(string) (os.FileInfo, error), target string) chan error {
+// waits for it any more. The hook answerSent is called once the answer is in the channel.
+func (r *reloader) startCheck(target string) chan error {
 	answer := make(chan error, 1)
+	lstat, answerSent := r.opts.lstat, r.opts.answerSent
 	go func() {
 		_, err := lstat(filepath.Join(target, mount.ProbeName))
 		answer <- err
+		answerSent(target)
 	}()
 	return answer
 }
@@ -125,14 +135,14 @@ func (r *reloader) check(ctx context.Context, live *liveMount) bool {
 			return false
 		}
 	}
-	live.pending = startCheck(r.opts.lstat, live.target)
-	timer := time.NewTimer(r.opts.probeTimeout)
-	defer timer.Stop()
+	live.pending = r.startCheck(live.target)
+	timeout := r.opts.newTimer(defaultProbeTimeout)
+	defer timeout.stop()
 	select {
 	case err := <-live.pending:
 		live.pending = nil
 		return errors.Is(err, fs.ErrNotExist)
-	case <-timer.C:
+	case <-timeout.ticks:
 	case <-ctx.Done():
 	}
 	return false

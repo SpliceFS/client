@@ -228,7 +228,7 @@ func TestRunRejectsReloadWithoutLoad(t *testing.T) {
 
 func TestRunWithoutMountsIdles(t *testing.T) {
 	t.Parallel()
-	rig := newHealthRig(t, defaultProbeFailures, defaultProbeTimeout)
+	rig := newHealthRig(t, defaultProbeFailures)
 	env := rig.env
 	env.cfg.Mounts = nil
 	rig.start()
