@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.11] - 2026-11-14
+
+- The protocol names the server and client version headers and the digests a block request carries.
+
 ## [0.5.10] - 2026-11-14
 
 - Only one splicefs process at a time may use a cache folder; a second one is refused before it
