@@ -5,7 +5,8 @@
 # Usage: publish.sh fetch | publish.sh send | publish.sh check
 #   fetch  downloads what is published now into dist/repo, so the repository that is built
 #          keeps every older version. An empty remote is fine (the first release).
-#   send   uploads dist/repo; a published package is never deleted.
+#   send   uploads dist/repo in two passes, the packages first and the index files after them;
+#          a published package is never deleted.
 #   check  lists the remote root and changes nothing.
 # Variables: REPO_DIR (default dist/repo), UPLOAD_HOST (packages.splicefs.org), UPLOAD_PORT
 # (7022), UPLOAD_USER (site-splicefs-packages), UPLOAD_KEY_FILE (required, private key,
@@ -123,12 +124,56 @@ if [ -n "$BAD" ]; then
   exit 1
 fi
 
-# --delete-after removes only after every file has arrived. The filter rules are checked in
-# order and the first match wins: R lets rsync delete what matches (repodata folders and the
-# index files, the same set the dry run allowed), and the final P * protects everything else,
-# so even a file the dry run missed cannot be deleted.
+# The index files are what apt, dnf, apk and pkg read to learn which packages exist: the apt
+# dists folder, the rpm repodata folders, APKINDEX.tar.gz, the FreeBSD catalog (meta,
+# meta.conf, packagesite.pkg, data.pkg) and the signature files next to them. A new index
+# that is in place before the packages it names are makes a client ask for a file that is not
+# there yet. rsync --delay-updates cannot prevent that alone, because it moves the files into
+# place one after another. So the upload runs in two passes and the script stops at the first
+# one that fails: pass 1 sends everything except the index files, pass 2 sends the index
+# files (and does the deletions). The patterns start with / so that they match from the top of
+# the repository folder only.
+INDEX_PATTERNS='/apt/dists/*** /rpm/*/repodata/*** /alpine/*/APKINDEX.tar.gz'
+INDEX_PATTERNS="$INDEX_PATTERNS /alpine/*/*.sig /alpine/*/*.asc"
+INDEX_PATTERNS="$INDEX_PATTERNS /freebsd/*/meta /freebsd/*/meta.conf"
+INDEX_PATTERNS="$INDEX_PATTERNS /freebsd/*/packagesite.pkg /freebsd/*/data.pkg"
+INDEX_PATTERNS="$INDEX_PATTERNS /freebsd/*/*.sig /freebsd/*/*.asc"
+
+# Runs one pass: $1 names it for the message, the other arguments are rsync options. A failed
+# pass ends the script, so a later pass never sends an index for files that an earlier one did
+# not deliver. set -e is switched off around the call, not by using it as a condition, which
+# would also switch it off inside run_rsync.
+send_pass() {
+  pass_name=$1
+  shift
+  set +e
+  run_rsync "$@" "$REPO/" "$DEST"
+  pass_status=$?
+  set -e
+  if [ "$pass_status" -ne 0 ]; then
+    echo "the upload stopped: $pass_name failed" >&2
+    exit 1
+  fi
+}
+
+# Pass 1: no deletions, and every index file left out. The patterns hold * and must reach
+# rsync as they are, so file name expansion is off while the options are built.
+set -f
+set -- -a --chmod=D755,F644 --delay-updates
+for pattern in $INDEX_PATTERNS; do
+  set -- "$@" "--exclude=$pattern"
+done
+set +f
+send_pass "pass 1 (everything except the index files)" "$@"
+
+# Pass 2: the same upload again, now with the deletions. Everything pass 1 sent is there and
+# unchanged, so rsync skips it, and what is left to send is the index files. --delete-after
+# removes only after every file has arrived. The filter rules are checked in order and the
+# first match wins: R lets rsync delete what matches (repodata folders and the index files,
+# the same set the dry run allowed), and the final P * protects everything else, so even a
+# file the dry run missed cannot be deleted.
 set -- -a --chmod=D755,F644 --delay-updates --delete-after \
   --filter='R repodata/***' --filter='R APKINDEX.tar.gz' --filter='R Packages*' \
   --filter='R Release*' --filter='R InRelease' --filter='P *'
-run_rsync "$@" "$REPO/" "$DEST"
+send_pass "pass 2 (the index files and the deletions)" "$@"
 echo "published to ${UPLOAD_TARGET:-$HOST}"
