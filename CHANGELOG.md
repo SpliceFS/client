@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.4.5] - 2026-11-14
+
+- Internal: added a check that runs the real client against released servers. Nothing changes for
+  users.
+
 ## [0.4.4] - 2026-11-14
 
 - The client now refuses a server that is too old and says so, for example: "server HOST runs
