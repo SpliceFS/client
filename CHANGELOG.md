@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.13] - 2026-11-14
+
+- Internal: the cache lock test no longer depends on timing. Nothing changes for users.
+
 ## [0.5.12] - 2026-11-14
 
 - On Linux and FreeBSD, a program reads the new content of a file that was replaced on the servers,
