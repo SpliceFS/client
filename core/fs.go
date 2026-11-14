@@ -49,6 +49,19 @@ type Attr struct {
 	// as it stays the same kind of thing, file or directory, because programs such
 	// as backup tools and media libraries remember files by inode number.
 	Inode uint64
+	// Version identifies the content of an open file. It is zero for directories and
+	// for results of Stat and ReadDir, which do not choose a version.
+	Version Version
+}
+
+// Version is what the nodes reported to tell versions of one file apart: its tag and the
+// digests of its first and last bytes. Two opens of a file have equal versions when the
+// nodes held the same content both times. A mount layer that caches file data itself
+// compares them to know when its copy is of an older version.
+type Version struct {
+	ETag       string
+	HeadDigest string
+	TailDigest string
 }
 
 // Space is the capacity of a view, in bytes.

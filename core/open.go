@@ -70,6 +70,11 @@ func (v *view) Open(ctx context.Context, name string) (File, error) {
 	}
 	attr := v.attr(name, treeEntry)
 	attr.Size, attr.MTime = chosen.version.Size, chosen.mtime
+	attr.Version = Version{
+		ETag:       chosen.version.ETag,
+		HeadDigest: chosen.version.HeadDigest,
+		TailDigest: chosen.version.TailDigest,
+	}
 	return &file{attr: attr, reader: reader, entry: entry, cache: v.cache}, nil
 }
 
