@@ -496,6 +496,77 @@ func TestOpenReadRelease(t *testing.T) {
 	}
 }
 
+// openFlags opens a file for reading, releases it and returns the flags the kernel was
+// given for the open.
+func (rig *harness) openFlags(id uint64) uint32 {
+	rig.t.Helper()
+	fileHandle, out, status := rig.open(id, syscall.O_RDONLY)
+	if status != fuse.OK {
+		rig.t.Fatal(status)
+	}
+	rig.raw.Release(nil, &fuse.ReleaseIn{InHeader: *hdr(id), Fh: fileHandle})
+	return out.OpenFlags
+}
+
+func TestOpenOfTheSameVersionKeepsTheKernelCache(t *testing.T) {
+	t.Parallel()
+	rig := newHarness(t)
+	rig.fake.setVersion("hello.txt", core.Version{ETag: "a", HeadDigest: "h", TailDigest: "t"})
+	id := rig.lookup(rootID, "hello.txt")
+	for i := range 3 {
+		if got := rig.openFlags(id); got&fuse.FOPEN_KEEP_CACHE == 0 {
+			t.Fatalf("open %d of an unchanged file has flags %#x, want FOPEN_KEEP_CACHE", i+1, got)
+		}
+	}
+}
+
+func TestOpenOfAnotherVersionDropsTheKernelCache(t *testing.T) {
+	t.Parallel()
+	first := core.Version{ETag: "a", HeadDigest: "h", TailDigest: "t"}
+	tests := []struct {
+		name string
+		next core.Version
+	}{
+		{"tag", core.Version{ETag: "b", HeadDigest: "h", TailDigest: "t"}},
+		{"head digest", core.Version{ETag: "a", HeadDigest: "other", TailDigest: "t"}},
+		{"tail digest", core.Version{ETag: "a", HeadDigest: "h", TailDigest: "other"}},
+		{"digests missing", core.Version{ETag: "a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newHarness(t)
+			rig.fake.setVersion("hello.txt", first)
+			id := rig.lookup(rootID, "hello.txt")
+			rig.openFlags(id)
+
+			rig.fake.setVersion("hello.txt", tt.next)
+			if got := rig.openFlags(id); got != 0 {
+				t.Fatalf("open of a replaced file has flags %#x, want none", got)
+			}
+			if got := rig.openFlags(id); got&fuse.FOPEN_KEEP_CACHE == 0 {
+				t.Fatalf("the next open of the new version has flags %#x, want FOPEN_KEEP_CACHE", got)
+			}
+		})
+	}
+}
+
+func TestOpenOfAnotherFileIsNotAffectedByAReplacedOne(t *testing.T) {
+	t.Parallel()
+	rig := newHarness(t)
+	replaced, other := rig.lookup(rootID, "big.bin"), rig.lookup(rootID, "hello.txt")
+	rig.openFlags(replaced)
+	rig.openFlags(other)
+
+	rig.fake.setVersion("big.bin", core.Version{ETag: "b"})
+	if got := rig.openFlags(replaced); got != 0 {
+		t.Fatalf("open of the replaced file has flags %#x, want none", got)
+	}
+	if got := rig.openFlags(other); got&fuse.FOPEN_KEEP_CACHE == 0 {
+		t.Fatalf("open of an unchanged file has flags %#x, want FOPEN_KEEP_CACHE", got)
+	}
+}
+
 func TestOpenForWritingIsRefused(t *testing.T) {
 	t.Parallel()
 	rig := newHarness(t)

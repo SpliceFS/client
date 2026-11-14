@@ -48,6 +48,7 @@ type fakeFS struct {
 	cancelled  chan error    // receives the context error of each cancelled blocked read
 	readFault  *readFault
 	closeError error
+	versions   map[string]core.Version // what an open of the path reports as its version
 }
 
 // readFault makes reads return n bytes together with err.
@@ -72,6 +73,7 @@ func newFakeFS() *fakeFS {
 		},
 		dirs:      map[string]bool{"": true, "docs": true, "docs/sub": true, "vacant": true},
 		failPaths: map[string]error{},
+		versions:  map[string]core.Version{},
 		space:     core.Space{Total: fakeTotal, Free: fakeFree},
 		reading:   make(chan struct{}, 16),
 		cancelled: make(chan error, 16),
@@ -141,6 +143,7 @@ func (f *fakeFS) Open(_ context.Context, name string) (core.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.Version = f.versionOf(name)
 	return &fakeFile{fs: f, name: name, data: data, attr: a}, nil
 }
 
@@ -164,6 +167,20 @@ func (f *fakeFS) setFailPath(name string, err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.failPaths[name] = err
+}
+
+// setVersion changes the version that the next opens of name report, as a replaced file
+// does without changing its size or time.
+func (f *fakeFS) setVersion(name string, v core.Version) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.versions[name] = v
+}
+
+func (f *fakeFS) versionOf(name string) core.Version {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.versions[name]
 }
 
 func (f *fakeFS) setSpace(s core.Space, err error) {

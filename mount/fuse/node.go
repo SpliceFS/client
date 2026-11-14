@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"path"
+	"sync"
 	"syscall"
 
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -35,7 +36,7 @@ func (e *env) newNode(a core.Attr) fs.InodeEmbedder {
 	if a.Dir {
 		return &dirNode{node{env: e}}
 	}
-	return &fileNode{node{env: e}}
+	return &fileNode{node: node{env: e}}
 }
 
 // stableAttr gives a node the inode number the core assigned to its path.
@@ -152,14 +153,25 @@ func (d *dirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 	return fs.NewListDirStream(entries), 0
 }
 
-// fileNode is a regular file.
-type fileNode struct{ node }
+// fileNode is a regular file. It is the one place that remembers something about a file:
+// the version of its last open. The kernel drops its cached pages of a file when it
+// forgets the file, and go-fuse then drops this node, so the two always live as long as
+// each other.
+type fileNode struct {
+	node
+
+	mu      sync.Mutex
+	opened  bool
+	version core.Version
+}
 
 var _ fs.NodeOpener = (*fileNode)(nil)
 
 // Open implements fs.NodeOpener. The kernel is told to keep cached file data across
 // opens, because the contents of a file never change under an open handle, and the
-// kernel itself drops the cache when it sees the size or time of the file change.
+// kernel itself drops the cache when it sees the size or time of the file change. A file
+// can also be replaced by one of the same size and time. The core then opens another
+// version, and the kernel is not told to keep its pages, which are of the old copy.
 //
 //nolint:ireturn // fs.NodeOpener fixes this signature.
 func (f *fileNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
@@ -172,7 +184,20 @@ func (f *fileNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint3
 	}
 	h := &handle{file: file, mapper: f.env.mapper, files: f.env.files}
 	f.env.files.add(h)
-	return h, fuse.FOPEN_KEEP_CACHE, 0
+	if f.sameVersion(file.Attr().Version) {
+		return h, fuse.FOPEN_KEEP_CACHE, 0
+	}
+	return h, 0, 0
+}
+
+// sameVersion records the version of an open and reports whether the previous open of
+// this file, if there was one, had the same version.
+func (f *fileNode) sameVersion(version core.Version) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	same := !f.opened || f.version == version
+	f.opened, f.version = true, version
+	return same
 }
 
 // handle is an open file.
