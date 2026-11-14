@@ -50,3 +50,16 @@ jobs:
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: moderate
+
+  # A failed run of this workflow opens an issue assigned to the account in the repository
+  # variable ALERT_ASSIGNEE, so that someone gets an email; GitHub sends none for runs the
+  # bots start. Pull requests are left out: their author sees the failed check there.
+  alert:
+    name: Report a failure
+    needs: [govulncheck, codeql, dependency-review]
+    if: ${{ failure() && github.event_name != 'pull_request' }}
+    permissions:
+      issues: write
+    uses: SpliceFS/.github/.github/workflows/report-failure-v1.yml@main
+    with:
+      assignee: ${{ vars.ALERT_ASSIGNEE }}
