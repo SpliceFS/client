@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io/fs"
 	"syscall"
+
+	"github.com/SpliceFS/client/mount/nfs"
 )
 
 // ErrBusy is wrapped by the error Unmount returns for a mount that is in use and was not
@@ -32,6 +34,15 @@ func (e RemoteError) Error() string { return string(e) }
 // not be unmounted; a refusal because the mount is in use wraps ErrBusy.
 func Unmount(ctx context.Context, socketPath string, targets []string, force bool) error {
 	return systemHost().unmount(ctx, socketPath, targets, force)
+}
+
+// ClearLeftBehind removes the mounts that a client of the configuration whose control
+// socket is socketPath left behind when it died, as far as the record of that client lists
+// them: on macOS only, because FUSE clears a dead mount when the client starts. It looks at
+// targets, or at every recorded mount when targets is empty, and returns what happened to
+// each, in the order of the record. Call it when Unmount says ErrNotRunning.
+func ClearLeftBehind(ctx context.Context, socketPath string, targets []string) ([]nfs.Cleared, error) {
+	return systemHost().clearLeftBehind(ctx, socketPath, targets)
 }
 
 // Status asks the running client that listens on socketPath for its state. A missing
@@ -80,6 +91,20 @@ func (s system) unmount(ctx context.Context, socketPath string, targets []string
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (s system) clearLeftBehind(ctx context.Context, socketPath string, targets []string) ([]nfs.Cleared, error) {
+	abs, err := s.absTargets(targets)
+	if err != nil {
+		return nil, err
+	}
+	// The record holds a target as the mount layer resolved it. Only the folder that holds the
+	// target is resolved here: a stale mount blocks every call that touches the target.
+	resolved := make([]string, len(abs))
+	for i, t := range abs {
+		resolved[i] = nfs.ResolveTarget(t)
+	}
+	return s.clearMounts(ctx, nfsRecordPath(socketPath), resolved)
 }
 
 func resultError(r UnmountResult) error {

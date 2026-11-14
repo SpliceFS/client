@@ -71,9 +71,13 @@ type fakeSystem struct {
 	handle   func(command) ([]byte, error)
 
 	presence []presence // answers of isMounted in order; the last one repeats
-	ticks    chan time.Time
-	tickers  int
-	release  chan struct{} // when set, stopping the ticker waits for it
+	// table, when set, is the mount table: target to source. isMounted then answers from it.
+	table map[string]string
+	// serving, when set, says whether a client answers on a port. Nothing does when it is nil.
+	serving func(port int) (bool, error)
+	ticks   chan time.Time
+	tickers int
+	release chan struct{} // when set, stopping the ticker waits for it
 }
 
 type presence struct {
@@ -100,14 +104,27 @@ func (f *fakeSystem) environment() environment {
 		},
 		owner:  testOwner(),
 		listen: listenLoopback,
-		isMounted: func(string, string) (bool, error) {
+		isMounted: func(target, from string) (bool, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			if f.table != nil {
+				source, listed := f.table[target]
+				return listed && source == from, nil
+			}
 			p := f.presence[0]
 			if len(f.presence) > 1 {
 				f.presence = f.presence[1:]
 			}
 			return p.mounted, p.err
+		},
+		serves: func(_ context.Context, port int) (bool, error) {
+			f.mu.Lock()
+			serving := f.serving
+			f.mu.Unlock()
+			if serving == nil {
+				return false, nil
+			}
+			return serving(port)
 		},
 		newTicker: func(time.Duration) (<-chan time.Time, func()) {
 			f.mu.Lock()
@@ -708,6 +725,9 @@ func TestSystemEnvironment(t *testing.T) {
 	}
 	if mounted, err := env.isMounted("/not/a/mount/point", "127.0.0.1:/none"); err != nil || mounted {
 		t.Errorf("isMounted = %v, %v", mounted, err)
+	}
+	if env.serves == nil {
+		t.Error("serves is not set")
 	}
 	ticks, stop := env.newTicker(time.Hour)
 	stop()

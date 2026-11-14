@@ -261,9 +261,18 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
 - **A file that changes while open** keeps serving the version that was opened, as long as
   one node still has it; a new open sees the new version.
 - **All nodes unreachable** is an I/O error, never "not found" and never an empty directory.
-- **Start and stop.** A stale mount left by a crash is detected and cleared at start. The
-  client unmounts on `SIGINT` and `SIGTERM`, and tells systemd when all mounts are ready,
-  which with no mounts is at once. See Lifetime and reload.
+- **Start and stop.** The client unmounts on `SIGINT` and `SIGTERM`, and tells systemd when
+  all mounts are ready, which with no mounts is at once. See Lifetime and reload. A mount
+  left behind by a client that crashed or was killed is handled per system:
+  - **Linux and FreeBSD:** the mount is detected and cleared when the client starts.
+  - **macOS:** nothing runs at login or at start, so nothing clears it by itself. The
+    client writes a record of the NFS mounts it makes, in the runtime directory next to the
+    control socket (the same name with the ending `.nfs.json`). `splicefs umount`, when no
+    client is running, finds a recorded mount that is still in the mount table with nothing
+    answering on its port, and removes it with `umount -f`. A mount whose port still answers
+    is left alone. `splicefs mount` refuses to mount on a target that such a mount still
+    holds, and says to run `splicefs umount TARGET`; it does not clear the mount itself. The
+    record is gone after a reboot, which also removes the mounts it lists.
 - **Kernel caching.** File contents never change under a given tag, so the kernel may keep
   file data and directory entries cached.
 

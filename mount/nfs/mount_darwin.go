@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -103,6 +104,7 @@ type environment struct {
 	owner     owner
 	listen    func(context.Context) (net.Listener, error)
 	isMounted func(target, from string) (bool, error)
+	serves    func(ctx context.Context, port int) (bool, error)
 	newTicker func(time.Duration) (<-chan time.Time, func())
 }
 
@@ -114,6 +116,7 @@ func systemEnvironment() environment {
 		isMounted: func(target, from string) (bool, error) {
 			return mountTableHas(syscall.Getfsstat, target, from)
 		},
+		serves: servesOnLoopback,
 		newTicker: func(d time.Duration) (<-chan time.Time, func()) {
 			t := time.NewTicker(d)
 			return t.C, t.Stop
@@ -147,6 +150,14 @@ func mountWith(fsys core.FS, opts mount.Options, env environment) (mount.Mounted
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
+	// This runs before the target is looked at: a mount that a dead client left there blocks
+	// every call that touches the path, so the record is asked with the folder resolved and
+	// the target itself never read.
+	record := recorder{path: opts.RecordPath, log: log}
+	if record.leftBehind(env, ResolveTarget(opts.Target)) {
+		return nil, fmt.Errorf("%s %w; run \"splicefs umount %s\" to remove it",
+			opts.Target, ErrLeftBehind, opts.Target)
+	}
 	// The mount table lists the real path, so symbolic links in the target (such as
 	// /var -> /private/var) must be resolved to recognize the mount in it.
 	target, err := filepath.EvalSymlinks(opts.Target)
@@ -162,12 +173,20 @@ func mountWith(fsys core.FS, opts mount.Options, env environment) (mount.Mounted
 		return nil, err
 	}
 	from := mountFrom(opts.Source)
+	// The entry is written before mount_nfs runs. A client that is killed right after the
+	// system accepted the mount would otherwise leave a mount that no record knows, and
+	// "splicefs umount" could never find it. An entry whose mount was never made does no
+	// harm: the clean-up drops an entry that the mount table does not list.
+	record.add(recordEntry{
+		Target: target, From: from, Port: srv.Port(), PID: os.Getpid(), Created: time.Now().UTC(),
+	})
 	if err := runMount(env.run, srv.Port(), from, target); err != nil {
+		record.remove(target)
 		srv.Close()
 		return nil, err
 	}
 	live := &mounted{
-		env: env, log: log, target: target, from: from, srv: srv,
+		env: env, log: log, record: record, target: target, from: from, srv: srv,
 		unmounted: make(chan struct{}), done: make(chan struct{}),
 	}
 	poll := live.pollTicks()
@@ -206,6 +225,7 @@ func unmountError(err error, out []byte) error {
 type mounted struct {
 	env    environment
 	log    *slog.Logger
+	record recorder
 	target string
 	from   string
 	srv    *server
@@ -253,6 +273,7 @@ func (m *mounted) Unmount(ctx context.Context, force bool) error {
 		}
 		return unmountError(err, out)
 	}
+	m.record.remove(m.target)
 	m.unmountOnce.Do(func() { close(m.unmounted) })
 	select {
 	case <-m.done:
@@ -299,6 +320,7 @@ func (m *mounted) wait(ticks <-chan time.Time) error {
 			if err != nil {
 				m.log.Warn("read the mount table", slog.Any("err", err))
 			} else if !present {
+				m.record.remove(m.target)
 				return nil
 			}
 		}
@@ -314,6 +336,8 @@ func (m *mounted) serverFailed() error {
 	var uerr error
 	if out, err := m.env.run(ctx, umountPath, "-f", m.target); err != nil {
 		uerr = commandError("umount", err, out)
+	} else {
+		m.record.remove(m.target)
 	}
 	return errors.Join(m.srv.Err(), uerr)
 }

@@ -152,7 +152,8 @@ func failRoot(f *fakeFS, err error) {
 	}
 }
 
-// pendingRoot returns the channel that is closed when the running root call ends.
+// pendingRoot returns the channel that is closed when the running root call ends. A call
+// clears the channel when it ends, so call this only while the core call is held.
 func pendingRoot(t *testing.T, b *billyFS) chan struct{} {
 	t.Helper()
 	b.root.mu.Lock()
@@ -324,8 +325,11 @@ func TestBillyRootAttrNeverRunsTwoCallsAtOnce(t *testing.T) {
 		t.Errorf("the core got %d root calls while the first was running, want 1", n)
 	}
 
+	// The channel is read while the core call is still held. Once the call is released it
+	// can end, and clear the pending channel, before the test looks at it.
+	pending := pendingRoot(t, b)
 	block.release()
-	waitFor(t, pendingRoot(t, b), "the call to end")
+	waitFor(t, pending, "the call to end")
 	// With a long budget the next request waits for its own call, so the count below does
 	// not depend on how fast that call is scheduled.
 	b.rootBudget = 5 * time.Second

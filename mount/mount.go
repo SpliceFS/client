@@ -28,6 +28,10 @@ type Options struct {
 	AllowOther bool
 	// Logger receives diagnostics. Nil discards them.
 	Logger *slog.Logger
+	// RecordPath is the file where macOS keeps a list of the mounts it made, so that a
+	// mount left behind by a client that died can be found and removed later. Empty
+	// keeps no list. Other systems ignore it, because FUSE clears a dead mount itself.
+	RecordPath string
 }
 
 // Mounted is a live mount.

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/mount/nfs"
 )
 
 // ErrAlreadyRunning means another client already answers on the control socket of this
@@ -58,17 +59,20 @@ type system struct {
 	lstat     func(string) (fs.FileInfo, error)
 	chmod     func(string, fs.FileMode) error
 	dial      func(ctx context.Context, path string) (net.Conn, error)
+	// clearMounts removes the mounts that a client that died left behind.
+	clearMounts func(ctx context.Context, recordPath string, targets []string) ([]nfs.Cleared, error)
 }
 
 func systemHost() system {
 	return system{
-		getenv:    os.Getenv,
-		geteuid:   os.Geteuid,
-		configDir: config.DefaultConfigDir,
-		tempDir:   os.TempDir,
-		abs:       filepath.Abs,
-		lstat:     os.Lstat,
-		chmod:     os.Chmod,
+		getenv:      os.Getenv,
+		geteuid:     os.Geteuid,
+		configDir:   config.DefaultConfigDir,
+		tempDir:     os.TempDir,
+		abs:         filepath.Abs,
+		lstat:       os.Lstat,
+		chmod:       os.Chmod,
+		clearMounts: nfs.ClearStale,
 		dial: func(ctx context.Context, path string) (net.Conn, error) {
 			var d net.Dialer
 			return d.DialContext(ctx, "unix", path)
@@ -93,6 +97,17 @@ func (s system) socketPath(configDir string) string {
 	}
 	sum := sha256.Sum256([]byte(abs))
 	return filepath.Join(s.runtimeDir(), "splicefs", hex.EncodeToString(sum[:8])+".sock")
+}
+
+// nfsRecordExt replaces the extension of the control socket to name the record of the NFS
+// mounts that macOS makes.
+const nfsRecordExt = ".nfs.json"
+
+// nfsRecordPath returns the file where the macOS mount layer records its mounts: next to
+// the control socket, so that every command that finds the socket finds the record, and
+// so that it is gone after a reboot, which also removes the mounts it lists.
+func nfsRecordPath(socketPath string) string {
+	return socketPath[:len(socketPath)-len(filepath.Ext(socketPath))] + nfsRecordExt
 }
 
 func (s system) runtimeDir() string {

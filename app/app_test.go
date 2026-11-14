@@ -25,6 +25,10 @@ func wantMountOptions(t *testing.T, env *harness, wants []mount.Options) {
 			t.Errorf("mount %d has no logger", i)
 		}
 		got.Logger = nil
+		if wantRecord := nfsRecordPath(env.socket); got.RecordPath != wantRecord {
+			t.Errorf("mount %d record path = %q, want %q", i, got.RecordPath, wantRecord)
+		}
+		got.RecordPath = ""
 		if got != want {
 			t.Errorf("mount %d options = %+v, want %+v", i, got, want)
 		}

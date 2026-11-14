@@ -6,10 +6,14 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/SpliceFS/client/mount/nfs"
 )
 
 // serveReplies listens on a new socket and answers every connection with handler. The
@@ -258,5 +262,85 @@ func TestRequestMountNoClientRunning(t *testing.T) {
 	if !strings.Contains(err.Error(), "start the splicefs service") ||
 		!strings.Contains(err.Error(), missing) {
 		t.Errorf("RequestMount = %v", err)
+	}
+}
+
+func TestClearLeftBehindUsesTheRecordNextToTheSocket(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	folder := filepath.Join(dir, "real")
+	if err := os.Mkdir(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(folder, link); err != nil {
+		t.Fatal(err)
+	}
+	// What the system resolves for the folder of a target is what the mount layer recorded.
+	resolvedDir, err := filepath.EvalSymlinks(folder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The target itself is a link to nothing, which would fail if anything resolved it.
+	if err = os.Symlink(filepath.Join(dir, "nothing"), filepath.Join(folder, "dead")); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotPath string
+	var gotTargets []string
+	want := []nfs.Cleared{{Target: filepath.Join(resolvedDir, "dead"), Outcome: nfs.OutcomeCleared}}
+	sys := fakeSystem(nil, 1)
+	sys.clearMounts = func(_ context.Context, recordPath string, targets []string) ([]nfs.Cleared, error) {
+		gotPath, gotTargets = recordPath, targets
+		return want, nil
+	}
+	got, err := sys.clearLeftBehind(context.Background(), "/run/x/c.sock", []string{filepath.Join(link, "dead")})
+	if err != nil || len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("clearLeftBehind = %v, %v, want %v", got, err, want)
+	}
+	if gotPath != "/run/x/c.nfs.json" {
+		t.Errorf("record path = %q, want the one next to the socket", gotPath)
+	}
+	if wantTargets := []string{filepath.Join(resolvedDir, "dead")}; !slices.Equal(gotTargets, wantTargets) {
+		t.Errorf("targets = %q, want %q", gotTargets, wantTargets)
+	}
+}
+
+func TestClearLeftBehindWithoutTargetsAsksForAll(t *testing.T) {
+	t.Parallel()
+	sys := fakeSystem(nil, 1)
+	asked := false
+	sys.clearMounts = func(_ context.Context, _ string, targets []string) ([]nfs.Cleared, error) {
+		asked = len(targets) == 0
+		return nil, nfs.ErrRecordDamaged
+	}
+	_, err := sys.clearLeftBehind(context.Background(), "/run/x/c.sock", nil)
+	errIs(t, err, nfs.ErrRecordDamaged)
+	if !asked {
+		t.Error("the clean-up was not asked for every mount")
+	}
+}
+
+func TestClearLeftBehindReportsATargetThatCannotBeMadeAbsolute(t *testing.T) {
+	t.Parallel()
+	sys := fakeSystem(nil, 1)
+	sys.abs = func(string) (string, error) { return "", errors.New("no cwd") }
+	sys.clearMounts = func(context.Context, string, []string) ([]nfs.Cleared, error) {
+		t.Error("the clean-up ran without a target")
+		return nil, nil
+	}
+	if _, err := sys.clearLeftBehind(context.Background(), "/run/x/c.sock", []string{"mnt"}); err == nil ||
+		!strings.Contains(err.Error(), "no cwd") {
+		t.Errorf("clearLeftBehind = %v", err)
+	}
+}
+
+func TestClearLeftBehindOfTheSystem(t *testing.T) {
+	t.Parallel()
+	// A record that does not exist is an empty one, and on the systems without a record the
+	// answer is empty as well.
+	results, err := ClearLeftBehind(context.Background(), filepath.Join(t.TempDir(), "c.sock"), nil)
+	if len(results) != 0 || err != nil {
+		t.Errorf("ClearLeftBehind = %v, %v, want nothing", results, err)
 	}
 }

@@ -30,7 +30,9 @@ func rawCall(t *testing.T, socket, text string) string {
 	if !ok {
 		t.Fatalf("connection is a %T, want a Unix connection", conn)
 	}
-	if err = unixConn.CloseWrite(); err != nil {
+	// A request that is refused can be answered and closed before this side has ended its
+	// half. macOS then reports that the socket is not connected, and the reply is still there.
+	if err = unixConn.CloseWrite(); err != nil && !errors.Is(err, syscall.ENOTCONN) {
 		t.Fatal(err)
 	}
 	reply, err := io.ReadAll(conn)
