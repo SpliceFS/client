@@ -57,6 +57,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # A tag can sit on any commit. Only a commit on main may publish, and the tag must
+      # name the version that VERSION gives. This runs before any key is written.
+      - name: The tag is a release of main
+        run: |
+          # Fetch main by name, so that origin/main is the current tip and not the state
+          # of the last checkout.
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::the tagged commit is not on main, so it cannot be released"
+            exit 1
+          fi
+          version="$(cat VERSION)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME, but VERSION says v$version"
+            exit 1
+          fi
       # Only the two public key files are used from this repository.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
