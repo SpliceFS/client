@@ -211,12 +211,16 @@ func TestHead(t *testing.T) {
 		w.Header().Set("Last-Modified", "Wed, 02 Jan 2030 03:04:05 GMT")
 		w.Header().Set("ETag", `"abc"`)
 		w.Header().Set(wire.HeaderHeadDigest, "deadbeef")
+		w.Header().Set(wire.HeaderTailDigest, "cafe")
 	})
 	got, err := n.Head(context.Background(), testToken, "my share/a#b/100%/caf\u00e9?.bin")
 	if err != nil {
 		t.Fatalf("Head: %v", err)
 	}
-	want := Meta{Size: 12345, MTime: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC), ETag: `"abc"`, HeadDigest: "deadbeef"}
+	want := Meta{
+		Size: 12345, MTime: time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC), ETag: `"abc"`,
+		HeadDigest: "deadbeef", TailDigest: "cafe",
+	}
 	if got != want {
 		t.Errorf("Head = %+v, want %+v", got, want)
 	}
@@ -229,6 +233,7 @@ func TestHeadProtocolViolations(t *testing.T) {
 		"Last-Modified":       "Wed, 02 Jan 2030 03:04:05 GMT",
 		"ETag":                `"abc"`,
 		wire.HeaderHeadDigest: "deadbeef",
+		wire.HeaderTailDigest: "cafe",
 	}
 	tests := []struct {
 		name   string
@@ -240,7 +245,8 @@ func TestHeadProtocolViolations(t *testing.T) {
 		{name: "no last modified", header: "Last-Modified"},
 		{name: "bad last modified", header: "Last-Modified", value: "yesterday"},
 		{name: "no etag", header: "ETag"},
-		{name: "no digest", header: wire.HeaderHeadDigest},
+		{name: "no head digest", header: wire.HeaderHeadDigest},
+		{name: "no tail digest", header: wire.HeaderTailDigest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

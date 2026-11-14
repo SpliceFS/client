@@ -102,6 +102,11 @@ func TestHeldVersionsAreBounded(t *testing.T) {
 	if _, ok := versions.recall(cacheKey("last"), other); ok {
 		t.Error("a different version was recalled")
 	}
+	other = version
+	other.TailDigest = "z"
+	if _, ok := versions.recall(cacheKey("last"), other); ok {
+		t.Error("a version with another tail digest was recalled")
+	}
 }
 
 func TestOpenRevalidatesAnOldCacheEntry(t *testing.T) {
@@ -189,6 +194,40 @@ func TestNodeWithAnotherVersionIsNotASource(t *testing.T) {
 	info, _ := env.cache(0).Peek(cacheKey("media/file"))
 	if want := (fakeFile{majority, fileTime()}).digest(); info.Version.HeadDigest != want {
 		t.Errorf("cached head digest %s, want the majority's %s", info.Version.HeadDigest, want)
+	}
+	if want := (fakeFile{majority, fileTime()}).tailDigest(); info.Version.TailDigest != want {
+		t.Errorf("cached tail digest %s, want the majority's %s", info.Version.TailDigest, want)
+	}
+}
+
+// A copy with the same size, time and first block but another end is another version: it
+// must serve no block, or a read could mix the two ends.
+func TestNodeWithAnotherTailIsNotASource(t *testing.T) {
+	t.Parallel()
+	env := newHarness(t, "a", "b", "c")
+	majority := pattern(1, testSize)
+	odd := bytes.Clone(majority)
+	odd[len(odd)-1] ^= 0xff
+	env.fc.nodes[0].put("media/file", majority, fileTime())
+	env.fc.nodes[1].put("media/file", odd, fileTime())
+	env.fc.nodes[2].put("media/file", majority, fileTime())
+	fsys := env.view(0)
+	meter := env.client.clusters[testCluster].meter
+	meter.Observe("a", 1<<10, time.Second)
+	meter.Observe("b", 1<<30, time.Second)
+	meter.Observe("c", 1<<10, time.Second)
+
+	for range 3 {
+		if got := readFile(t, fsys, "media/file"); !bytes.Equal(got, majority) {
+			t.Fatal("read data is not the version most nodes hold")
+		}
+	}
+	if got := env.fc.nodes[1].count("range"); got != 0 {
+		t.Errorf("the node with the other tail served %d reads", got)
+	}
+	info, _ := env.cache(0).Peek(cacheKey("media/file"))
+	if want := (fakeFile{majority, fileTime()}).tailDigest(); info.Version.TailDigest != want {
+		t.Errorf("cached tail digest %s, want the majority's %s", info.Version.TailDigest, want)
 	}
 }
 
@@ -533,9 +572,10 @@ func newAnswerSet(t *testing.T) answerSet {
 	return answerSet{nodes: nodes}
 }
 
-// ok is the answer of node i holding the version with the given tag and head digest.
-func (set answerSet) ok(i int, etag, digest string) headAnswer {
-	return headAnswer{node: set.nodes[i], meta: remote.Meta{ETag: etag, HeadDigest: digest}}
+// ok is the answer of node i holding the version with the given tag, head digest and
+// tail digest.
+func (set answerSet) ok(i int, etag, head, tail string) headAnswer {
+	return headAnswer{node: set.nodes[i], meta: remote.Meta{ETag: etag, HeadDigest: head, TailDigest: tail}}
 }
 
 // fail is the answer of node i failing with err.
@@ -558,44 +598,65 @@ func TestChooseVersionPicksTheLargestGroup(t *testing.T) {
 	}{
 		{
 			"largest group",
-			[]headAnswer{ok(0, "x", "1"), ok(1, "y", "1"), ok(2, "y", "1")},
+			[]headAnswer{ok(0, "x", "1", "1"), ok(1, "y", "1", "1"), ok(2, "y", "1", "1")},
 			"x",
-			remote.Meta{ETag: "y", HeadDigest: "1"},
+			remote.Meta{ETag: "y", HeadDigest: "1", TailDigest: "1"},
 			[]string{"b", "c"},
 		},
 		{
-			"same tag, other digest",
-			[]headAnswer{ok(0, "x", "1"), ok(1, "x", "2"), ok(2, "x", "1")},
+			"same tag, other head digest",
+			[]headAnswer{ok(0, "x", "1", "1"), ok(1, "x", "2", "1"), ok(2, "x", "1", "1")},
 			"x",
-			remote.Meta{ETag: "x", HeadDigest: "1"},
+			remote.Meta{ETag: "x", HeadDigest: "1", TailDigest: "1"},
 			[]string{"a", "c"},
 		},
 		{
 			"tie goes to the tree's tag",
-			[]headAnswer{ok(0, "y", "1"), ok(1, "x", "1")},
+			[]headAnswer{ok(0, "y", "1", "1"), ok(1, "x", "1", "1")},
 			"x",
-			remote.Meta{ETag: "x", HeadDigest: "1"},
+			remote.Meta{ETag: "x", HeadDigest: "1", TailDigest: "1"},
 			[]string{"b"},
 		},
 		{
 			"tie goes to the greatest tag",
-			[]headAnswer{ok(0, "y", "1"), ok(1, "z", "1")},
+			[]headAnswer{ok(0, "y", "1", "1"), ok(1, "z", "1", "1")},
 			"x",
-			remote.Meta{ETag: "z", HeadDigest: "1"},
+			remote.Meta{ETag: "z", HeadDigest: "1", TailDigest: "1"},
 			[]string{"b"},
 		},
 		{
-			"tie goes to the greatest digest",
-			[]headAnswer{ok(0, "x", "2"), ok(1, "x", "1")},
+			"tie goes to the greatest head digest",
+			[]headAnswer{ok(0, "x", "2", "1"), ok(1, "x", "1", "1")},
 			"x",
-			remote.Meta{ETag: "x", HeadDigest: "2"},
+			remote.Meta{ETag: "x", HeadDigest: "2", TailDigest: "1"},
 			[]string{"a"},
 		},
 		{
-			"answers beat silence",
-			[]headAnswer{fail(0, down), fail(1, remote.ErrNotFound), ok(2, "x", "1")},
+			"same tag and head, other tail",
+			[]headAnswer{ok(0, "x", "1", "1"), ok(1, "x", "1", "2"), ok(2, "x", "1", "1")},
 			"x",
-			remote.Meta{ETag: "x", HeadDigest: "1"},
+			remote.Meta{ETag: "x", HeadDigest: "1", TailDigest: "1"},
+			[]string{"a", "c"},
+		},
+		{
+			"tie goes to the greatest head digest before the tail digest",
+			[]headAnswer{ok(0, "x", "1", "9"), ok(1, "x", "2", "1")},
+			"x",
+			remote.Meta{ETag: "x", HeadDigest: "2", TailDigest: "1"},
+			[]string{"b"},
+		},
+		{
+			"tie goes to the greatest tail digest",
+			[]headAnswer{ok(0, "x", "1", "1"), ok(1, "x", "1", "2")},
+			"x",
+			remote.Meta{ETag: "x", HeadDigest: "1", TailDigest: "2"},
+			[]string{"b"},
+		},
+		{
+			"answers beat silence",
+			[]headAnswer{fail(0, down), fail(1, remote.ErrNotFound), ok(2, "x", "1", "1")},
+			"x",
+			remote.Meta{ETag: "x", HeadDigest: "1", TailDigest: "1"},
 			[]string{"c"},
 		},
 	} {

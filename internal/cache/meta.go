@@ -28,6 +28,7 @@ type Version struct {
 	Size       int64  `json:"size"`
 	ETag       string `json:"etag"`
 	HeadDigest string `json:"head_digest"`
+	TailDigest string `json:"tail_digest"`
 	BlockSize  int64  `json:"block_size"`
 }
 

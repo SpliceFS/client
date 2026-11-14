@@ -33,7 +33,9 @@ trap 'exit 143' TERM
 # The tags of the server repository that are releases (v1.2.3), oldest first. sort -V is a
 # GNU option, so the numbers are sorted field by field instead.
 if [ -z "${SERVER_WORKS+set}" ] || [ -z "${SERVER_REFUSED+set}" ]; then
-    remote="$(git ls-remote --tags --refs https://github.com/SpliceFS/server 'v*')" ||
+    # Asked from the temporary folder: in a copy of a working tree whose git folder is
+    # elsewhere, git would fail here before it ever looked at the address.
+    remote="$(git -C "$tmp" ls-remote --tags --refs https://github.com/SpliceFS/server 'v*')" ||
         { echo "cannot list the tags of the server repository" >&2; exit 1; }
     tags="$(printf '%s\n' "$remote" |
         awk '{ sub("^refs/tags/", "", $2); if ($2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) print substr($2, 2) }' |

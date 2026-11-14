@@ -229,7 +229,7 @@ func testKey(name string) Key { return Key{Cluster: "example", Path: "/" + name}
 
 // testVersion has blocks of 4 bytes.
 func testVersion(size int64) Version {
-	return Version{Size: size, ETag: "tag", HeadDigest: "digest", BlockSize: 4}
+	return Version{Size: size, ETag: "tag", HeadDigest: "digest", TailDigest: "tail", BlockSize: 4}
 }
 
 // content is the bytes of a file of the given size: every offset has a known value.

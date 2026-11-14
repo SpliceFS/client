@@ -125,6 +125,12 @@ func (f fakeFile) digest() string {
 	return hex.EncodeToString(sum[:])
 }
 
+// tailDigest hashes the last wire.TailDigestBytes bytes, or all of a shorter file.
+func (f fakeFile) tailDigest() string {
+	sum := sha256.Sum256(f.data[max(0, len(f.data)-wire.TailDigestBytes):])
+	return hex.EncodeToString(sum[:])
+}
+
 // fakeNode serves the API from an in-memory file tree. Its switches let a test make
 // it fail in the ways a real node can.
 type fakeNode struct {
@@ -328,6 +334,7 @@ func (n *fakeNode) serve(w http.ResponseWriter, r *http.Request, target endpoint
 		w.Header().Set("ETag", stored.etag())
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set(wire.HeaderHeadDigest, stored.digest())
+		w.Header().Set(wire.HeaderTailDigest, stored.tailDigest())
 		http.ServeContent(w, r, "", stored.mtime, bytes.NewReader(stored.data))
 	default:
 		writeError(w, http.StatusNotFound)

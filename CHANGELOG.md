@@ -23,6 +23,8 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 - Internal: added a check that runs the real client against released servers. Nothing changes for
   users.
+- This version was not published as packages: its release started while the one before was still
+  running and was stopped at the publish step. Version 0.4.6 contains it.
 
 ## [0.4.4] - 2026-11-14
 

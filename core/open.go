@@ -204,6 +204,7 @@ func (v *view) ask(ctx context.Context, key cache.Key, nodes []*remote.Node, tre
 		Size:       group.meta.Size,
 		ETag:       group.meta.ETag,
 		HeadDigest: group.meta.HeadDigest,
+		TailDigest: group.meta.TailDigest,
 		BlockSize:  int64(v.c.cfg.BlockSize),
 	}
 	v.c.held.remember(key, version, names(group.nodes))
@@ -216,11 +217,12 @@ type versionGroup struct {
 	nodes []*remote.Node
 }
 
-type versionKey struct{ etag, digest string }
+type versionKey struct{ etag, head, tail string }
 
-// chooseVersion groups the nodes by tag and head digest and returns the largest group.
-// A tie goes to the tree's tag, which is what the listing showed, then to the greatest
-// tag and digest, so that the choice does not depend on the order of the answers.
+// chooseVersion groups the nodes by tag, head digest and tail digest and returns the
+// largest group. A tie goes to the tree's tag, which is what the listing showed, then to
+// the greatest tag and digests, so that the choice does not depend on the order of the
+// answers.
 func chooseVersion(answers []headAnswer, treeETag string) (versionGroup, error) {
 	groups := make(map[versionKey]*versionGroup)
 	var missing bool
@@ -228,7 +230,7 @@ func chooseVersion(answers []headAnswer, treeETag string) (versionGroup, error) 
 	for _, answer := range answers {
 		switch {
 		case answer.err == nil:
-			groupKey := versionKey{answer.meta.ETag, answer.meta.HeadDigest}
+			groupKey := versionKey{answer.meta.ETag, answer.meta.HeadDigest, answer.meta.TailDigest}
 			group, ok := groups[groupKey]
 			if !ok {
 				group = &versionGroup{meta: answer.meta}
@@ -243,12 +245,13 @@ func chooseVersion(answers []headAnswer, treeETag string) (versionGroup, error) 
 	}
 	switch {
 	case len(groups) > 0:
-		return *slices.MaxFunc(slices.Collect(maps.Values(groups)), func(a, b *versionGroup) int {
+		return *slices.MaxFunc(slices.Collect(maps.Values(groups)), func(left, right *versionGroup) int {
 			return cmp.Or(
-				cmp.Compare(len(a.nodes), len(b.nodes)),
-				cmp.Compare(a.matches(treeETag), b.matches(treeETag)),
-				strings.Compare(a.meta.ETag, b.meta.ETag),
-				strings.Compare(a.meta.HeadDigest, b.meta.HeadDigest),
+				cmp.Compare(len(left.nodes), len(right.nodes)),
+				cmp.Compare(left.matches(treeETag), right.matches(treeETag)),
+				strings.Compare(left.meta.ETag, right.meta.ETag),
+				strings.Compare(left.meta.HeadDigest, right.meta.HeadDigest),
+				strings.Compare(left.meta.TailDigest, right.meta.TailDigest),
 			)
 		}), nil
 	case missing:
