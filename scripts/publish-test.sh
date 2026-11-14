@@ -213,5 +213,131 @@ else
     skip "h FreeBSD package missing locally refused: rsync has no --chmod"
 fi
 
+# (i) The upload goes in two passes and stops when one fails. A wrapper for rsync is put on the
+# PATH: it counts the real passes (a dry run is not one), saves a copy of the target folder
+# after each, and makes the pass named by FAIL_PASS fail, so the state between the passes can
+# be looked at. The index files are named here again, as a person reading the layout would:
+# the apt dists folder, the rpm repodata folders, APKINDEX.tar.gz, the FreeBSD catalog and the
+# signature files next to them.
+if [ "$chmod_ok" -eq 0 ]; then
+    skip "i upload order and stop on error: rsync has no --chmod"
+else
+    real_rsync="$(command -v rsync)"
+    mkdir "$tmp/wrap"
+    cat > "$tmp/wrap/rsync" <<'WRAP'
+#!/bin/sh
+set -eu
+# A dry run is not a pass, and neither is the second process that some rsync versions start
+# for a local copy (it is called with --server).
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run | --server) exec "$REAL_RSYNC" "$@" ;;
+        *) ;;
+    esac
+done
+count=0
+[ ! -f "$PASS_DIR/count" ] || count="$(cat "$PASS_DIR/count")"
+count=$((count + 1))
+echo "$count" > "$PASS_DIR/count"
+[ "$count" != "${FAIL_PASS:-0}" ] || { echo "test wrapper: pass $count fails" >&2; exit 23; }
+"$REAL_RSYNC" "$@"
+for dest; do :; done
+cp -R "$dest" "$PASS_DIR/after-$count"
+WRAP
+    chmod 755 "$tmp/wrap/rsync"
+    # Sends $1 to $2 through the wrapper. $3 is the number of the pass that fails, if any. The
+    # number of passes that were run is left in pass_total.
+    send_logged() {
+        rm -rf "$tmp/passes"
+        mkdir "$tmp/passes"
+        send_status=0
+        PATH="$tmp/wrap:$PATH" REAL_RSYNC="$real_rsync" PASS_DIR="$tmp/passes" \
+            FAIL_PASS="${3:-0}" REPO_DIR="$1" UPLOAD_TARGET="$2" \
+            sh scripts/publish.sh send >"$tmp/out" 2>&1 || send_status=$?
+        pass_total=0
+        [ ! -f "$tmp/passes/count" ] || pass_total="$(cat "$tmp/passes/count")"
+    }
+    files_in() { (cd "$1" && find . -type f | sed 's|^\./||' | sort); }
+
+    index_re='^(apt/dists/|rpm/[^/]+/repodata/'
+    index_re="$index_re"'|alpine/[^/]+/(APKINDEX\.tar\.gz|[^/]+\.(sig|asc))$'
+    index_re="$index_re"'|freebsd/[^/]+/(meta|meta\.conf|packagesite\.pkg|data\.pkg|[^/]+\.(sig|asc))$)'
+    # The stand-in FreeBSD folders hold only meta.conf, so the other catalog files are added.
+    order_repo="$tmp/order_repo"
+    cp -R "$base" "$order_repo"
+    for d in $freebsd_dirs; do
+        for f in meta meta.conf packagesite.pkg data.pkg meta.conf.sig; do
+            [ -f "$order_repo/$d/$f" ] || echo "index $f" > "$order_repo/$d/$f"
+        done
+    done
+    files_in "$order_repo" > "$tmp/all_files"
+    grep -E "$index_re" "$tmp/all_files" > "$tmp/index_files" || true
+    grep -Ev "$index_re" "$tmp/all_files" > "$tmp/other_files" || true
+    if grep -qx 'apt/dists/stable/InRelease' "$tmp/index_files" &&
+        grep -q '^rpm/x86_64/repodata/repomd.xml.asc$' "$tmp/index_files" &&
+        grep -q '^alpine/x86_64/APKINDEX.tar.gz$' "$tmp/index_files" &&
+        grep -q '/packagesite.pkg$' "$tmp/index_files" &&
+        ! grep -q '\.deb$\|\.rpm$\|\.apk$\|/All/' "$tmp/index_files" &&
+        grep -q '\.deb$' "$tmp/other_files"; then
+        pass "i the index files are told apart from the packages"
+    else
+        fail "i the list of index files is wrong"
+    fi
+
+    # The first publication: pass 1 leaves a folder without any index file, pass 2 completes it.
+    mkdir "$tmp/first"
+    send_logged "$order_repo" "$tmp/first"
+    after_first="$(files_in "$tmp/passes/after-1")"
+    want_first="$(cat "$tmp/other_files")"
+    if [ "$send_status" -eq 0 ] && [ "$pass_total" = 2 ] && [ "$after_first" = "$want_first" ] &&
+        diff -r "$order_repo" "$tmp/first" >/dev/null; then
+        pass "i a send is two passes: all packages first, then the index files"
+    else
+        fail "i the passes of a first send (status $send_status, $pass_total passes)"
+        sed 's/^/     /' "$tmp/out"
+    fi
+
+    # An upgrade: the index of the old release stays until pass 2, and so do the deletions.
+    cp -R "$order_repo" "$tmp/upgrade"
+    new_pkg="$(cd "$order_repo" && find rpm/x86_64 -name "*.rpm" | head -n 1)"
+    rm "$tmp/upgrade/$new_pkg"
+    old_text="the index of the release before"
+    while read -r f; do echo "$old_text" > "$tmp/upgrade/$f"; done < "$tmp/index_files"
+    stale=rpm/x86_64/repodata/stale-primary.xml.gz
+    echo stale > "$tmp/upgrade/$stale"
+    send_logged "$order_repo" "$tmp/upgrade"
+    old_kept=1
+    while read -r f; do
+        grep -qx "$old_text" "$tmp/passes/after-1/$f" || old_kept=0
+    done < "$tmp/index_files"
+    if [ "$send_status" -eq 0 ] && [ "$pass_total" = 2 ] && [ "$old_kept" -eq 1 ] &&
+        [ -f "$tmp/passes/after-1/$new_pkg" ] && [ -f "$tmp/passes/after-1/$stale" ] &&
+        [ ! -e "$tmp/upgrade/$stale" ] && diff -r "$order_repo" "$tmp/upgrade" >/dev/null; then
+        pass "i an upgrade: the new package is there before any new index, the deletion comes last"
+    else
+        fail "i the passes of an upgrade (status $send_status)"
+        sed 's/^/     /' "$tmp/out"
+    fi
+
+    # A failed pass ends the script: no later pass runs and nothing is reported as published.
+    mkdir "$tmp/fail1" "$tmp/fail2"
+    send_logged "$order_repo" "$tmp/fail1" 1
+    left="$(files_in "$tmp/fail1")"
+    if [ "$send_status" -ne 0 ] && [ "$pass_total" = 1 ] && [ -z "$left" ] &&
+        grep -q 'pass 1' "$tmp/out" && ! grep -q '^published to' "$tmp/out"; then
+        pass "i when pass 1 fails the script stops and nothing was sent"
+    else
+        fail "i a failing pass 1 (status $send_status)"; sed 's/^/     /' "$tmp/out"
+    fi
+    send_logged "$order_repo" "$tmp/fail2" 2
+    left="$(files_in "$tmp/fail2")"
+    if [ "$send_status" -ne 0 ] && [ "$pass_total" = 2 ] && [ "$left" = "$want_first" ] &&
+        grep -q 'pass 2' "$tmp/out" && ! grep -q '^published to' "$tmp/out"; then
+        pass "i when pass 2 fails the script stops, and no index file was sent"
+    else
+        fail "i a failing pass 2 (status $send_status)"; sed 's/^/     /' "$tmp/out"
+    fi
+fi
+
 [ "$failed" -eq 0 ] || { echo "$failed check(s) failed"; exit 1; }
 echo "publish checks done"
