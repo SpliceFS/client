@@ -371,7 +371,12 @@ func TestRealMountLeftBehindByAKilledClientIsRemovedByUmount(t *testing.T) {
 		t.Fatal("the mount is gone after the client was killed, so there is no stale mount to test")
 	}
 
-	const limit = 10 * time.Second
+	// The limit only catches a command that hangs. The system decides how long umount takes:
+	// removing a dead NFS mount took from milliseconds to 9 seconds while other mounts were
+	// being made, and the race detector sleeps one second more when a process ends. The command
+	// bounds its own wait for the system (umountTimeout in mount/nfs, 30 seconds), so the limit
+	// is longer than that bound and the command always ends first.
+	const limit = time.Minute
 	refused := runClient(t, dir, "mount", limit)
 	requireOutput(t, refused, exitError, "is still mounted by a client that is no longer running", "splicefs umount")
 	requireOutput(t, runClient(t, dir, "umount", limit), exitOK, "removed the mount", place.target)
