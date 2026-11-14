@@ -19,11 +19,12 @@ import (
 
 const pinnedName = "dir/hello.txt"
 
-// fakeClock stands in for time in the tests of pinnedFiles: a timer runs when the test
-// says so, never because time has passed.
+// fakeClock stands in for time in the tests of pinnedFiles and of the time limit of the
+// root: a timer runs when the test says so, never because time has passed.
 type fakeClock struct {
-	mu     sync.Mutex
-	timers []*fakeTimer
+	mu      sync.Mutex
+	timers  []*fakeTimer
+	lengths []time.Duration // how long each timer that was ever set was asked to last
 }
 
 type fakeTimer struct {
@@ -31,9 +32,10 @@ type fakeTimer struct {
 	stopped bool
 }
 
-func (c *fakeClock) after(_ time.Duration, f func()) func() bool {
+func (c *fakeClock) after(d time.Duration, f func()) func() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.lengths = append(c.lengths, d)
 	timer := &fakeTimer{run: f}
 	c.timers = append(c.timers, timer)
 	return func() bool {
@@ -60,8 +62,15 @@ func (c *fakeClock) take(match func(*fakeTimer) bool) []func() {
 	return out
 }
 
-// quiet lets the quiet time pass: every timer that is still set runs.
-func (c *fakeClock) quiet() {
+// asked returns how long each timer that was ever set was asked to last.
+func (c *fakeClock) asked() []time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.lengths)
+}
+
+// elapse lets time pass: every timer that is still set runs.
+func (c *fakeClock) elapse() {
 	for _, run := range c.take(func(timer *fakeTimer) bool { return !timer.stopped }) {
 		run()
 	}
@@ -157,7 +166,7 @@ func TestPinnedReadAfterTheQuietTimeOpensAgain(t *testing.T) {
 	t.Parallel()
 	b, fsys, clock := newPinnedTest(t)
 	readOnce(t, b)
-	clock.quiet()
+	clock.elapse()
 	if closes(fsys) != 1 {
 		t.Errorf("closes = %d after the quiet time, want 1", closes(fsys))
 	}
@@ -176,7 +185,7 @@ func TestPinnedReplacedFileIsNotSeenWhileReadsKeepComing(t *testing.T) {
 	b, fsys, clock := newPinnedTest(t)
 	readOnce(t, b)
 	fsys.addFile(pinnedName, []byte("HELLO again"))
-	clock.quiet()
+	clock.elapse()
 	// A read that came before the quiet time ran out took the file back: no timer is left
 	// that could close it.
 	readOnce(t, b)
@@ -213,7 +222,7 @@ func TestPinnedTimerThatFiresLateDoesNothing(t *testing.T) {
 	if err := opened.Close(); err != nil {
 		t.Fatal(err)
 	}
-	clock.quiet()
+	clock.elapse()
 	if closes(fsys) != 1 {
 		t.Errorf("closes = %d, want 1", closes(fsys))
 	}
@@ -384,7 +393,7 @@ func TestPinnedFilesAreClosedWhenTheMountEnds(t *testing.T) {
 	if closes(fsys) != 1 {
 		t.Errorf("closes = %d, want the file closed when its read ended", closes(fsys))
 	}
-	clock.quiet()
+	clock.elapse()
 	if closes(fsys) != 1 || fsys.count("close:other.txt") != 1 {
 		t.Errorf("a timer closed a file again: %v", fsys.calls)
 	}
@@ -453,7 +462,7 @@ func TestPinnedFailedCloseIsLogged(t *testing.T) {
 		return nil
 	}
 	fsys.mu.Unlock()
-	clock.quiet()
+	clock.elapse()
 	if out := logged.String(); !strings.Contains(out, "close of a file kept open failed") ||
 		!strings.Contains(out, pinnedName) || !strings.Contains(out, "disk on fire") {
 		t.Errorf("the failed close was not logged: %q", out)

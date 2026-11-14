@@ -24,6 +24,9 @@ import (
 // let this user mount, the test is skipped, never run with sudo.
 func mountOrSkip(t *testing.T, env environment, fsys *fakeFS) *mounted {
 	t.Helper()
+	// The tree is in memory and always answers, so the root must never get the fixed answer
+	// that is meant for a core that is too slow.
+	env.rootAfter = neverEnds
 	mnt, err := mountWith(fsys, mount.Options{Target: t.TempDir(), Source: "splicefs:accept/"}, env)
 	if err != nil {
 		msg := strings.ToLower(err.Error())

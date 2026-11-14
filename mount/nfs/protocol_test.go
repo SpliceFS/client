@@ -13,7 +13,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/willscott/go-nfs-client/nfs"
 	"github.com/willscott/go-nfs-client/nfs/rpc"
@@ -67,7 +66,7 @@ func startTest(t *testing.T, fsys *fakeFS) *server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := startServer(fsys, listener, serverConfig{owner: testOwner()})
+	srv, err := startServer(fsys, listener, serverConfig{owner: testOwner(), rootAfter: neverEnds})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,6 +295,23 @@ func TestProtocolProbeNameIsNotFoundAndNeverReachesTheCore(t *testing.T) {
 	}
 }
 
+// elapseWhenStarted ends the time limit of the root call as soon as the core has begun it.
+// The test cannot do it itself, because the request it would wait for in dial is the one
+// that is held.
+func elapseWhenStarted(t *testing.T, block rootBlock, clock *fakeClock) {
+	t.Helper()
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		select {
+		case <-block.started:
+			clock.elapse()
+		case <-t.Context().Done():
+		}
+	}()
+	t.Cleanup(func() { <-finished })
+}
+
 func TestProtocolProbeNameIsAnsweredWithTheCoreUnreachable(t *testing.T) {
 	t.Parallel()
 	fsys := newFakeFS().addFile("dir/hello.txt", []byte("hello world"))
@@ -305,11 +321,14 @@ func TestProtocolProbeNameIsAnsweredWithTheCoreUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := startServer(fsys, listener, serverConfig{owner: testOwner(), rootBudget: 10 * time.Millisecond})
+	clock := &fakeClock{}
+	srv, err := startServer(fsys, listener, serverConfig{owner: testOwner(), rootAfter: clock.after})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(srv.Close)
+	// The mount asks for the root and is held until the time limit of that call is over.
+	elapseWhenStarted(t, block, clock)
 	target := dial(t, srv)
 	waitFor(t, block.started, "the root call to start")
 
