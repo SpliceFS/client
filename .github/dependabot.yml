@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # The shared code is not followed here. Its own release opens the pull request that moves
+    # this repository to the new version, with the right change scope.
+    ignore:
+      - dependency-name: github.com/SpliceFS/common
   - package-ecosystem: github-actions
     directory: /
     schedule:
