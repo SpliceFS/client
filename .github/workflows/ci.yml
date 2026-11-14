@@ -1,8 +1,8 @@
 name: CI
 
+# Only pull requests are tested. main gets nothing but branches that passed here while they
+# sat on its tip, so a run on main would test the same files a second time.
 on:
-  push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -13,7 +13,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A pull request is tested only when its branch sits on the tip of main. Then the merge adds
+  # nothing that was not tested, and nothing is tested again after it: not on main, not in the
+  # release. A branch that is behind fails here at once, before any long job starts. The bot
+  # rebuilds every open branch when main moves, which starts the checks again.
+  tip:
+    name: On the tip of main
+    runs-on: ubuntu-latest
+    steps:
+      - name: The branch contains the tip of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.label }}
+        run: |
+          behind="$(gh api "repos/$REPO/compare/$BASE...$HEAD" --jq .behind_by)"
+          if [ "$behind" != "0" ]; then
+            echo "::error::This branch is $behind commits behind $BASE. Rebase it on the tip of $BASE; nothing is tested until then."
+            exit 1
+          fi
+          echo "The branch contains the tip of $BASE."
+
   linux:
+    needs: tip
     name: Linux (Go ${{ matrix.go }})
     runs-on: ubuntu-latest
     permissions:
@@ -61,6 +84,7 @@ jobs:
         run: make build
 
   macos:
+    needs: tip
     name: macOS
     runs-on: macos-latest
     steps:
@@ -74,6 +98,7 @@ jobs:
         run: make build
 
   fuzz:
+    needs: tip
     name: Fuzz (short)
     runs-on: ubuntu-latest
     permissions:
@@ -90,6 +115,7 @@ jobs:
   # (scripts/package-freebsd.sh). On amd64 the runner offers hardware virtualization; on
   # arm64 the machine is emulated, which is slower and still the real system.
   freebsd-package:
+    needs: tip
     name: FreeBSD package (${{ matrix.release }}, ${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -114,6 +140,7 @@ jobs:
           if-no-files-found: error
 
   package:
+    needs: tip
     name: Packages (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -155,6 +182,7 @@ jobs:
   # (scripts/check-freebsd.sh). Only amd64: there the runner offers hardware virtualization,
   # and an emulated machine would take too long for the whole test suite.
   freebsd:
+    needs: tip
     name: FreeBSD tests (${{ matrix.release }})
     runs-on: ubuntu-latest
     strategy:
@@ -169,6 +197,7 @@ jobs:
   # The scripts build, sign, test and publish the releases. ShellCheck runs with every
   # optional check on; .shellcheckrc says which two are off and why.
   shell:
+    needs: tip
     name: Shell analysis (ShellCheck)
     runs-on: ubuntu-latest
     steps:
@@ -177,6 +206,7 @@ jobs:
         run: make lint-shell
 
   lint:
+    needs: tip
     name: Lint (${{ matrix.goos }})
     runs-on: ubuntu-latest
     strategy:
