@@ -6,10 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
-## [0.5.13] - 2026-11-14
+## [0.5.12] - 2026-11-14
 
-- Internal: whoever changes the client keeps its shared code current by hand. Nothing changes for
-  users.
+- On Linux and FreeBSD, a program reads the new content of a file that was replaced on the servers,
+  instead of old content the kernel still held in memory.
 
 ## [0.5.11] - 2026-11-14
 

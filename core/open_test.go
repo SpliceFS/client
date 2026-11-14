@@ -39,6 +39,11 @@ func TestOpenReadsTheFile(t *testing.T) {
 		attr.Inode != inode(testCluster, "media/file", kindFile) {
 		t.Errorf("Attr = %+v", attr)
 	}
+	stored := fakeFile{data, fileTime()}
+	want := Version{ETag: stored.etag(), HeadDigest: stored.digest(), TailDigest: stored.tailDigest()}
+	if attr.Version != want {
+		t.Errorf("Attr.Version = %+v, want %+v", attr.Version, want)
+	}
 	if got := readAll(t, opened); !bytes.Equal(got, data) {
 		t.Error("read data differs from the file")
 	}

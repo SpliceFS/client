@@ -282,7 +282,12 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
     holds, and says to run `splicefs umount TARGET`; it does not clear the mount itself. The
     record is gone after a reboot, which also removes the mounts it lists.
 - **Kernel caching.** File contents never change under a given tag, so the kernel may keep
-  file data and directory entries cached.
+  file data and directory entries cached. On Linux and FreeBSD the client tells the kernel to
+  keep a file's cached data at each open, except when the open chose another version of the
+  file than the previous open did (another tag, head digest or tail digest). A file that was
+  replaced by one of the same size and time is therefore read again from the new copy. The
+  client remembers the version of the previous open only while the kernel still knows the
+  file.
 
 ## Known limitations
 
