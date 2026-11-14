@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -195,7 +196,7 @@ func (e *env) open() *Cache {
 
 func (e *env) openFS(fsys fileSystem) *Cache {
 	e.t.Helper()
-	c, err := openWith(e.opts, fsys)
+	c, err := openWith(e.opts, fsys, syscall.Flock)
 	if err != nil {
 		e.t.Fatalf("open: %v", err)
 	}

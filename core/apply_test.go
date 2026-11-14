@@ -210,6 +210,56 @@ func checkRemovedMount(t *testing.T, use viewUse) {
 	}
 }
 
+// TestApplyTakesBackARetiredCache removes a mount whose cache a view still holds and adds
+// a mount on the same folder again. The held cache is still open and its folder locked, so
+// the folder must not be opened a second time.
+func TestApplyTakesBackARetiredCache(t *testing.T) {
+	t.Parallel()
+	env := newHarness(t, "a")
+	other := env.withMount(testCluster, "/mnt/other")
+	env.start()
+	fsys, err := env.client.View(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := env.client.caches[other.Cache.Dir]
+	without := cloneConfig(env.cfg)
+	without.Mounts = without.Mounts[:1]
+	env.apply(without)
+	if !dir.retired || len(env.client.retiredCaches) != 1 {
+		t.Fatalf("retired = %v, retired caches %d, want the held cache retired", dir.retired, len(env.client.retiredCaches))
+	}
+
+	again := cloneConfig(env.cfg)
+	again.Mounts[1].Cache.MaxSize = 1
+	env.apply(again)
+	checkCacheInUseAgain(t, env, dir, fsys)
+
+	env.client.Release(fsys)
+	if cacheClosed(dir) {
+		t.Error("the release of the old view closed a cache that is in use again")
+	}
+	if err := env.client.Close(); err != nil {
+		t.Errorf("Close = %v, want the cache closed once", err)
+	}
+	if !cacheClosed(dir) {
+		t.Error("Close left the cache open")
+	}
+}
+
+// checkCacheInUseAgain checks that the client took back dir, the cache that fsys holds,
+// instead of opening its folder anew.
+func checkCacheInUseAgain(t *testing.T, env *harness, dir *cacheDir, fsys FS) {
+	t.Helper()
+	if env.client.caches[dir.dir] != dir {
+		t.Error("the folder was opened a second time")
+	}
+	if dir.retired || len(env.client.retiredCaches) != 0 || !env.client.Current(fsys) {
+		t.Errorf("retired = %v, retired caches %d, Current = %v, want the cache back in use",
+			dir.retired, len(env.client.retiredCaches), env.client.Current(fsys))
+	}
+}
+
 func TestApplyKeepsCacheWithNewLimits(t *testing.T) {
 	t.Parallel()
 	env := newHarness(t, "a")

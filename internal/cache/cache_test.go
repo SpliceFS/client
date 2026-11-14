@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -29,7 +30,7 @@ func TestOpenErrors(t *testing.T) {
 			t.Parallel()
 			e := newEnv(t)
 			tt.opts(&e.opts)
-			if c, err := openWith(e.opts, tt.fsys); err == nil {
+			if c, err := openWith(e.opts, tt.fsys, syscall.Flock); err == nil {
 				closeCache(t, c)
 				t.Fatal("open succeeded")
 			}
