@@ -12,8 +12,41 @@ permissions:
   contents: read
 
 jobs:
+  # Two releases of this repository must not overlap. Each one builds the package
+  # repositories on top of what is published, so a release that starts while an earlier one
+  # is still running would publish without the earlier version, and the publish step refuses
+  # that (it happened to 0.4.5). So a release waits here until every earlier one has ended.
+  # This job holds no key and is not part of the publish environment.
+  wait:
+    name: Wait for earlier releases
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Wait until no earlier release is running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          # Run numbers of GitHub only grow, so a smaller one is an earlier release, also
+          # when it is a failed release that was started again.
+          for attempt in $(seq 1 180); do
+            earlier="$(gh api "repos/$REPO/actions/workflows/release.yml/runs?per_page=50" \
+              --jq "[.workflow_runs[] | select(.id < $RUN_ID and .status != \"completed\")] | length")"
+            if [ "$earlier" = 0 ]; then
+              echo "no earlier release is running"
+              exit 0
+            fi
+            echo "$earlier earlier release(s) still running, attempt $attempt"
+            sleep 20
+          done
+          echo "::error::an earlier release did not end within an hour"
+          exit 1
+
   release:
     name: Build, sign, test, publish and release
+    needs: wait
     runs-on: ubuntu-latest
     environment: publish
     permissions:

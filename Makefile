@@ -36,9 +36,9 @@ check: fmt-check vet cover package-lib-test script-modes tracked-files
 
 # A script that lost its executable bit fails only where it is run directly, which for the
 # publishing script is the release job. This finds it in every check. Libraries (-lib.sh) are
-# read by other scripts and never run.
+# read by other scripts and never run, and so are the scenario files of the cluster test.
 script-modes:
-	@bad="$$(git ls-files -s -- 'scripts/*.sh' 'packaging/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ {print $$4}')"; \
+	@bad="$$(git ls-files -s -- 'scripts/*.sh' 'packaging/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ && $$4 !~ /^scripts\/cluster-scenarios\// {print $$4}')"; \
 	if [ -n "$$bad" ]; then echo "not executable in git:"; echo "$$bad"; exit 1; fi
 
 # Nothing that must stay private may be tracked: no compiled program (it carries the folder
@@ -95,7 +95,7 @@ compat:
 # The same from any system that has Docker. SERVER_WORKS and SERVER_REFUSED go into the
 # container only when the caller has set them. docker run takes its options before the
 # image, so this line uses LINUX_DOCKER and names the image itself.
-COMPAT_ENV := $(foreach v,SERVER_WORKS SERVER_REFUSED,$(if $(filter undefined,$(origin $(v))),,-e $(v)))
+COMPAT_ENV := $(foreach v,SERVER_WORKS SERVER_REFUSED CLUSTER_ONLY CLUSTER_SEED,$(if $(filter undefined,$(origin $(v))),,-e $(v)))
 compat-linux:
 	$(LINUX_DOCKER) $(COMPAT_ENV) $(LINUX_IMAGE) sh -c 'apt-get update -qq && \
 		apt-get install -y -qq fuse3 curl >/dev/null && \
@@ -126,7 +126,7 @@ lint: lint-shell
 # The shell part of lint by itself, for the CI job that has no Go tools.
 .PHONY: lint-shell
 lint-shell:
-	shellcheck scripts/*.sh packaging/*.sh packaging/*/*.sh \
+	shellcheck scripts/*.sh scripts/cluster-scenarios/*.sh packaging/*.sh packaging/*/*.sh \
 		packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm \
 		packaging/alpine/*.post-install packaging/alpine/*.post-upgrade \
 		packaging/alpine/*.pre-deinstall \
