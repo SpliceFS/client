@@ -66,8 +66,8 @@ check names.
 A branch must sit on the tip of `main`. When `main` moves, the bot rebuilds every open pull
 request on the new tip and sets its version again, so expect force-pushes to your branch. Run
 `git pull --rebase` (or reset to the remote branch) before you add commits. If the rebuild hits
-a conflict, the bot leaves the branch as it is and says so in a comment. Rebase it by hand and
-push.
+a conflict, the bot leaves the branch as it is and says so in a comment. Merge `main` into
+the branch locally, resolve the conflict there, and push.
 
 ### Merging
 
