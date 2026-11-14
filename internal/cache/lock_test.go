@@ -110,8 +110,13 @@ func TestLockIsFreeAfterClose(t *testing.T) {
 	setup.open()
 }
 
+// Not parallel: starting a process copies every open file of the test program into the
+// child until the child runs its own program, the lock files of other tests included, so a
+// test running at the same moment could find its own folder still locked. Go runs this test
+// before the parallel ones start.
+//
+//nolint:paralleltest // see above
 func TestFolderHeldByAnotherProcessIsRefusedUntilItEnds(t *testing.T) {
-	t.Parallel()
 	setup := newEnv(t)
 	holder := startHolder(t, setup.opts.Dir)
 
