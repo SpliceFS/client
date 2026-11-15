@@ -10,11 +10,9 @@ import (
 	"github.com/SpliceFS/client/internal/clienttest"
 )
 
-func TestHelloFS(t *testing.T) {
+func TestHelloStat(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	fsys := clienttest.HelloFS{}
-
+	ctx, fsys := context.Background(), clienttest.HelloFS{}
 	root, err := fsys.Stat(ctx, "")
 	if err != nil || !root.Dir {
 		t.Errorf("Stat of the root = %+v, %v", root, err)
@@ -23,18 +21,26 @@ func TestHelloFS(t *testing.T) {
 	if err != nil || file.Size != int64(len(clienttest.HelloText)) {
 		t.Errorf("Stat of the file = %+v, %v", file, err)
 	}
-	if _, err := fsys.Stat(ctx, "other"); !errors.Is(err, core.ErrNotExist) {
+	if _, err = fsys.Stat(ctx, "other"); !errors.Is(err, core.ErrNotExist) {
 		t.Errorf("Stat of another name = %v", err)
 	}
+}
 
+func TestHelloReadDir(t *testing.T) {
+	t.Parallel()
+	ctx, fsys := context.Background(), clienttest.HelloFS{}
 	entries, err := fsys.ReadDir(ctx, "")
 	if err != nil || len(entries) != 1 || entries[0].Name != clienttest.HelloName {
 		t.Errorf("ReadDir of the root = %+v, %v", entries, err)
 	}
-	if _, err := fsys.ReadDir(ctx, "other"); !errors.Is(err, core.ErrNotExist) {
+	if _, err = fsys.ReadDir(ctx, "other"); !errors.Is(err, core.ErrNotExist) {
 		t.Errorf("ReadDir of another folder = %v", err)
 	}
+}
 
+func TestHelloOpenAndSpace(t *testing.T) {
+	t.Parallel()
+	ctx, fsys := context.Background(), clienttest.HelloFS{}
 	if _, err := fsys.Open(ctx, "other"); !errors.Is(err, core.ErrNotExist) {
 		t.Errorf("Open of another name = %v", err)
 	}
@@ -46,14 +52,14 @@ func TestHelloFS(t *testing.T) {
 
 func TestHelloFileReads(t *testing.T) {
 	t.Parallel()
-	ctx := context.Background()
-	f, err := clienttest.HelloFS{}.Open(ctx, clienttest.HelloName)
+	ctx, fsys := context.Background(), clienttest.HelloFS{}
+	file, err := fsys.Open(ctx, clienttest.HelloName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = f.Close() }() //nolint:errcheck // the double's Close cannot fail
-	if f.Attr().Name != clienttest.HelloName {
-		t.Errorf("Attr = %+v", f.Attr())
+	defer func() { _ = file.Close() }() //nolint:errcheck // the double's Close cannot fail
+	if file.Attr().Name != clienttest.HelloName {
+		t.Errorf("Attr = %+v", file.Attr())
 	}
 	tests := []struct {
 		name    string
@@ -70,7 +76,7 @@ func TestHelloFileReads(t *testing.T) {
 	}
 	for _, tt := range tests {
 		buf := make([]byte, tt.size)
-		n, err := f.ReadAt(ctx, buf, tt.off)
+		n, err := file.ReadAt(ctx, buf, tt.off)
 		if string(buf[:n]) != tt.want || errors.Is(err, io.EOF) != tt.wantEOF {
 			t.Errorf("%s: ReadAt = %q, %v; want %q, EOF %v", tt.name, buf[:n], err, tt.want, tt.wantEOF)
 		}

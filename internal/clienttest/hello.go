@@ -15,16 +15,22 @@ const (
 	HelloName = "hello.txt"
 	// helloUnix is the modification time of every entry, a fixed second so that runs compare equal.
 	helloUnix = 1_700_000_000
+	// The inode numbers of the root and of the file.
+	rootInode = 1
+	fileInode = 2
+	// The size reported for the filesystem: a gibibyte, half of it free.
+	spaceTotal = 1 << 30
+	spaceFree  = 1 << 29
 )
 
 // helloRoot is the attributes of the root folder of HelloFS.
 func helloRoot() core.Attr {
-	return core.Attr{Dir: true, MTime: time.Unix(helloUnix, 0), Inode: 1}
+	return core.Attr{Dir: true, MTime: time.Unix(helloUnix, 0), Inode: rootInode}
 }
 
 // helloFile is the attributes of the one file in HelloFS.
 func helloFile() core.Attr {
-	return core.Attr{Name: HelloName, Size: int64(len(HelloText)), MTime: time.Unix(helloUnix, 0), Inode: 2}
+	return core.Attr{Name: HelloName, Size: int64(len(HelloText)), MTime: time.Unix(helloUnix, 0), Inode: fileInode}
 }
 
 // HelloFS is a filesystem with one file in its root, for the tests that mount for real.
@@ -61,7 +67,7 @@ func (HelloFS) Open(_ context.Context, name string) (core.File, error) {
 
 // StatFS reports a fixed size.
 func (HelloFS) StatFS(context.Context) (core.Space, error) {
-	return core.Space{Total: 1 << 30, Free: 1 << 29}, nil
+	return core.Space{Total: spaceTotal, Free: spaceFree}, nil
 }
 
 type helloOpen struct{}

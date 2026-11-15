@@ -11,7 +11,9 @@ import (
 	"github.com/SpliceFS/client/internal/version"
 )
 
-var prog = cli.Program{Name: "tool", Usage: "usage: tool [--config DIR]\n"}
+func tool() cli.Program {
+	return cli.Program{Name: "tool", Usage: "usage: tool [--config DIR]\n"}
+}
 
 func TestHandled(t *testing.T) {
 	t.Parallel()
@@ -25,13 +27,13 @@ func TestHandled(t *testing.T) {
 		wantErr     string
 	}{
 		{"nothing to answer", nil, false, false, 0, "", ""},
-		{"help", flag.ErrHelp, false, true, cli.ExitOK, prog.Usage, ""},
+		{"help", flag.ErrHelp, false, true, cli.ExitOK, tool().Usage, ""},
 		{
-			"help wrapped", errors.Join(errors.New("context"), flag.ErrHelp), false, true, cli.ExitOK, prog.Usage, "",
+			"help wrapped", errors.Join(errors.New("context"), flag.ErrHelp), false, true, cli.ExitOK, tool().Usage, "",
 		},
 		{
 			"bad command line", errors.New("flag provided but not defined: -x"), false, true, cli.ExitUsage, "",
-			"tool: flag provided but not defined: -x\n" + prog.Usage,
+			"tool: flag provided but not defined: -x\n" + tool().Usage,
 		},
 		{"version", nil, true, true, cli.ExitOK, "tool " + version.String() + "\n", ""},
 	}
@@ -39,7 +41,7 @@ func TestHandled(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var out, errOut bytes.Buffer
-			status, done := prog.Handled(tt.err, tt.showVersion, &out, &errOut)
+			status, done := tool().Handled(tt.err, tt.showVersion, &out, &errOut)
 			if done != tt.wantDone || status != tt.wantStatus || out.String() != tt.wantOut || errOut.String() != tt.wantErr {
 				t.Errorf("Handled = %d, %v, stdout %q, stderr %q; want %d, %v, %q, %q",
 					status, done, out.String(), errOut.String(), tt.wantStatus, tt.wantDone, tt.wantOut, tt.wantErr)
@@ -48,7 +50,7 @@ func TestHandled(t *testing.T) {
 	}
 }
 
-func TestSplitArgv(t *testing.T) {
+func TestProgramNameAndArguments(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
@@ -63,9 +65,9 @@ func TestSplitArgv(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			name, args := cli.SplitArgv(tt.argv)
+			name, args := cli.ProgramName(tt.argv), cli.Arguments(tt.argv)
 			if name != tt.wantName || !slices.Equal(args, tt.wantArgs) {
-				t.Errorf("SplitArgv(%q) = %q, %q; want %q, %q", tt.argv, name, args, tt.wantName, tt.wantArgs)
+				t.Errorf("ProgramName, Arguments of %q = %q, %q; want %q, %q", tt.argv, name, args, tt.wantName, tt.wantArgs)
 			}
 		})
 	}
@@ -74,7 +76,7 @@ func TestSplitArgv(t *testing.T) {
 func TestFail(t *testing.T) {
 	t.Parallel()
 	var errOut bytes.Buffer
-	if status := prog.Fail(&errOut, errors.New("boom")); status != cli.ExitError || errOut.String() != "tool: boom\n" {
+	if status := tool().Fail(&errOut, errors.New("boom")); status != cli.ExitError || errOut.String() != "tool: boom\n" {
 		t.Errorf("Fail = %d, stderr %q", status, errOut.String())
 	}
 }

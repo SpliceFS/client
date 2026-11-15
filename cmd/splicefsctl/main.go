@@ -33,7 +33,9 @@ running client to mount CLUSTER:PATH at TARGET.
 `
 )
 
-var prog = cli.Program{Name: program, Usage: usage} //nolint:gochecknoglobals // constant data, only the type has no constant form
+// prog names the program in its messages. It is data that never changes, and a struct has no
+// constant form.
+var prog = cli.Program{Name: program, Usage: usage} //nolint:gochecknoglobals // see above
 
 // exit is replaced in tests, so that main can run without ending the test process.
 var exit = os.Exit //nolint:gochecknoglobals // the one seam the tests replace; nothing else reads or writes it
@@ -51,8 +53,8 @@ func run(ctx context.Context, argv []string, _ io.Reader, stdout, stderr io.Writ
 // dispatch runs the mount helper when the program was started under its name, which is a
 // link to this program, and the splicefsctl commands otherwise.
 func dispatch(ctx context.Context, argv []string, stdout, stderr io.Writer, b backend) int {
-	name, args := cli.SplitArgv(argv)
-	if name == helperProgram {
+	args := cli.Arguments(argv)
+	if cli.ProgramName(argv) == helperProgram {
 		return b.executeHelper(ctx, args, stderr)
 	}
 	return execute(ctx, args, stdout, stderr, b)

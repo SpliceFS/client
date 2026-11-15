@@ -99,7 +99,8 @@ func TestRunUsesTheSystemBackend(t *testing.T) {
 	var out, errOut bytes.Buffer
 	argv := []string{"splicefsctl", "--version"}
 	status := run(context.Background(), argv, strings.NewReader(""), &out, &errOut)
-	if want := "splicefsctl " + version.String() + "\n"; status != cli.ExitOK || out.String() != want || errOut.Len() != 0 {
+	want := "splicefsctl " + version.String() + "\n"
+	if status != cli.ExitOK || out.String() != want || errOut.Len() != 0 {
 		t.Errorf("status %d stdout %q stderr %q, want 0 %q", status, out.String(), errOut.String(), want)
 	}
 }

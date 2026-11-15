@@ -24,6 +24,7 @@ var (
 // invocation is a parsed command line.
 type invocation struct {
 	cli.Flags
+
 	command string
 	// targets are the mount targets given to umount.
 	targets []string

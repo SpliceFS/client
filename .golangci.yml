@@ -114,6 +114,11 @@ linters:
         rules:
           json: snake
           yaml: snake
+    # internal/cli wraps the errors of the flag package once; the programs print them as they
+    # are, so wrapping them again would only repeat the words.
+    wrapcheck:
+      ignore-package-globs:
+        - github.com/SpliceFS/client/internal/cli
     # Names every Go programmer reads without thinking. Any other name must say what it holds.
     varnamelen:
       ignore-names:

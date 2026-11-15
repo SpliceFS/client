@@ -94,12 +94,10 @@ type result struct {
 	stderr string
 }
 
-func TestRunningClientAnswersOnTheControlSocket(t *testing.T) {
-	t.Parallel()
-	stack := newFullStack(t, nil, nil)
-	ended := stack.startService()
-	<-stack.ready
-
+// requireStatusReport checks that the running client reports its mount and what the stub
+// client measured.
+func requireStatusReport(t *testing.T, stack *fullStack) {
+	t.Helper()
 	report, err := stack.report()
 	if err != nil || len(report.Mounts) != 1 || report.Mounts[0].State != app.StateMounted ||
 		report.Mounts[0].Target != stack.configDir+"/mnt" || report.Mounts[0].Source != "splicefs:example/" {
@@ -109,14 +107,30 @@ func TestRunningClientAnswersOnTheControlSocket(t *testing.T) {
 		report.Caches[0].Dir != "/var/cache/splicefs" {
 		t.Errorf("status lacks what the stub client measured: %+v", report)
 	}
+}
 
+// requireBusyMountIsLeftAlone checks that a polite unmount of a mount in use is refused and
+// that the mount is still there afterwards.
+func requireBusyMountIsLeftAlone(t *testing.T, stack *fullStack) {
+	t.Helper()
 	stack.mount.SetBusy(true)
 	if err := stack.unmount(false); !errors.Is(err, app.ErrBusy) {
 		t.Errorf("unmount of a busy mount = %v, want a refusal because it is in use", err)
 	}
-	if got, _ := stack.report(); got.Mounts[0].State != app.StateMounted {
-		t.Errorf("the busy mount was not left alone: %+v", got)
+	got, err := stack.report()
+	if err != nil || got.Mounts[0].State != app.StateMounted {
+		t.Errorf("the busy mount was not left alone: %+v, %v", got, err)
 	}
+}
+
+func TestRunningClientAnswersOnTheControlSocket(t *testing.T) {
+	t.Parallel()
+	stack := newFullStack(t, nil, nil)
+	ended := stack.startService()
+	<-stack.ready
+
+	requireStatusReport(t, stack)
+	requireBusyMountIsLeftAlone(t, stack)
 
 	if err := stack.unmount(true); err != nil {
 		t.Errorf("forced unmount: %v", err)
@@ -127,7 +141,7 @@ func TestRunningClientAnswersOnTheControlSocket(t *testing.T) {
 	}
 	stack.stop()
 	if end := <-ended; end.status != cli.ExitOK {
-		t.Errorf("service ended with %+v after it was stopped", end)
+		t.Errorf("the service ended with %+v after it was stopped", end)
 	}
 	if _, err := stack.report(); !errors.Is(err, app.ErrNotRunning) {
 		t.Errorf("status after the client ended = %v, want ErrNotRunning", err)
@@ -147,7 +161,8 @@ func TestSecondServiceIsRefused(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	status := execute(context.Background(), []string{"--config", stack.configDir}, &out, &errOut, stack.backend)
-	if status != cli.ExitError || !strings.Contains(errOut.String(), "a client is already running for this configuration") {
+	const refusal = "a client is already running for this configuration"
+	if status != cli.ExitError || !strings.Contains(errOut.String(), refusal) {
 		t.Errorf("second service: status %d stderr %q", status, errOut.String())
 	}
 	if err := stack.unmount(true); err != nil {

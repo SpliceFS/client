@@ -34,7 +34,9 @@ Unmounting, the status and mounting one more directory are commands of splicefsc
 `
 )
 
-var prog = cli.Program{Name: program, Usage: usage} //nolint:gochecknoglobals // constant data, only the type has no constant form
+// prog names the program in its messages. It is data that never changes, and a struct has no
+// constant form.
+var prog = cli.Program{Name: program, Usage: usage} //nolint:gochecknoglobals // see above
 
 // exit is replaced in tests, so that main can run without ending the test process.
 var exit = os.Exit //nolint:gochecknoglobals // the one seam the tests replace; nothing else reads or writes it
@@ -47,8 +49,7 @@ func main() {
 // the exit status. The service stays in the foreground until ctx is cancelled or the process
 // receives SIGINT or SIGTERM.
 func run(ctx context.Context, argv []string, _ io.Reader, stdout, stderr io.Writer) int {
-	_, args := cli.SplitArgv(argv)
-	return execute(ctx, args, stdout, stderr, systemBackend())
+	return execute(ctx, cli.Arguments(argv), stdout, stderr, systemBackend())
 }
 
 // backend is everything the commands take from the client library and the operating

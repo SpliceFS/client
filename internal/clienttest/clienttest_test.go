@@ -13,54 +13,54 @@ import (
 
 func TestCoreHasNoClusterBehindIt(t *testing.T) {
 	t.Parallel()
-	c := clienttest.Core{}
-	if err := c.Connect(context.Background(), "east"); err != nil {
+	stub := clienttest.Core{}
+	if err := stub.Connect(context.Background(), "east"); err != nil {
 		t.Error(err)
 	}
-	if fsys, err := c.View(config.Mount{}); fsys != nil || err != nil {
+	if fsys, err := stub.View(config.Mount{}); fsys != nil || err != nil {
 		t.Errorf("View = %v, %v", fsys, err)
 	}
-	status := c.Status()
+	status := stub.Status()
 	if len(status.Clusters) != 1 || len(status.Caches) != 1 || !status.Clusters[0].Nodes[0].Measured {
 		t.Errorf("Status = %+v", status)
 	}
-	if err := c.Apply(&config.Config{}); err != nil {
+	if err := stub.Apply(&config.Config{}); err != nil {
 		t.Error(err)
 	}
-	c.Release(nil)
-	if !c.Current(nil) {
+	stub.Release(nil)
+	if !stub.Current(nil) {
 		t.Error("a reload would leave the mounts as they are only when Current is true")
 	}
-	if err := c.Close(); err != nil {
+	if err := stub.Close(); err != nil {
 		t.Error(err)
 	}
 }
 
 func TestMountIsGoneOnceUnmounted(t *testing.T) {
 	t.Parallel()
-	m := clienttest.NewMount()
-	if m.Err() != nil {
+	stub := clienttest.NewMount()
+	if stub.Err() != nil {
 		t.Error("a stub mount never fails")
 	}
-	m.SetBusy(true)
-	err := m.Unmount(context.Background(), false)
+	stub.SetBusy(true)
+	err := stub.Unmount(context.Background(), false)
 	if !errors.Is(err, syscall.EBUSY) {
 		t.Errorf("polite unmount of a busy mount = %v, want EBUSY", err)
 	}
 	select {
-	case <-m.Done():
+	case <-stub.Done():
 		t.Fatal("the mount ended although it was busy")
 	default:
 	}
-	if err := m.Unmount(context.Background(), true); err != nil {
+	if err := stub.Unmount(context.Background(), true); err != nil {
 		t.Fatal(err)
 	}
-	<-m.Done()
-	m.SetBusy(false)
-	if err := m.Unmount(context.Background(), false); err != nil {
+	<-stub.Done()
+	stub.SetBusy(false)
+	if err := stub.Unmount(context.Background(), false); err != nil {
 		t.Errorf("unmount of a mount that is gone = %v", err)
 	}
-	if got := m.UnmountCalls(); !slices.Equal(got, []bool{false, true, false}) {
+	if got := stub.UnmountCalls(); !slices.Equal(got, []bool{false, true, false}) {
 		t.Errorf("unmount calls (force) = %v", got)
 	}
 }

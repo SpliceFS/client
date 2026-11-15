@@ -54,18 +54,27 @@ func (f *Flags) ResolveConfigDir(defaultDir func() (string, error)) error {
 	return nil
 }
 
-// SplitArgv separates the name a program was started under from its arguments. Linux
-// allows a process with no argv at all, so both can be empty.
-func SplitArgv(argv []string) (name string, args []string) {
+// ProgramName is the name a program was started under, without its folder. Linux allows a
+// process with no argv at all, so the name can be empty.
+func ProgramName(argv []string) string {
 	if len(argv) == 0 {
-		return "", nil
+		return ""
 	}
-	return filepath.Base(argv[0]), argv[1:]
+	return filepath.Base(argv[0])
+}
+
+// Arguments are the words after the name a program was started under.
+func Arguments(argv []string) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	return argv[1:]
 }
 
 // Handled answers what needs no command: a help request, a command line that did not parse
-// (parseErr) and a version request. When done is true the program ends with status.
-func (p Program) Handled(parseErr error, showVersion bool, stdout, stderr io.Writer) (status int, done bool) {
+// (parseErr) and a version request. When the second result is true, the program ends with the
+// exit status in the first.
+func (p Program) Handled(parseErr error, showVersion bool, stdout, stderr io.Writer) (int, bool) {
 	switch {
 	case errors.Is(parseErr, flag.ErrHelp):
 		return Announcef(stdout, "%s", p.Usage), true

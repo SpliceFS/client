@@ -28,6 +28,7 @@ var (
 // invocation is a parsed command line.
 type invocation struct {
 	cli.Flags
+
 	logLevel slog.Level
 	// command is empty when the service is to run.
 	command string

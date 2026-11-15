@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -155,9 +156,7 @@ func TestRealMount(t *testing.T) {
 	}
 
 	status := command(context.Background(), dir, "status")
-	if status.status != cli.ExitOK || !strings.Contains(status.stdout, target) || !strings.Contains(status.stdout, "mounted") {
-		t.Errorf("status: %+v", status)
-	}
+	requireOutput(t, status, cli.ExitOK, target, "mounted")
 	if umount := command(context.Background(), dir, "umount"); umount.status != cli.ExitOK {
 		t.Errorf("umount: %+v", umount)
 	}
@@ -180,12 +179,12 @@ const clientEnv = "SPLICEFS_TEST_CLIENT_DIR"
 func TestMain(m *testing.M) {
 	if dir := os.Getenv(clientEnv); dir != "" {
 		if err := serve(context.Background(), dir, func() {}); err != nil {
-			os.Stderr.WriteString(err.Error() + "\n")
+			fmt.Fprintln(os.Stderr, err)
 			os.Exit(cli.ExitError)
 		}
 		os.Exit(cli.ExitOK)
 	}
-	os.Exit(m.Run())
+	m.Run()
 }
 
 // childClient is the client running in a child process.

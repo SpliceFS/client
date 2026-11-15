@@ -12,6 +12,12 @@ import (
 	"github.com/SpliceFS/client/core"
 )
 
+const (
+	nodeRate     = 12_000_000
+	cacheEntries = 3
+	cacheBytes   = 4096
+)
+
 // Core is the core client with no cluster behind it. FS is what every mount shows.
 type Core struct{ FS core.FS }
 
@@ -25,10 +31,10 @@ func (c Core) View(config.Mount) (core.FS, error) { return c.FS, nil }
 
 // Status reports one cluster with one measured node and one cache.
 func (Core) Status() core.Status {
-	east := core.NodeStatus{Name: "east", BytesPerSecond: 12_000_000, Measured: true}
+	east := core.NodeStatus{Name: "east", BytesPerSecond: nodeRate, Measured: true}
 	return core.Status{
 		Clusters: []core.ClusterStatus{{Name: "example", Nodes: []core.NodeStatus{east}}},
-		Caches:   []core.CacheStatus{{Dir: "/var/cache/splicefs", Entries: 3, Bytes: 4096}},
+		Caches:   []core.CacheStatus{{Dir: "/var/cache/splicefs", Entries: cacheEntries, Bytes: cacheBytes}},
 	}
 }
 
