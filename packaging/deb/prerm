@@ -8,7 +8,7 @@ case "$1" in
         # The link made at install time for systems where /sbin is its own folder.
         # readlink fails when there is no link, and then there is nothing to remove.
         helper_target="$(readlink /sbin/mount.splicefs 2>/dev/null)" || helper_target=""
-        if [ ! -L /sbin ] && [ "$helper_target" = /usr/bin/splicefs ]; then
+        if [ ! -L /sbin ] && [ "$helper_target" = /usr/bin/splicefsctl ]; then
             rm -f /sbin/mount.splicefs
         fi
         if [ -d /run/systemd/system ]; then

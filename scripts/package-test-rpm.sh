@@ -25,7 +25,9 @@ if ! rpm -i "$rpm" >/dev/null 2>&1; then
 fi
 rpm -q "$name" >/dev/null || fail "package is not installed"
 
-"$program" --version | grep -qF "$VERSION" || fail "$program --version does not report $VERSION"
+for each in $programs; do
+    "$each" --version | grep -qF "$VERSION" || fail "$each --version does not report $VERSION"
+done
 [ -f "$unit" ] || fail "service unit is missing"
 if grep -q /usr/local/bin "$unit"; then fail "service unit points at /usr/local/bin"; fi
 [ -d "$confdir" ] || fail "$confdir is missing"
@@ -57,7 +59,9 @@ rpm -U --replacepkgs "$rpm" >/dev/null || fail "installing over itself failed"
 
 touch "$kept"
 rpm -e "$name" >/dev/null 2>&1 || fail "remove failed"
-[ ! -e "/usr/bin/$program" ] || fail "remove left the program behind"
+for each in $programs; do
+    [ ! -e "/usr/bin/$each" ] || fail "remove left $each behind"
+done
 [ -f "$kept" ] || fail "remove must keep the configuration"
 
 # shellcheck source=/dev/null

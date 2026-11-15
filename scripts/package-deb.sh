@@ -1,5 +1,5 @@
 #!/bin/sh
-# Wraps the compiled program into Debian packages, one per CPU type, with dpkg-deb. It runs
+# Wraps the compiled programs into Debian packages, one per CPU type, with dpkg-deb. It runs
 # inside a Debian container (make package) after package-binaries.sh.
 set -eu
 
@@ -17,7 +17,9 @@ for arch in amd64 arm64; do
         install -d "$root$(dirname "$link")"
         ln -s "$target" "$root$link"
     done
-    install -D -m 755 "$out/stage/$arch/$program" "$root/usr/bin/$program"
+    for each in $programs; do
+        install -D -m 755 "$out/stage/$arch/$each" "$root/usr/bin/$each"
+    done
     install -D -m 644 "$out/stage/$program.service" "$root/usr/lib/systemd/system/$program.service"
     install -D -m 644 LICENSE "$root/usr/share/doc/$name/copyright"
     install -m 644 README.md CHANGELOG.md docs/configuration.md "$root/usr/share/doc/$name/"

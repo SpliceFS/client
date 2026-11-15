@@ -24,10 +24,11 @@ disk.
 
 %install
 install -D -m 755 %{stage}/splicefs %{buildroot}/usr/bin/splicefs
+install -D -m 755 %{stage}/splicefsctl %{buildroot}/usr/bin/splicefsctl
 install -D -m 644 %{unit} %{buildroot}/usr/lib/systemd/system/splicefs.service
 # mount(8) runs this for "mount -t splicefs" and for fstab lines of that type.
 install -d %{buildroot}/usr/sbin
-ln -s /usr/bin/splicefs %{buildroot}/usr/sbin/mount.splicefs
+ln -s /usr/bin/splicefsctl %{buildroot}/usr/sbin/mount.splicefs
 install -d %{buildroot}/etc/splicefs/client/conf.d %{buildroot}/etc/splicefs/client/clusters.d \
     %{buildroot}/etc/splicefs/client/mounts.d
 install -D -m 644 %{src}/LICENSE %{buildroot}/usr/share/doc/splicefs-client/LICENSE
@@ -36,6 +37,7 @@ install -m 644 %{src}/README.md %{src}/CHANGELOG.md %{src}/docs/configuration.md
 
 %files
 /usr/bin/splicefs
+/usr/bin/splicefsctl
 /usr/sbin/mount.splicefs
 /usr/lib/systemd/system/splicefs.service
 %dir /etc/splicefs
@@ -48,9 +50,13 @@ install -m 644 %{src}/README.md %{src}/CHANGELOG.md %{src}/docs/configuration.md
 
 %post
 # mount(8) looks for its helpers in /sbin. Where /sbin is a folder of its own and not a link
-# to /usr/sbin, the helper needs a link there as well.
-if [ ! -L /sbin ] && [ ! -e /sbin/mount.splicefs ]; then
-    ln -s /usr/bin/splicefs /sbin/mount.splicefs
+# to /usr/sbin, the helper needs a link there as well. Versions before the control tool linked
+# it to the splicefs program, which is not the helper any more.
+if [ ! -L /sbin ]; then
+    helper_target="$(readlink /sbin/mount.splicefs 2>/dev/null)" || helper_target=""
+    if [ ! -e /sbin/mount.splicefs ] || [ "$helper_target" = /usr/bin/splicefs ]; then
+        ln -sf /usr/bin/splicefsctl /sbin/mount.splicefs
+    fi
 fi
 # $1 is 1 on a first install and 2 on an upgrade. A container or a chroot has no running
 # systemd; the files are installed and there is nothing to start.
@@ -74,7 +80,7 @@ if [ "$1" -eq 0 ] && [ -d /run/systemd/system ]; then
 fi
 if [ "$1" -eq 0 ]; then
     # The link made at install time for systems where /sbin is its own folder.
-    if [ ! -L /sbin ] && [ "$(readlink /sbin/mount.splicefs 2>/dev/null)" = /usr/bin/splicefs ]; then
+    if [ ! -L /sbin ] && [ "$(readlink /sbin/mount.splicefs 2>/dev/null)" = /usr/bin/splicefsctl ]; then
         rm -f /sbin/mount.splicefs
     fi
 fi

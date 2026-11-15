@@ -28,8 +28,9 @@ PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_D
 
 all: check build
 
+# Every program in cmd/ goes to bin/ under its own name.
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefs ./cmd/splicefs
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
 
 # Everything CI runs except the linter.
 check: fmt-check vet cover package-lib-test timing-test script-modes tracked-files

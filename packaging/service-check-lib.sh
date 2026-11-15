@@ -21,8 +21,8 @@ run_options() {
     :
 }
 
-# Status 0 when "splicefs status" succeeds against the running service. The command exits
+# Status 0 when "splicefsctl status" succeeds against the running service. The command exits
 # with an error when it cannot reach the control socket, so only a running service passes.
 answers() {
-    docker exec "$1" "$program" status >/dev/null 2>&1
+    docker exec "$1" splicefsctl status >/dev/null 2>&1
 }
