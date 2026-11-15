@@ -45,7 +45,7 @@ trap 'exit 143' TERM
 # The scripts started below add their own lines to the same record.
 timing_begin
 
-# The tags of the server repository that are releases (v1.2.3), oldest first. sort -V is a
+# The tags of the server repository that are versions (v1.2.3), oldest first. sort -V is a
 # GNU option, so the numbers are sorted field by field instead.
 if [ -z "${SERVER_WORKS+set}" ] || [ -z "${SERVER_REFUSED+set}" ]; then
     # Asked from the temporary folder: in a copy of a working tree whose git folder is
@@ -58,22 +58,53 @@ if [ -z "${SERVER_WORKS+set}" ] || [ -z "${SERVER_REFUSED+set}" ]; then
         sed 's/^/v/')"
 fi
 
+# Whether the server of a tag is released. A tag is not enough: the bot makes it at the merge,
+# minutes before the server's release workflow publishes anything, and it stays when that
+# release fails. The GitHub release with its checksum file is the last step of a server
+# release, after its packages are published. Prints yes or no; any other answer ends the run.
+released() {
+    code="$(curl -sSL --proto '=https' --proto-redir '=https' --retry 3 -o /dev/null -w '%{http_code}' \
+        "https://github.com/SpliceFS/server/releases/download/$1/SHA256SUMS" </dev/null)" ||
+        { echo "cannot ask GitHub whether server $1 is released" >&2; exit 1; }
+    case "$code" in
+    200) echo yes ;;
+    404) echo no ;;
+    *) echo "GitHub answered $code when asked whether server $1 is released" >&2; exit 1 ;;
+    esac
+}
+
+# The newest released tag of the tags on standard input (oldest first), or nothing. Only the
+# tags it has to look at are asked about, newest first.
+newest_released() {
+    awk '{ line[NR] = $0 } END { for (i = NR; i > 0; i--) print line[i] }' >"$tmp/candidates"
+    while read -r tag; do
+        [ -n "$tag" ] || continue
+        state="$(released "$tag")"
+        if [ "$state" = yes ]; then
+            printf '%s\n' "$tag"
+            return 0
+        fi
+    done <"$tmp/candidates"
+}
+
 if [ -z "${SERVER_WORKS+set}" ]; then
     oldest="v$main.$minor.0"
     found="$(printf '%s\n' "$tags" | awk -v tag="$oldest" '$0 == tag { print tag }')"
-    if [ -z "$found" ]; then
-        echo "the server is released first: no server $oldest exists, so a client $main.$minor must wait until the server is released at $main.$minor.0" >&2
+    state=no
+    if [ -n "$found" ]; then state="$(released "$oldest")"; fi
+    if [ "$state" != yes ]; then
+        echo "the server is released first: server $oldest is not released, so a client $main.$minor must wait until the release of server $main.$minor.0 is published" >&2
         exit 1
     fi
-    newest="$(printf '%s\n' "$tags" | awk -F. -v main="$main" 'substr($1, 2) == main { last = $0 } END { print last }')"
+    newest="$(printf '%s\n' "$tags" | awk -F. -v main="$main" 'substr($1, 2) == main' | newest_released)"
     SERVER_WORKS="$oldest"
     if [ "$newest" != "$oldest" ]; then SERVER_WORKS="$oldest $newest"; fi
 fi
 
 if [ -z "${SERVER_REFUSED+set}" ]; then
     SERVER_REFUSED="$(printf '%s\n' "$tags" |
-        awk -F. -v main="$main" -v minor="$minor" \
-            'substr($1, 2) == main && $2 + 0 < minor + 0 { last = $0 } END { print last }')"
+        awk -F. -v main="$main" -v minor="$minor" 'substr($1, 2) == main && $2 + 0 < minor + 0' |
+        newest_released)"
 fi
 
 timed "build the client" go build -buildvcs=false \
