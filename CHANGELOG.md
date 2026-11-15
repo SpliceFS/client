@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.17] - 2026-11-15
+
+- Internal: an interrupted FreeBSD image unpack is no longer mistaken for a cached image. Nothing
+  changes for users.
+
 ## [0.5.16] - 2026-11-14
 
 - Internal: contributors are told to merge `main` down to fix a branch the bot cannot rebuild.
