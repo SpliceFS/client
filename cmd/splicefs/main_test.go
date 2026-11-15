@@ -15,6 +15,7 @@ import (
 
 	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/cli"
 	"github.com/SpliceFS/client/internal/version"
 	"github.com/SpliceFS/client/mount/nfs"
 )
@@ -30,8 +31,8 @@ func TestMainRunsTheProgram(t *testing.T) {
 
 	main()
 
-	if status != exitOK {
-		t.Errorf("exit status = %d, want %d", status, exitOK)
+	if status != cli.ExitOK {
+		t.Errorf("exit status = %d, want %d", status, cli.ExitOK)
 	}
 }
 
@@ -107,7 +108,7 @@ func TestRunUsesTheSystemBackend(t *testing.T) {
 	var out, errOut bytes.Buffer
 	argv := []string{"splicefs", "--version"}
 	status := run(context.Background(), argv, strings.NewReader(""), &out, &errOut)
-	if want := "splicefs " + version.String() + "\n"; status != exitOK || out.String() != want || errOut.Len() != 0 {
+	if want := "splicefs " + version.String() + "\n"; status != cli.ExitOK || out.String() != want || errOut.Len() != 0 {
 		t.Errorf("status %d stdout %q stderr %q, want 0 %q", status, out.String(), errOut.String(), want)
 	}
 }
@@ -141,7 +142,7 @@ func TestHelp(t *testing.T) {
 	}
 	for _, args := range helpRequests {
 		ran := execFake(args...)
-		if ran.status != exitOK || ran.stdout != usage || ran.stderr != "" {
+		if ran.status != cli.ExitOK || ran.stdout != usage || ran.stderr != "" {
 			t.Errorf("%v: status %d stdout %q stderr %q", args, ran.status, ran.stdout, ran.stderr)
 		}
 	}
@@ -175,7 +176,7 @@ func TestBadUsage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ran := execFake(tt.args...)
-			if ran.status != exitUsage || ran.stdout != "" {
+			if ran.status != cli.ExitUsage || ran.stdout != "" {
 				t.Errorf("status %d stdout %q", ran.status, ran.stdout)
 			}
 			isUsageError := strings.HasPrefix(ran.stderr, "splicefs: ") && strings.HasSuffix(ran.stderr, usage)
@@ -189,7 +190,7 @@ func TestBadUsage(t *testing.T) {
 func TestVersionWinsOverACommand(t *testing.T) {
 	t.Parallel()
 	ran := execFake("--version", "mount")
-	if want := "splicefs " + version.String() + "\n"; ran.status != exitOK || ran.stdout != want {
+	if want := "splicefs " + version.String() + "\n"; ran.status != cli.ExitOK || ran.stdout != want {
 		t.Errorf("status %d stdout %q", ran.status, ran.stdout)
 	}
 }
@@ -221,7 +222,7 @@ func TestMountLoadsTheConfigurationAndPassesTargets(t *testing.T) {
 			t.Parallel()
 			b, recorded := fakeBackend(cfg, nil, nil, nil, nil, app.Report{})
 			ran := executeWith(b, tt.args...)
-			if ran.status != exitOK || ran.stdout != "" {
+			if ran.status != cli.ExitOK || ran.stdout != "" {
 				t.Fatalf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 			got := mountedWith{recorded.loadDir, recorded.runOpts.ConfigDir, recorded.runTargets}
@@ -245,7 +246,7 @@ func TestMountHandsTheClientItsHooks(t *testing.T) {
 		notified = append(notified, state)
 		return nil
 	}
-	if ran := executeWith(b, "mount"); ran.status != exitOK {
+	if ran := executeWith(b, "mount"); ran.status != cli.ExitOK {
 		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
 	if recorded.runOpts.Reload == nil {
@@ -277,7 +278,7 @@ func TestMountLogLevel(t *testing.T) {
 			t.Parallel()
 			b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
 			ran := executeWith(b, tt.args...)
-			if ran.status != exitOK {
+			if ran.status != cli.ExitOK {
 				t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 			}
 			if got := strings.Contains(ran.stderr, "debug-line"); got != tt.wantDebug {
@@ -313,7 +314,7 @@ func TestMountFailures(t *testing.T) {
 				want = tt.runErr
 			}
 			wantStderr := "splicefs: " + want.Error() + "\n"
-			if ran.status != exitError || ran.stdout != "" || !strings.HasSuffix(ran.stderr, wantStderr) {
+			if ran.status != cli.ExitError || ran.stdout != "" || !strings.HasSuffix(ran.stderr, wantStderr) {
 				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 			if (tt.loadErr != nil) != (recorded.runCfg == nil) {
@@ -347,7 +348,7 @@ func TestUmount(t *testing.T) {
 			t.Parallel()
 			b, recorded := fakeBackend(nil, nil, nil, nil, nil, app.Report{})
 			ran := executeWith(b, tt.args...)
-			if ran.status != exitOK || ran.stdout != "" || ran.stderr != "" {
+			if ran.status != cli.ExitOK || ran.stdout != "" || ran.stderr != "" {
 				t.Fatalf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 			if want := app.SocketPath(tt.wantDir); recorded.socketPath != want {
@@ -378,7 +379,7 @@ func TestUmountFailures(t *testing.T) {
 			t.Parallel()
 			b, _ := fakeBackend(nil, nil, nil, tt.err, nil, app.Report{})
 			ran := executeWith(b, "umount")
-			if ran.status != exitError || ran.stdout != "" || !strings.HasPrefix(ran.stderr, "splicefs: ") {
+			if ran.status != cli.ExitError || ran.stdout != "" || !strings.HasPrefix(ran.stderr, "splicefs: ") {
 				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 			if got := strings.Contains(ran.stderr, `use "umount --force"`); got != tt.wantHint {
@@ -429,7 +430,7 @@ func TestStatus(t *testing.T) {
 	t.Parallel()
 	b, recorded := fakeBackend(nil, nil, nil, nil, nil, sampleReport())
 	ran := executeWith(b, "--config", "/etc/example", "status")
-	if ran.status != exitOK || ran.stderr != "" {
+	if ran.status != cli.ExitOK || ran.stderr != "" {
 		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
 	if ran.stdout != sampleText {
@@ -444,7 +445,7 @@ func TestStatusJSON(t *testing.T) {
 	t.Parallel()
 	b, _ := fakeBackend(nil, nil, nil, nil, nil, sampleReport())
 	ran := executeWith(b, "status", "--json")
-	if ran.status != exitOK || ran.stderr != "" {
+	if ran.status != cli.ExitOK || ran.stderr != "" {
 		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
 	var got app.Report
@@ -489,7 +490,7 @@ func TestStatusFailures(t *testing.T) {
 		b, _ := fakeBackend(nil, nil, nil, nil, app.ErrNotRunning, app.Report{})
 		ran := executeWith(b, "status")
 		wantStderr := "no client is running for this configuration"
-		if ran.status != exitError || ran.stdout != "" || !strings.Contains(ran.stderr, wantStderr) {
+		if ran.status != cli.ExitError || ran.stdout != "" || !strings.Contains(ran.stderr, wantStderr) {
 			t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 		}
 	})
@@ -499,7 +500,7 @@ func TestStatusFailures(t *testing.T) {
 			b, _ := fakeBackend(nil, nil, nil, nil, nil, sampleReport())
 			var errOut bytes.Buffer
 			status := execute(context.Background(), args, failingWriter{}, &errOut, b)
-			if status != exitError || !strings.Contains(errOut.String(), "disk full") {
+			if status != cli.ExitError || !strings.Contains(errOut.String(), "disk full") {
 				t.Errorf("status %d stderr %q", status, errOut.String())
 			}
 		})
@@ -575,7 +576,7 @@ func leftBehindCases() []leftBehindCase {
 		{
 			name:       "one cleared",
 			results:    []nfs.Cleared{{Target: "/mnt/a", Outcome: nfs.OutcomeCleared}},
-			wantStatus: exitOK,
+			wantStatus: cli.ExitOK,
 			wantOut:    "removed the mount /mnt/a left behind by a client that is no longer running\n",
 		},
 		{
@@ -586,7 +587,7 @@ func leftBehindCases() []leftBehindCase {
 				{Target: "/mnt/c", Outcome: nfs.OutcomeServed},
 				{Target: "/mnt/d", Outcome: nfs.OutcomeCleared},
 			},
-			wantStatus: exitOK,
+			wantStatus: cli.ExitOK,
 			wantOut: "removed the mount /mnt/a left behind by a client that is no longer running\n" +
 				"removed the mount /mnt/d left behind by a client that is no longer running\n",
 			wantErr: []string{"/mnt/c is served by a client of another configuration; left alone\n"},
@@ -597,37 +598,37 @@ func leftBehindCases() []leftBehindCase {
 				{Target: "/mnt/a", Outcome: nfs.OutcomeCleared},
 				{Target: "/mnt/b", Outcome: nfs.OutcomeFailed, Err: errors.New("umount: Resource busy")},
 			},
-			wantStatus: exitError,
+			wantStatus: cli.ExitError,
 			wantOut:    "removed the mount /mnt/a left behind by a client that is no longer running\n",
 			wantErr:    []string{"splicefs: /mnt/b: umount: Resource busy\n"},
 		},
 		{
 			name:       "only failed",
 			results:    []nfs.Cleared{{Target: "/mnt/b", Outcome: nfs.OutcomeFailed, Err: errors.New("stuck")}},
-			wantStatus: exitError,
+			wantStatus: cli.ExitError,
 			wantErr:    []string{"splicefs: /mnt/b: stuck\n"},
 		},
 		{
 			name:       "damaged record",
 			clearErr:   nfs.ErrRecordDamaged,
-			wantStatus: exitError,
+			wantStatus: cli.ExitError,
 			wantErr:    []string{"splicefs: " + nfs.ErrRecordDamaged.Error()},
 		},
 		{
 			name:       "nothing recorded",
-			wantStatus: exitError,
+			wantStatus: cli.ExitError,
 			wantErr:    []string{noClient},
 		},
 		{
 			name:       "everything already gone",
 			results:    []nfs.Cleared{{Target: "/mnt/a", Outcome: nfs.OutcomeGone}},
-			wantStatus: exitError,
+			wantStatus: cli.ExitError,
 			wantErr:    []string{noClient},
 		},
 		{
 			name:       "only served",
 			results:    []nfs.Cleared{{Target: "/mnt/a", Outcome: nfs.OutcomeServed}},
-			wantStatus: exitError,
+			wantStatus: cli.ExitError,
 			wantErr: []string{
 				"/mnt/a is served by a client of another configuration; left alone\n", noClient,
 			},

@@ -11,6 +11,7 @@ import (
 
 	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/cli"
 )
 
 // The tests in this file send a real signal to the test process. They are not parallel,
@@ -23,14 +24,14 @@ func TestMountStopsOnSignal(t *testing.T) {
 			stack := newFullStack(t, nil, nil)
 			ended := stack.startMount()
 			<-stack.ready
-			if status := stack.command("status"); status.status != exitOK {
+			if status := stack.command("status"); status.status != cli.ExitOK {
 				t.Fatalf("status: %+v", status)
 			}
 			if err := syscall.Kill(syscall.Getpid(), sig); err != nil {
 				t.Fatal(err)
 			}
 			end := <-ended
-			if end.status != exitOK {
+			if end.status != cli.ExitOK {
 				t.Errorf("exit status = %d, want 0\n%s", end.status, end.stderr)
 			}
 			if calls := stack.mount.unmountCalls(); len(calls) != 1 || calls[0] {
@@ -66,7 +67,7 @@ func TestMountReceivesSIGHUP(t *testing.T) {
 		return nil
 	}
 	ran := executeWith(b, "--config", "/etc/example", "mount")
-	if ran.status != exitOK {
+	if ran.status != cli.ExitOK {
 		t.Fatalf("status %d\n%s", ran.status, ran.stderr)
 	}
 	if recorded.loadDir != "/etc/example" {

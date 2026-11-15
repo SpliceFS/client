@@ -11,6 +11,7 @@ import (
 
 	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/cli"
 )
 
 // writeFiles creates the files, given by their path under dir, with their folders.
@@ -65,7 +66,7 @@ func TestConfigCheck(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ran := executeWith(realConfigBackend(), "--config", tt.dir, "config", "check")
-			if ran.status != exitOK || ran.stdout != tt.want || ran.stderr != "" {
+			if ran.status != cli.ExitOK || ran.stdout != tt.want || ran.stderr != "" {
 				t.Errorf("status %d stdout %q stderr %q, want 0 %q", ran.status, ran.stdout, ran.stderr, tt.want)
 			}
 		})
@@ -82,7 +83,7 @@ func TestConfigCheckPrintsEveryProblem(t *testing.T) {
 		"mounts.d": "not a folder",
 	})
 	ran := executeWith(realConfigBackend(), "--config", dir, "config", "check")
-	if ran.status != exitError || ran.stdout != "" {
+	if ran.status != cli.ExitError || ran.stdout != "" {
 		t.Errorf("status %d stdout %q", ran.status, ran.stdout)
 	}
 	for _, want := range []string{"conf.d/cache.yaml", "colour", "mounts.d"} {
@@ -105,7 +106,7 @@ func TestConfigShow(t *testing.T) {
 		"mounts.d/docs.yaml": "cluster: east\npath: /docs\ntarget: /srv/docs\noffline: true\n",
 	})
 	ran := executeWith(realConfigBackend(), "--config", dir, "config", "show")
-	if ran.status != exitOK || ran.stderr != "" {
+	if ran.status != cli.ExitOK || ran.stderr != "" {
 		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
 	want := `cache:
@@ -163,7 +164,7 @@ func TestConfigShowWithoutClustersAndMounts(t *testing.T) {
 	t.Parallel()
 	b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
 	ran := executeWith(b, "config", "show")
-	if !strings.HasSuffix(ran.stdout, "clusters: {}\nmounts: []\n") || ran.status != exitOK || ran.stderr != "" {
+	if !strings.HasSuffix(ran.stdout, "clusters: {}\nmounts: []\n") || ran.status != cli.ExitOK || ran.stderr != "" {
 		t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 	}
 }
@@ -176,7 +177,7 @@ func TestConfigFailures(t *testing.T) {
 			t.Parallel()
 			b, _ := fakeBackend(nil, boom, nil, nil, nil, app.Report{})
 			ran := executeWith(b, "config", command)
-			if ran.status != exitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
+			if ran.status != cli.ExitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
 				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 		})
@@ -185,7 +186,7 @@ func TestConfigFailures(t *testing.T) {
 			b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
 			var errOut bytes.Buffer
 			status := execute(context.Background(), []string{"config", command}, failingWriter{}, &errOut, b)
-			if status != exitError || !strings.Contains(errOut.String(), "disk full") {
+			if status != cli.ExitError || !strings.Contains(errOut.String(), "disk full") {
 				t.Errorf("status %d stderr %q", status, errOut.String())
 			}
 		})
@@ -211,7 +212,7 @@ func TestUnknownDefaultConfigDir(t *testing.T) {
 			b, recorded := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
 			b.defaultConfigDir = func() (string, error) { return "", boom }
 			ran := executeWith(b, tt.args...)
-			if ran.status != exitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
+			if ran.status != cli.ExitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
 				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 			if recorded.loadDir != "" || recorded.runCfg != nil || recorded.socketPath != "" || recorded.statusCalls != 0 {
@@ -238,7 +239,7 @@ func TestDefaultConfigDirIsNotLookedUp(t *testing.T) {
 			t.Parallel()
 			b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
 			b.defaultConfigDir = func() (string, error) { return "", errors.New("must not be asked") }
-			if ran := executeWith(b, tt.args...); ran.status != exitOK {
+			if ran := executeWith(b, tt.args...); ran.status != cli.ExitOK {
 				t.Errorf("status %d stdout %q stderr %q, want a command that ran", ran.status, ran.stdout, ran.stderr)
 			}
 		})

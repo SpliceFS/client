@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,15 +15,8 @@ import (
 
 	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
-	"github.com/SpliceFS/client/internal/version"
+	"github.com/SpliceFS/client/internal/cli"
 	"github.com/SpliceFS/client/mount/nfs"
-)
-
-// Exit statuses.
-const (
-	exitOK    = 0
-	exitError = 1
-	exitUsage = 2
 )
 
 const (
@@ -44,6 +36,8 @@ Started as mount.splicefs, the program is the helper of mount(8) and fstab: it a
 running client to mount CLUSTER:PATH at TARGET.
 `
 )
+
+var prog = cli.Program{Name: program, Usage: usage} //nolint:gochecknoglobals // constant data, only the type has no constant form
 
 // exit is replaced in tests, so that main can run without ending the test process.
 var exit = os.Exit //nolint:gochecknoglobals // the one seam the tests replace; nothing else reads or writes it
@@ -111,19 +105,11 @@ func systemBackend() backend {
 // execute parses the command line and runs the command it names.
 func execute(ctx context.Context, args []string, stdout, stderr io.Writer, b backend) int {
 	inv, err := parseArgs(args)
-	switch {
-	case errors.Is(err, flag.ErrHelp):
-		return announcef(stdout, "%s", usage)
-	case err != nil:
-		sayf(stderr, "%s: %v\n%s", program, err, usage)
-		return exitUsage
-	case inv.showVersion:
-		return announcef(stdout, "%s %s\n", program, version.String())
+	if status, done := prog.Handled(err, inv.ShowVersion, stdout, stderr); done {
+		return status
 	}
-	if inv.configDir == "" {
-		if inv.configDir, err = b.defaultConfigDir(); err != nil {
-			return fail(stderr, err)
-		}
+	if err := inv.ResolveConfigDir(b.defaultConfigDir); err != nil {
+		return fail(stderr, err)
 	}
 	// A stop signal ends the command that is running: it unmounts for mount and
 	// abandons the wait for the other two.
@@ -132,7 +118,7 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer, b bac
 	if err := b.runCommand(ctx, inv, stdout, stderr); err != nil {
 		return fail(stderr, err)
 	}
-	return exitOK
+	return cli.ExitOK
 }
 
 func (b backend) runCommand(ctx context.Context, inv invocation, stdout, stderr io.Writer) error {
@@ -151,7 +137,7 @@ func (b backend) runCommand(ctx context.Context, inv invocation, stdout, stderr 
 // that a client that died left behind, which only macOS keeps a record of. The error of
 // the missing client stays the answer when there was nothing to remove.
 func (b backend) umount(ctx context.Context, inv invocation, stdout, stderr io.Writer) error {
-	socketPath := app.SocketPath(inv.configDir)
+	socketPath := app.SocketPath(inv.ConfigDir)
 	notRunning := b.unmount(ctx, socketPath, inv.targets, inv.force)
 	if !errors.Is(notRunning, app.ErrNotRunning) {
 		return notRunning
@@ -173,9 +159,9 @@ func tellLeftBehind(results []nfs.Cleared, stdout, stderr io.Writer) (int, []err
 		switch r.Outcome {
 		case nfs.OutcomeCleared:
 			cleared++
-			sayf(stdout, "removed the mount %s left behind by a client that is no longer running\n", r.Target)
+			cli.Sayf(stdout, "removed the mount %s left behind by a client that is no longer running\n", r.Target)
 		case nfs.OutcomeServed:
-			sayf(stderr, "%s is served by a client of another configuration; left alone\n", r.Target)
+			cli.Sayf(stderr, "%s is served by a client of another configuration; left alone\n", r.Target)
 		case nfs.OutcomeFailed:
 			failures = append(failures, fmt.Errorf("%s: %w", r.Target, r.Err))
 		case nfs.OutcomeGone:
@@ -191,7 +177,7 @@ func tellLeftBehind(results []nfs.Cleared, stdout, stderr io.Writer) (int, []err
 // runConfig implements config check and config show. A configuration with problems is an
 // error that lists all of them.
 func (b backend) runConfig(inv invocation, stdout io.Writer) error {
-	cfg, err := b.loadConfig(inv.configDir)
+	cfg, err := b.loadConfig(inv.ConfigDir)
 	if err != nil {
 		return err
 	}
@@ -206,7 +192,7 @@ func (b backend) runConfig(inv invocation, stdout io.Writer) error {
 // mount loads the configuration and keeps the mounts up until ctx ends. SIGHUP makes the
 // run read the same configuration directory again.
 func (b backend) mount(ctx context.Context, inv invocation, stderr io.Writer) error {
-	cfg, err := b.loadConfig(inv.configDir)
+	cfg, err := b.loadConfig(inv.ConfigDir)
 	if err != nil {
 		return err
 	}
@@ -221,31 +207,17 @@ func (b backend) mount(ctx context.Context, inv invocation, stderr io.Writer) er
 		Logger:    logger,
 		Mounter:   b.mounter,
 		Notify:    b.notify,
-		ConfigDir: inv.configDir,
+		ConfigDir: inv.ConfigDir,
 		Reload:    reload,
-		Load:      func() (*config.Config, error) { return b.loadConfig(inv.configDir) },
+		Load:      func() (*config.Config, error) { return b.loadConfig(inv.ConfigDir) },
 	})
 }
 
 // fail prints err and returns the exit status for a runtime error.
 func fail(stderr io.Writer, err error) int {
-	sayf(stderr, "%s: %v\n", program, err)
+	status := prog.Fail(stderr, err)
 	if errors.Is(err, app.ErrBusy) {
-		sayf(stderr, "%s: a mount that is in use is left alone; use \"umount --force\" to unmount it anyway\n", program)
+		cli.Sayf(stderr, "%s: a mount that is in use is left alone; use \"umount --force\" to unmount it anyway\n", program)
 	}
-	return exitError
-}
-
-// announcef writes the answer to a help or version request to stdout and returns the exit
-// status, which is success whether or not the answer could be written.
-func announcef(stdout io.Writer, format string, args ...any) int {
-	sayf(stdout, format, args...)
-	return exitOK
-}
-
-// sayf writes a message to w and drops a failed write. For stderr there is nowhere left to
-// report it, because stderr is where failures are reported. The answer to a help or version
-// request has always ended in success, so it is dropped there as well.
-func sayf(w io.Writer, format string, args ...any) {
-	_, _ = fmt.Fprintf(w, format, args...) //nolint:errcheck // See above, a failed write is dropped on purpose.
+	return status
 }

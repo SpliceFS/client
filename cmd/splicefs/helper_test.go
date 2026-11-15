@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/SpliceFS/client/app"
+	"github.com/SpliceFS/client/internal/cli"
 	"github.com/SpliceFS/client/internal/version"
 )
 
@@ -65,14 +66,14 @@ func TestDispatchByProgramName(t *testing.T) {
 		wantHelper bool
 		wantStatus int
 	}{
-		{"helper name", []string{"mount.splicefs", "east:/m", "/mnt/m"}, true, exitOK},
-		{"helper path", []string{"/sbin/mount.splicefs", "east:/m", "/mnt/m"}, true, exitOK},
-		{"helper link in usr", []string{"/usr/sbin/mount.splicefs", "east:/m", "/mnt/m"}, true, exitOK},
-		{"helper with bad usage", []string{"mount.splicefs"}, true, exitError},
-		{"normal name", []string{"splicefs", "--version"}, false, exitOK},
-		{"normal path", []string{"/usr/bin/splicefs", "--version"}, false, exitOK},
-		{"similar name", []string{"/usr/bin/xmount.splicefs", "--version"}, false, exitOK},
-		{"no program name", nil, false, exitUsage},
+		{"helper name", []string{"mount.splicefs", "east:/m", "/mnt/m"}, true, cli.ExitOK},
+		{"helper path", []string{"/sbin/mount.splicefs", "east:/m", "/mnt/m"}, true, cli.ExitOK},
+		{"helper link in usr", []string{"/usr/sbin/mount.splicefs", "east:/m", "/mnt/m"}, true, cli.ExitOK},
+		{"helper with bad usage", []string{"mount.splicefs"}, true, cli.ExitError},
+		{"normal name", []string{"splicefs", "--version"}, false, cli.ExitOK},
+		{"normal path", []string{"/usr/bin/splicefs", "--version"}, false, cli.ExitOK},
+		{"similar name", []string{"/usr/bin/xmount.splicefs", "--version"}, false, cli.ExitOK},
+		{"no program name", nil, false, cli.ExitUsage},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -82,10 +83,10 @@ func TestDispatchByProgramName(t *testing.T) {
 			if ran.status != tt.wantStatus {
 				t.Errorf("status = %d, want %d", ran.status, tt.wantStatus)
 			}
-			if got := recorded.requests == 1; got != (tt.wantHelper && tt.wantStatus == exitOK) {
+			if got := recorded.requests == 1; got != (tt.wantHelper && tt.wantStatus == cli.ExitOK) {
 				t.Errorf("mount requests = %d for helper = %v", recorded.requests, tt.wantHelper)
 			}
-			if !tt.wantHelper && tt.wantStatus == exitOK && ran.stdout != "splicefs "+version.String()+"\n" {
+			if !tt.wantHelper && tt.wantStatus == cli.ExitOK && ran.stdout != "splicefs "+version.String()+"\n" {
 				t.Errorf("stdout = %q, want the version", ran.stdout)
 			}
 		})
@@ -149,7 +150,7 @@ func TestHelperSendsTheRequest(t *testing.T) {
 			t.Parallel()
 			b, recorded := helperBackend(nil, nil)
 			ran := runHelper(b, strings.Fields(tt.args)...)
-			if ran.status != exitOK || ran.stdout != "" || ran.stderr != "" {
+			if ran.status != cli.ExitOK || ran.stdout != "" || ran.stderr != "" {
 				t.Fatalf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 			if recorded.requests != 1 || !reflect.DeepEqual(recorded.req, tt.want) {
@@ -163,7 +164,7 @@ func TestHelperEmptyOptionValue(t *testing.T) {
 	t.Parallel()
 	b, recorded := helperBackend(nil, nil)
 	ran := runHelper(b, "east:/m", "/mnt/m", "-o", "")
-	if ran.status != exitOK || ran.stderr != "" || recorded.req.AllowOther || recorded.req.Offline != nil {
+	if ran.status != cli.ExitOK || ran.stderr != "" || recorded.req.AllowOther || recorded.req.Offline != nil {
 		t.Errorf("status %d stderr %q request %+v", ran.status, ran.stderr, recorded.req)
 	}
 }
@@ -216,7 +217,7 @@ func TestHelperBadUsage(t *testing.T) {
 			t.Parallel()
 			b, recorded := helperBackend(nil, nil)
 			ran := runHelper(b, tt.args...)
-			if ran.status != exitError || ran.stdout != "" || recorded.requests != 0 {
+			if ran.status != cli.ExitError || ran.stdout != "" || recorded.requests != 0 {
 				t.Errorf("status %d stdout %q requests %d", ran.status, ran.stdout, recorded.requests)
 			}
 			if !strings.HasPrefix(ran.stderr, "mount.splicefs: ") || !strings.Contains(ran.stderr, tt.want) ||
@@ -232,7 +233,7 @@ func TestHelperTargetCannotBeResolved(t *testing.T) {
 	b, recorded := helperBackend(nil, nil)
 	b.abs = func(string) (string, error) { return "", errors.New("no working directory") }
 	ran := runHelper(b, "east:/m", "rel")
-	if ran.status != exitError || recorded.requests != 0 ||
+	if ran.status != cli.ExitError || recorded.requests != 0 ||
 		!strings.Contains(ran.stderr, `mount.splicefs: resolve target "rel": no working directory`) {
 		t.Errorf("status %d requests %d stderr %q", ran.status, recorded.requests, ran.stderr)
 	}
@@ -254,7 +255,7 @@ func TestHelperConfigDirectory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			b, recorded := helperBackend(tt.env, nil)
-			if ran := runHelper(b, "east:/m", "/mnt/m"); ran.status != exitOK {
+			if ran := runHelper(b, "east:/m", "/mnt/m"); ran.status != cli.ExitOK {
 				t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 			}
 			if want := app.SocketPath(tt.want); recorded.socketPath != want {
@@ -277,7 +278,7 @@ func TestHelperNoDefaultConfigDirectory(t *testing.T) {
 	b, recorded = helperBackend(map[string]string{configEnv: "/custom"}, nil)
 	b.defaultConfigDir = func() (string, error) { return "", errors.New("must not be asked") }
 	ran = runHelper(b, "east:/m", "/mnt/m")
-	if ran.status != exitOK || recorded.requests != 1 {
+	if ran.status != cli.ExitOK || recorded.requests != 1 {
 		t.Errorf("status %d requests %d stderr %q", ran.status, recorded.requests, ran.stderr)
 	}
 }
@@ -337,7 +338,7 @@ func TestRunDispatchesOnTheProgramName(t *testing.T) {
 	var out, errOut bytes.Buffer
 	argv := []string{"/sbin/mount.splicefs"}
 	status := run(context.Background(), argv, strings.NewReader(""), &out, &errOut)
-	if status != exitError || out.Len() != 0 || !strings.HasSuffix(errOut.String(), helperUsage) {
+	if status != cli.ExitError || out.Len() != 0 || !strings.HasSuffix(errOut.String(), helperUsage) {
 		t.Errorf("status %d stdout %q stderr %q", status, out.String(), errOut.String())
 	}
 }

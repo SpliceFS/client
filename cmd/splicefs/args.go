@@ -2,10 +2,10 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"log/slog"
+
+	"github.com/SpliceFS/client/internal/cli"
 )
 
 // The commands.
@@ -33,10 +33,9 @@ var (
 
 // invocation is a parsed command line.
 type invocation struct {
-	configDir   string
-	logLevel    slog.Level
-	showVersion bool
-	command     string
+	cli.Flags
+	logLevel slog.Level
+	command  string
 	// targets are the mount targets given to mount and umount.
 	targets []string
 	// force is the --force flag of umount.
@@ -49,22 +48,19 @@ type invocation struct {
 
 // parseArgs reads the command line. It returns flag.ErrHelp when help was asked for.
 func parseArgs(args []string) (invocation, error) {
-	// An empty configDir means the default, which execute looks up only when a command needs
-	// it, because finding it can fail.
 	inv := invocation{logLevel: slog.LevelInfo}
 	var level string
-	fs := newFlagSet(program)
-	fs.StringVar(&inv.configDir, "config", "", "")
+	fs := cli.NewFlagSet(program)
+	inv.Register(fs)
 	fs.StringVar(&level, "log-level", "info", "")
-	fs.BoolVar(&inv.showVersion, "version", false, "")
-	if err := parseFlags(fs, args); err != nil {
+	if err := cli.ParseFlags(fs, args); err != nil {
 		return invocation{}, err
 	}
 	var ok bool
 	if inv.logLevel, ok = parseLevel(level); !ok {
 		return invocation{}, fmt.Errorf("%w %q: use debug, info, warn or error", errInvalidLogLevel, level)
 	}
-	if inv.showVersion {
+	if inv.ShowVersion {
 		return inv, nil
 	}
 	if fs.NArg() == 0 {
@@ -73,16 +69,6 @@ func parseArgs(args []string) (invocation, error) {
 	inv.command = fs.Arg(0)
 	err := inv.parseCommand(fs.Args()[1:])
 	return inv, err
-}
-
-// parseFlags reads the flags of fs from args. The message is the flag package's own, which
-// already says what is wrong and is shown to the user as it is, so the wrapping adds no
-// words; it only keeps flag.ErrHelp recognizable for errors.Is.
-func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w", err)
-	}
-	return nil
 }
 
 // parseLevel accepts exactly the four names the usage text lists. slog would also take
@@ -101,15 +87,9 @@ func parseLevel(name string) (slog.Level, bool) {
 	return slog.LevelInfo, false
 }
 
-func newFlagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	return fs
-}
-
 // parseCommand reads the arguments that follow the command name.
 func (inv *invocation) parseCommand(args []string) error {
-	fs := newFlagSet(inv.command)
+	fs := cli.NewFlagSet(inv.command)
 	switch inv.command {
 	case commandMount, commandConfig:
 		// These take no flags.
@@ -120,7 +100,7 @@ func (inv *invocation) parseCommand(args []string) error {
 	default:
 		return fmt.Errorf("%w %q", errUnknownCommand, inv.command)
 	}
-	if err := parseFlags(fs, args); err != nil {
+	if err := cli.ParseFlags(fs, args); err != nil {
 		return err
 	}
 	inv.targets = fs.Args()

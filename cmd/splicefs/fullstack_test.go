@@ -13,6 +13,7 @@ import (
 	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
 	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/internal/cli"
 	"github.com/SpliceFS/client/mount"
 )
 
@@ -158,7 +159,7 @@ type result struct {
 func requireStatusReport(t *testing.T, stack *fullStack) {
 	t.Helper()
 	table := stack.command("status")
-	if table.status != exitOK {
+	if table.status != cli.ExitOK {
 		t.Fatalf("status: %+v", table)
 	}
 	wanted := []string{
@@ -171,7 +172,7 @@ func requireStatusReport(t *testing.T, stack *fullStack) {
 		}
 	}
 	asJSON := stack.command("status", "--json")
-	if asJSON.status != exitOK || !strings.Contains(asJSON.stdout, `"bytes_per_second": 12000000`) {
+	if asJSON.status != cli.ExitOK || !strings.Contains(asJSON.stdout, `"bytes_per_second": 12000000`) {
 		t.Errorf("status --json: %+v", asJSON)
 	}
 }
@@ -182,7 +183,7 @@ func requireBusyMountIsLeftAlone(t *testing.T, stack *fullStack) {
 	t.Helper()
 	stack.mount.setBusy(true)
 	busy := stack.command("umount")
-	if busy.status != exitError || !strings.Contains(busy.stderr, "mount is in use") ||
+	if busy.status != cli.ExitError || !strings.Contains(busy.stderr, "mount is in use") ||
 		!strings.Contains(busy.stderr, "umount --force") {
 		t.Errorf("umount of a busy mount: %+v", busy)
 	}
@@ -201,19 +202,19 @@ func TestStatusAndUmountAgainstARunningMount(t *testing.T) {
 
 	requireBusyMountIsLeftAlone(t, stack)
 
-	if forced := stack.command("umount", "--force", stack.configDir+"/mnt"); forced.status != exitOK {
+	if forced := stack.command("umount", "--force", stack.configDir+"/mnt"); forced.status != cli.ExitOK {
 		t.Errorf("umount --force: %+v", forced)
 	}
 	// The client keeps running with no mounts, so that a reload can mount again.
-	if got := stack.command("status"); got.status != exitOK || strings.Contains(got.stdout, "mounted") {
+	if got := stack.command("status"); got.status != cli.ExitOK || strings.Contains(got.stdout, "mounted") {
 		t.Errorf("status after the last mount was unmounted: %+v", got)
 	}
 	stack.stop()
-	if end := <-ended; end.status != exitOK {
+	if end := <-ended; end.status != cli.ExitOK {
 		t.Errorf("mount ended with %+v after it was stopped", end)
 	}
 	gone := stack.command("status")
-	if gone.status != exitError || !strings.Contains(gone.stderr, "no client is running for this configuration") {
+	if gone.status != cli.ExitError || !strings.Contains(gone.stderr, "no client is running for this configuration") {
 		t.Errorf("status after the client ended: %+v", gone)
 	}
 	if calls := stack.mount.unmountCalls(); !slices.Equal(calls, []bool{false, true}) {
@@ -229,14 +230,14 @@ func TestMountRefusesASecondClient(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	status := execute(context.Background(), []string{"--config", stack.configDir, "mount"}, &out, &errOut, stack.backend)
-	if status != exitError || !strings.Contains(errOut.String(), "a client is already running for this configuration") {
+	if status != cli.ExitError || !strings.Contains(errOut.String(), "a client is already running for this configuration") {
 		t.Errorf("second mount: status %d stderr %q", status, errOut.String())
 	}
-	if got := stack.command("umount", "--force"); got.status != exitOK {
+	if got := stack.command("umount", "--force"); got.status != cli.ExitOK {
 		t.Errorf("umount: %+v", got)
 	}
 	stack.stop()
-	if end := <-ended; end.status != exitOK {
+	if end := <-ended; end.status != cli.ExitOK {
 		t.Errorf("first mount ended with %+v", end)
 	}
 }

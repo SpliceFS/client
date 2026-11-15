@@ -16,6 +16,7 @@ import (
 	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
 	"github.com/SpliceFS/client/core"
+	"github.com/SpliceFS/client/internal/cli"
 )
 
 const (
@@ -201,15 +202,15 @@ func TestRealMount(t *testing.T) {
 
 	f := &fullStack{t: t, configDir: dir}
 	status := f.command("status")
-	if status.status != exitOK || !strings.Contains(status.stdout, target) || !strings.Contains(status.stdout, "mounted") {
+	if status.status != cli.ExitOK || !strings.Contains(status.stdout, target) || !strings.Contains(status.stdout, "mounted") {
 		t.Errorf("status: %+v", status)
 	}
-	if umount := f.command("umount"); umount.status != exitOK {
+	if umount := f.command("umount"); umount.status != cli.ExitOK {
 		t.Errorf("umount: %+v", umount)
 	}
 	// The client keeps running after its last mount is gone, until it is stopped.
 	mounted.stop()
-	if end := <-mounted.ended; end.status != exitOK {
+	if end := <-mounted.ended; end.status != cli.ExitOK {
 		t.Errorf("mount ended with %+v, want a clean exit", end)
 	}
 	if table := mountTable(t); strings.Contains(table, "splicefs:example") {
@@ -378,11 +379,11 @@ func TestRealMountLeftBehindByAKilledClientIsRemovedByUmount(t *testing.T) {
 	// is longer than that bound and the command always ends first.
 	const limit = time.Minute
 	refused := runClient(t, dir, "mount", limit)
-	requireOutput(t, refused, exitError, "is still mounted by a client that is no longer running", "splicefs umount")
-	requireOutput(t, runClient(t, dir, "umount", limit), exitOK, "removed the mount", place.target)
+	requireOutput(t, refused, cli.ExitError, "is still mounted by a client that is no longer running", "splicefs umount")
+	requireOutput(t, runClient(t, dir, "umount", limit), cli.ExitOK, "removed the mount", place.target)
 	if isListed(t, place.listed) {
 		t.Error("umount left the mount in the mount table")
 	}
 
-	requireOutput(t, runClient(t, dir, "umount", limit), exitError, "no client is running")
+	requireOutput(t, runClient(t, dir, "umount", limit), cli.ExitError, "no client is running")
 }

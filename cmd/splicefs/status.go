@@ -23,7 +23,7 @@ const (
 // printStatus asks the running client for its report and prints it, as a table or as the
 // JSON the client sent.
 func (b backend) printStatus(ctx context.Context, inv invocation, stdout io.Writer) error {
-	report, err := b.status(ctx, app.SocketPath(inv.configDir))
+	report, err := b.status(ctx, app.SocketPath(inv.ConfigDir))
 	if err != nil {
 		return err
 	}
