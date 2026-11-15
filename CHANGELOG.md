@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.25] - 2026-11-15
+
+- Internal: the health check tests no longer depend on a real timer.
+
 ## [0.5.24] - 2026-11-15
 
 - Starting a second client on the same configuration while one runs is now always refused, also
