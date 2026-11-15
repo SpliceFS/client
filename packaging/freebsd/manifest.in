@@ -1,0 +1,39 @@
+name: "@NAME@"
+version: "@VERSION@"
+origin: "net/splicefs-client"
+comment: "Client of the SpliceFS read-only multi-source filesystem"
+desc: <<EOD
+The SpliceFS client. It mounts the folders of a cluster of SpliceFS servers as
+one read-only folder and reads each file from several servers at once. The
+mounts are FUSE mounts; the service loads the fusefs kernel module.
+
+WWW: https://splicefs.org
+EOD
+maintainer: "anthony@splicefs.org"
+www: "https://splicefs.org"
+abi: "@ABI@"
+prefix: "/usr/local"
+licenselogic: "single"
+licenses: ["MIT"]
+categories: ["net"]
+scripts: {
+  pre-deinstall: <<EOD
+# Stopping the client unmounts everything it mounted.
+service @PROGRAM@ onestop >/dev/null 2>&1 || true
+EOD
+}
+messages: [
+  {
+    type: "install"
+    message: <<EOD
+The SpliceFS client starts when the system boots. To start it now:
+
+    service @PROGRAM@ start
+
+pkg stops every program an install script starts, so the package cannot do this
+for you. To keep the client from starting at boot, put @PROGRAM@_enable="NO" in
+/etc/rc.conf. Clusters and mounts are configured in
+/usr/local/etc/splicefs/client.
+EOD
+  }
+]

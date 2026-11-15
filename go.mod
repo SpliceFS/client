@@ -1,0 +1,18 @@
+module github.com/SpliceFS/client
+
+go 1.26.0
+
+require (
+	github.com/SpliceFS/common v0.3.3
+	github.com/go-git/go-billy/v5 v5.9.2
+	github.com/hanwen/go-fuse/v2 v2.12.1
+	github.com/willscott/go-nfs v0.0.4
+	github.com/willscott/go-nfs-client v0.0.0-20240104095149-b44639837b00
+	go.yaml.in/yaml/v3 v3.0.6
+	golang.org/x/text v0.44.0
+)
+
+require (
+	github.com/rasky/go-xdr v0.0.0-20170124162913-1a41d1a06c93 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+)

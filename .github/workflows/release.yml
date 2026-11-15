@@ -1,0 +1,189 @@
+name: Release
+
+# A version tag builds the packages, signs the repositories and the release files, and
+# publishes to packages.splicefs.org/client and creates the GitHub
+# release. Only version tags can use the publish environment, which holds the signing and
+# upload keys.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # Two releases of this repository must not overlap. Each one builds the package
+  # repositories on top of what is published, so a release that starts while an earlier one
+  # is still running would publish without the earlier version, and the publish step refuses
+  # that (it happened to 0.4.5). So a release waits here until every earlier one has ended.
+  # This job holds no key and is not part of the publish environment.
+  wait:
+    name: Wait for earlier releases
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Wait until no earlier release is running
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          # Run numbers of GitHub only grow, so a smaller one is an earlier release, also
+          # when it is a failed release that was started again.
+          for attempt in $(seq 1 180); do
+            earlier="$(gh api "repos/$REPO/actions/workflows/release.yml/runs?per_page=50" \
+              --jq "[.workflow_runs[] | select(.id < $RUN_ID and .status != \"completed\")] | length")"
+            if [ "$earlier" = 0 ]; then
+              echo "no earlier release is running"
+              exit 0
+            fi
+            echo "$earlier earlier release(s) still running, attempt $attempt"
+            sleep 20
+          done
+          echo "::error::an earlier release did not end within an hour"
+          exit 1
+
+  release:
+    name: Build, sign, test, publish and release
+    needs: wait
+    runs-on: ubuntu-latest
+    environment: publish
+    permissions:
+      # Needed to create the release.
+      contents: write
+    steps:
+      # The version comes from git describe, which needs the tags and the history.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # A tag can sit on any commit. Only a commit on main may publish, and the tag must
+      # name the version that VERSION gives. This runs before any key is written.
+      - name: The tag is a release of main
+        run: |
+          # Fetch main by name, so that origin/main is the current tip and not the state
+          # of the last checkout.
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::the tagged commit is not on main, so it cannot be released"
+            exit 1
+          fi
+          version="$(cat VERSION)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the tag is $GITHUB_REF_NAME, but VERSION says v$version"
+            exit 1
+          fi
+      # Only the two public key files are used from this repository.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: SpliceFS/packages
+          path: public-keys
+      - name: Write the keys and the known hosts line to files
+        env:
+          UPLOAD_SSH_KEY: ${{ secrets.UPLOAD_SSH_KEY }}
+          SIGNING_OPENPGP_SUBKEY: ${{ secrets.SIGNING_OPENPGP_SUBKEY }}
+          SIGNING_ALPINE_KEY: ${{ secrets.SIGNING_ALPINE_KEY }}
+          UPLOAD_KNOWN_HOSTS: ${{ vars.UPLOAD_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "$UPLOAD_SSH_KEY" > "$RUNNER_TEMP/upload_key"
+          printf '%s\n' "$UPLOAD_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+          mkdir "$RUNNER_TEMP/signing"
+          printf '%s\n' "$SIGNING_OPENPGP_SUBKEY" \
+            > "$RUNNER_TEMP/signing/splicefs-openpgp-signing-subkey.asc"
+          printf '%s\n' "$SIGNING_ALPINE_KEY" > "$RUNNER_TEMP/signing/splicefs.rsa"
+          cp public-keys/keys/splicefs.asc public-keys/keys/splicefs.rsa.pub "$RUNNER_TEMP/signing/"
+      # What is published now goes into dist/repo first, so every older version stays.
+      - name: Download the published repositories
+        env:
+          UPLOAD_KEY_FILE: ${{ runner.temp }}/upload_key
+          UPLOAD_KNOWN_HOSTS_FILE: ${{ runner.temp }}/known_hosts
+        run: make publish-fetch
+      - name: Build the packages
+        env:
+          SIGNING_DIR: ${{ runner.temp }}/signing
+        run: make package
+      - name: Build the signed package repositories
+        env:
+          SIGNING_DIR: ${{ runner.temp }}/signing
+        run: make repo
+      # The FreeBSD packages are built in a FreeBSD machine, and their repository is signed with
+      # the same key; this must finish before the publish step, which checks for its files.
+      - name: Build the FreeBSD packages and their signed repository
+        env:
+          SIGNING_DIR: ${{ runner.temp }}/signing
+        run: make package-freebsd
+      - name: Collect and sign the release files
+        run: make release-assets
+      # Nothing is tested here: the tag is on a commit whose files passed every check as a pull
+      # request on the tip of main. Nothing is uploaded before this step, so a failed build
+      # above publishes nothing.
+      - name: Publish the repositories
+        env:
+          UPLOAD_KEY_FILE: ${{ runner.temp }}/upload_key
+          UPLOAD_KNOWN_HOSTS_FILE: ${{ runner.temp }}/known_hosts
+        run: make publish
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Every merge is a release, so the notes are the change that was merged:
+          # GitHub writes them from the pull request.
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --generate-notes dist/release/*
+      - name: Remove the secret files
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/signing"
+          rm -f "$RUNNER_TEMP/upload_key" "$RUNNER_TEMP/known_hosts"
+          rm -f dist/keys/splicefs-openpgp-signing-subkey.asc dist/keys/splicefs.rsa
+
+  # The change log page of splicefs.org is built from CHANGELOG.md of this repository, so the
+  # website is published again after every release. This job runs outside the publish
+  # environment and holds none of its keys. When it fails, the release is out all the same.
+  website:
+    name: Rebuild the change log page of the website
+    needs: release
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Bot token for the website repository
+        id: bot
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          owner: SpliceFS
+          repositories: org-site
+      - name: Ask the website to publish again
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+        run: gh api repos/SpliceFS/org-site/dispatches -f event_type=release-published
+
+  # The Homebrew formulas install the newest release, so the tap is told about this one. It
+  # then opens a pull request that tests the new version on macOS before it is merged. This
+  # job runs outside the publish environment and holds none of its keys. When it fails, the
+  # release is out all the same.
+  homebrew:
+    name: Tell the Homebrew tap about this version
+    needs: release
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Ask the tap to update its formulas
+        env:
+          GH_TOKEN: ${{ secrets.MERGE_BOT_TOKEN }}
+        run: gh api repos/SpliceFS/homebrew-tap/dispatches -f event_type=release-published
+
+  # A failed run of this workflow opens an issue assigned to the account in the repository
+  # variable ALERT_ASSIGNEE, so that someone gets an email; GitHub sends none for runs the
+  # bots start. Pull requests are left out: their author sees the failed check there.
+  alert:
+    name: Report a failure
+    needs: [wait, release, website, homebrew]
+    if: ${{ failure() && github.event_name != 'pull_request' }}
+    permissions:
+      issues: write
+    uses: SpliceFS/.github/.github/workflows/report-failure-v1.yml@main
+    with:
+      assignee: ${{ vars.ALERT_ASSIGNEE }}

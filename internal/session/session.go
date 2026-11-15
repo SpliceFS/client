@@ -1,0 +1,308 @@
+// Package session owns the connection of the client to one cluster: the login, the
+// token, the set of nodes and the health of each node. It is the only place that
+// logs in, so a token that expires or is refused is replaced once, for every caller.
+package session
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"time"
+
+	"github.com/SpliceFS/common/wire"
+)
+
+// Errors that callers branch on, checked with errors.Is.
+var (
+	// ErrBadCredentials means the cluster rejected the user or the password.
+	ErrBadCredentials = errors.New("cluster rejected the user or password")
+	// ErrIncompatible means the cluster host runs a splicefsd this client refuses, because of
+	// its version. Unlike ErrUnavailable it does not go away by waiting.
+	ErrIncompatible = errors.New("cluster server version does not fit this client")
+	// ErrUnavailable means no node of the cluster could be reached.
+	ErrUnavailable = errors.New("no cluster node could be reached")
+	// ErrClosed means the session was closed.
+	ErrClosed = errors.New("session closed")
+)
+
+const (
+	// The node list is asked for again this often. The call goes to the cluster host and is
+	// cheap, and a node that was added or removed should be noticed quickly.
+	defaultRefreshNodes = time.Minute
+	defaultRenewBefore  = 2 * time.Minute
+
+	// entryName is the name the cluster host is dialed with; it is a way in, not a node.
+	entryName = "entry"
+)
+
+// Node is one server, as this package needs it.
+type Node interface {
+	// Name identifies the node within its cluster.
+	Name() string
+	// Login exchanges the user and password for a token.
+	Login(ctx context.Context, user, password string) (wire.LoginResponse, error)
+	// Nodes returns the node list of the cluster.
+	Nodes(ctx context.Context, token string) (wire.Nodes, error)
+}
+
+// Dial makes a Node for a name and a base URL. It must not use the network.
+type Dial func(name, baseURL string) (Node, error)
+
+// Options configures a Session. Dial, User, Password and EntryURL are required;
+// every other zero value selects a default.
+type Options struct {
+	Cluster string // the config name of the cluster, for messages
+	// EntryURL is the cluster host: one name for the whole cluster, which resolves to as many of
+	// its servers as possible. Logins and node list requests go there; file requests go to the
+	// node hosts it lists.
+	EntryURL string
+	User     string
+	Password string
+	Dial     Dial
+	// Now is the clock; the default is time.Now.
+	Now func() time.Time
+	// RefreshNodes is how often the node list is fetched again; the default is 1m.
+	RefreshNodes time.Duration
+	// RenewBefore makes the token be renewed when it expires within this time;
+	// the default is 2m.
+	RenewBefore time.Duration
+	// IsUnauthorized reports whether an error from a node means the token or the
+	// credentials were refused.
+	IsUnauthorized func(error) bool
+	// IsUnavailable reports whether an error from a node means the node cannot serve
+	// requests now: it could not be reached, is failing, or is refused as incompatible.
+	// Such a node rests and the others are tried.
+	IsUnavailable func(error) bool
+	// IsIncompatible reports whether an error from the cluster host means its version is
+	// refused. At login that ends the connect with ErrIncompatible instead of ErrUnavailable.
+	IsIncompatible func(error) bool
+	// Logger receives operational messages; the default discards them.
+	Logger *slog.Logger
+}
+
+// Session is the connection to one cluster. It is safe for concurrent use.
+type Session struct {
+	opts       Options
+	connecting group
+	renewing   group
+
+	mu           sync.Mutex
+	closed       bool
+	connected    bool
+	entry        Node // the cluster host, dialed once; it is not a member and has no health
+	token        string
+	expires      time.Time
+	members      []*member
+	fetched      time.Time
+	connectRetry backoff
+	loginRetry   backoff
+	// fallbackNote makes the line about using the cluster host as the only node appear
+	// once per session, not at every refresh of an empty list.
+	fallbackNote sync.Once
+}
+
+// New returns a Session. It does not use the network: the cluster is contacted by
+// the first call that needs it.
+func New(opts Options) *Session {
+	if opts.Now == nil {
+		opts.Now = time.Now
+	}
+	if opts.RefreshNodes <= 0 {
+		opts.RefreshNodes = defaultRefreshNodes
+	}
+	if opts.RenewBefore <= 0 {
+		opts.RenewBefore = defaultRenewBefore
+	}
+	if opts.IsUnauthorized == nil {
+		opts.IsUnauthorized = never
+	}
+	if opts.IsUnavailable == nil {
+		opts.IsUnavailable = never
+	}
+	if opts.IsIncompatible == nil {
+		opts.IsIncompatible = never
+	}
+	if opts.Logger == nil {
+		opts.Logger = slog.New(slog.DiscardHandler)
+	}
+	return &Session{opts: opts}
+}
+
+func never(error) bool { return false }
+
+// Nodes returns every node of the cluster in node-list order, connecting first if
+// needed.
+func (s *Session) Nodes(ctx context.Context) ([]Node, error) {
+	if err := s.prepare(ctx); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return nodesOf(s.members), nil
+}
+
+// Usable returns the nodes that are not cooling down after a failure, in node-list
+// order. When every node is cooling it returns only the one whose cooldown ends
+// first, so that there is always something to try.
+func (s *Session) Usable(ctx context.Context) ([]Node, error) {
+	if err := s.prepare(ctx); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return nodesOf(s.candidates(s.opts.Now())), nil
+}
+
+// Do calls call with the current token. When call fails with an unauthorized error
+// the token is replaced and call is made once more. The outcome is recorded as the
+// health of n: an unavailable error starts or extends its cooldown, success clears
+// it. The error of call is returned unchanged, except that a failed replacement of
+// the token is returned instead.
+func (s *Session) Do(ctx context.Context, n Node, call func(ctx context.Context, token string) error) error {
+	ran, err := s.withToken(ctx, call)
+	if ran {
+		s.record(n, err)
+	}
+	return err
+}
+
+// Close makes every later call fail with ErrClosed.
+func (s *Session) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed = true
+}
+
+// withToken is Do without the health bookkeeping, for calls to the cluster host, which is
+// not a member. The bool result is false when no token could be had and call never ran.
+func (s *Session) withToken(
+	ctx context.Context, call func(ctx context.Context, token string) error,
+) (bool, error) {
+	token, err := s.currentToken(ctx)
+	if err != nil {
+		return false, err
+	}
+	err = call(ctx, token)
+	if err != nil && s.opts.IsUnauthorized(err) {
+		if token, err = s.renew(ctx, token); err != nil {
+			return false, err
+		}
+		err = call(ctx, token)
+	}
+	return true, err
+}
+
+func (s *Session) prepare(ctx context.Context) error {
+	if err := s.ensureConnected(ctx); err != nil {
+		return err
+	}
+	s.refreshNodes(ctx)
+	return nil
+}
+
+func (s *Session) record(n Node, err error) {
+	if err != nil && !s.opts.IsUnavailable(err) {
+		// The node answered, so its health is neither proven nor disproven.
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, peer := range s.members {
+		if peer.name != n.Name() {
+			continue
+		}
+		if err == nil {
+			peer.health.reset()
+		} else {
+			peer.health.fail(s.opts.Now(), err)
+		}
+		return
+	}
+}
+
+// refreshNodes fetches the node list again once RefreshNodes has passed. The time
+// of the attempt is taken before it is made, so concurrent callers do not all fetch
+// and a failure is retried only after the normal interval.
+func (s *Session) refreshNodes(ctx context.Context) {
+	s.mu.Lock()
+	now := s.opts.Now()
+	if now.Sub(s.fetched) < s.opts.RefreshNodes {
+		s.mu.Unlock()
+		return
+	}
+	s.fetched = now
+	known := s.members
+	s.mu.Unlock()
+
+	list, err := s.fetchNodeList(ctx)
+	if err != nil {
+		// The list the client has stays until the next attempt; the nodes are not asked, as
+		// a cluster host that cannot be reached means no node is assumed reachable.
+		s.opts.Logger.WarnContext(ctx, "node list refresh failed", slog.String("cluster", s.opts.Cluster),
+			slog.String("cluster_host", s.opts.EntryURL), slog.Any("error", err))
+		return
+	}
+	next := s.dialAll(s.listed(list.Nodes), known)
+	if len(next) == 0 {
+		s.opts.Logger.WarnContext(ctx, "node list refresh returned no usable node",
+			slog.String("cluster", s.opts.Cluster))
+		return
+	}
+	s.mu.Lock()
+	s.members = next
+	s.mu.Unlock()
+}
+
+// fetchNodeList asks the cluster host for the node list.
+func (s *Session) fetchNodeList(ctx context.Context) (wire.Nodes, error) {
+	entry, err := s.entryNode()
+	if err != nil {
+		return wire.Nodes{}, err
+	}
+	var list wire.Nodes
+	// Not Do: the cluster host is not a member, so its outcome is no node's health.
+	_, err = s.withToken(ctx, func(ctx context.Context, token string) error {
+		var fetchErr error
+		list, fetchErr = entry.Nodes(ctx, token)
+		if fetchErr != nil {
+			return fmt.Errorf("fetch node list: %w", fetchErr)
+		}
+		return nil
+	})
+	return list, err
+}
+
+// candidates is the members that are not cooling, or the one that stops cooling first.
+// The caller holds s.mu and s.members is not empty.
+func (s *Session) candidates(now time.Time) []*member {
+	var ready []*member
+	var soonest *member
+	for _, peer := range s.members {
+		switch {
+		case !peer.health.active(now):
+			ready = append(ready, peer)
+		case soonest == nil || peer.health.until.Before(soonest.health.until):
+			soonest = peer
+		default:
+			// Cooling for longer than the soonest member: not offered.
+		}
+	}
+	if len(ready) == 0 {
+		return []*member{soonest}
+	}
+	return ready
+}
+
+func nodesOf(members []*member) []Node {
+	nodes := make([]Node, len(members))
+	for i, peer := range members {
+		nodes[i] = peer.node
+	}
+	return nodes
+}
+
+func (s *Session) unavailable(what string, err error) error {
+	return fmt.Errorf("cluster %q: %s: %w: %w", s.opts.Cluster, what, ErrUnavailable, err)
+}

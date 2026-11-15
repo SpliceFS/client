@@ -1,0 +1,87 @@
+package fuse
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"sync"
+	"syscall"
+
+	"github.com/SpliceFS/client/core"
+)
+
+// maxLoggedErrors bounds the memory used to remember which error texts were logged,
+// because the texts may contain paths and are therefore unbounded in number.
+const maxLoggedErrors = 256
+
+// errnoOf maps an error from the core to the error number the kernel is told. known is
+// false for errors the mapping has no rule for; those become EIO.
+//
+// ErrUnavailable is EIO and never ENOENT: a network outage must not look like deleted
+// files.
+func errnoOf(err error) (syscall.Errno, bool) {
+	switch {
+	case errors.Is(err, core.ErrNotExist):
+		return syscall.ENOENT, true
+	case errors.Is(err, core.ErrNotDir):
+		return syscall.ENOTDIR, true
+	case errors.Is(err, core.ErrIsDir):
+		return syscall.EISDIR, true
+	case errors.Is(err, core.ErrUnavailable):
+		return syscall.EIO, true
+	case errors.Is(err, context.Canceled):
+		return syscall.EINTR, true
+	case errors.Is(err, context.DeadlineExceeded):
+		return syscall.EIO, true
+	default:
+		return syscall.EIO, false
+	}
+}
+
+// errorMapper turns core errors into error numbers and logs each unexpected error text
+// once, so that a failing node does not produce a log line per request.
+type errorMapper struct {
+	log  *slog.Logger
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func newErrorMapper(log *slog.Logger) *errorMapper {
+	return &errorMapper{log: log, seen: make(map[string]struct{})}
+}
+
+// errno maps err; see errnoOf.
+func (m *errorMapper) errno(err error) syscall.Errno {
+	m.record(err)
+	errno, _ := errnoOf(err)
+	return errno
+}
+
+// record logs err once if the mapping has no rule for it. It is for callers that have
+// no error number to return, such as the close of a file at the end of a mount.
+//
+//nolint:errcheck // errcheck takes syscall.Errno for an error; only whether a rule exists matters here.
+func (m *errorMapper) record(err error) {
+	if _, known := errnoOf(err); !known {
+		m.logOnce(err)
+	}
+}
+
+func (m *errorMapper) logOnce(err error) {
+	text := err.Error()
+	if m.firstSighting(text) {
+		m.log.Error("unexpected error from core, reported as EIO", slog.String("error", text))
+	}
+}
+
+// firstSighting records text and reports whether it is new and there is room to
+// remember it.
+func (m *errorMapper) firstSighting(text string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, dup := m.seen[text]; dup || len(m.seen) >= maxLoggedErrors {
+		return false
+	}
+	m.seen[text] = struct{}{}
+	return true
+}

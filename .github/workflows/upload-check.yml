@@ -1,0 +1,33 @@
+name: Upload check
+
+# Proves from GitHub that the upload path works (key, pinned host key, forced rsync), without
+# publishing anything: it only lists the remote root. Run it by hand.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: List the remote root
+    runs-on: ubuntu-latest
+    environment: publish
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Write the key and the known hosts line to files
+        env:
+          UPLOAD_SSH_KEY: ${{ secrets.UPLOAD_SSH_KEY }}
+          UPLOAD_KNOWN_HOSTS: ${{ vars.UPLOAD_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "$UPLOAD_SSH_KEY" > "$RUNNER_TEMP/upload_key"
+          printf '%s\n' "$UPLOAD_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+      - name: List the remote root
+        env:
+          UPLOAD_KEY_FILE: ${{ runner.temp }}/upload_key
+          UPLOAD_KNOWN_HOSTS_FILE: ${{ runner.temp }}/known_hosts
+        run: make publish-check
+      - name: Remove the secret files
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload_key" "$RUNNER_TEMP/known_hosts"

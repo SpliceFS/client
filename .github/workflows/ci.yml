@@ -1,0 +1,225 @@
+name: CI
+
+# Only pull requests are tested. main gets nothing but branches that passed here while they
+# sat on its tip, so a run on main would test the same files a second time.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # A pull request is tested only when its branch sits on the tip of main. Then the merge adds
+  # nothing that was not tested, and nothing is tested again after it: not on main, not in the
+  # release. A branch that is behind fails here at once, before any long job starts. The bot
+  # rebuilds every open branch when main moves, which starts the checks again.
+  tip:
+    name: On the tip of main
+    runs-on: ubuntu-latest
+    steps:
+      - name: The branch contains the tip of main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.label }}
+        run: |
+          behind="$(gh api "repos/$REPO/compare/$BASE...$HEAD" --jq .behind_by)"
+          if [ "$behind" != "0" ]; then
+            echo "::error::This branch is $behind commits behind $BASE. Rebase it on the tip of $BASE; nothing is tested until then."
+            exit 1
+          fi
+          echo "The branch contains the tip of $BASE."
+
+  linux:
+    needs: tip
+    name: Linux (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Codecov upload signs in with the OIDC token instead of a stored secret.
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [stable, oldstable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+      - name: Module files are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Install FUSE
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fuse3
+      # The mount tests need to mount. As root that works through the mount system
+      # call with no further setup, and it is the configuration the coverage gate
+      # is measured in locally (make check-linux).
+      - name: Format, vet, tests with race detector, 100% coverage
+        run: sudo -E env "PATH=$PATH" make check
+      # The compatibility rule: with the same first version number, this client works with
+      # every released server whose second number is equal or higher. So the server is
+      # released first, and a client whose second number is above every released server
+      # fails here. The test mounts for real, so it runs as root like the step above.
+      - name: The real client against the real server
+        run: sudo -E env "PATH=$PATH" make compat
+      # One report per commit is enough, so only the stable Go release uploads. Forks
+      # cannot get an OIDC token for this repository. The upload must never fail the
+      # build, for example before the organization is enabled on Codecov.
+      - name: Upload coverage to Codecov
+        if: matrix.go == 'stable' && github.repository == 'SpliceFS/client' && github.event.pull_request.head.repo.fork != true
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage.out
+          disable_search: true
+          fail_ci_if_error: false
+      - name: Build
+        run: make build
+
+  macos:
+    needs: tip
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Format, vet, tests with race detector, 100% coverage
+        run: make check
+      - name: Build
+        run: make build
+
+  fuzz:
+    needs: tip
+    name: Fuzz (short)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - name: Fuzz every target briefly
+        run: make fuzz
+
+  # FreeBSD cannot run in a container, so each release runs as a virtual machine under QEMU
+  # (scripts/package-freebsd.sh). On amd64 the runner offers hardware virtualization; on
+  # arm64 the machine is emulated, which is slower and still the real system.
+  freebsd-package:
+    needs: tip
+    name: FreeBSD package (${{ matrix.release }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["14.5", "15.1"]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the packages on FreeBSD, install one and start the service
+        run: make package-freebsd FREEBSD=${{ matrix.release }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.arch == 'amd64'
+        with:
+          name: freebsd-packages-${{ matrix.release }}
+          path: dist/freebsd/*/*.pkg
+          if-no-files-found: error
+
+  package:
+    needs: tip
+    name: Packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the packages
+        run: make package
+      - name: Install and remove each package in a clean system of its kind
+        run: make package-test
+      # The containers above have no service manager running. These do: process 1 is
+      # systemd or OpenRC, and the service must start by itself, come back after a reboot
+      # and stop when the package is removed.
+      - name: Start the service under the real service manager of every system
+        run: make service-test
+      - name: Build the signed package repositories
+        run: make repo
+      - name: Install from the repositories with signature checks on
+        run: make repo-test
+      - name: Publish and release-file checks against local folders, no server
+        run: make publish-test
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: matrix.arch == 'amd64'
+        with:
+          name: packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/alpine/
+          if-no-files-found: error
+
+  # FreeBSD cannot run in a container, so the tests run in a virtual machine under QEMU
+  # (scripts/check-freebsd.sh). Only amd64: there the runner offers hardware virtualization,
+  # and an emulated machine would take too long for the whole test suite.
+  freebsd:
+    needs: tip
+    name: FreeBSD tests (${{ matrix.release }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["14.5", "15.1"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Tests on FreeBSD, as root with FUSE, 100% coverage
+        run: make check-freebsd FREEBSD=${{ matrix.release }}
+
+  # The scripts build, sign, test and publish the releases. ShellCheck runs with every
+  # optional check on; .shellcheckrc says which two are off and why.
+  shell:
+    needs: tip
+    name: Shell analysis (ShellCheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: ShellCheck with every optional check
+        run: make lint-shell
+
+  lint:
+    needs: tip
+    name: Lint (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [linux, darwin, freebsd]
+    env:
+      GOOS: ${{ matrix.goos }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15

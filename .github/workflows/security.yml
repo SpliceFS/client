@@ -1,0 +1,65 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so newly published vulnerabilities are caught without a code change.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: Known vulnerabilities (govulncheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-input: stable
+          go-package: ./...
+
+  codeql:
+    name: Static analysis (CodeQL)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          languages: go
+          queries: security-and-quality
+      - uses: github/codeql-action/autobuild@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4.39.3
+        with:
+          category: /language:go
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+
+  # A failed run of this workflow opens an issue assigned to the account in the repository
+  # variable ALERT_ASSIGNEE, so that someone gets an email; GitHub sends none for runs the
+  # bots start. Pull requests are left out: their author sees the failed check there.
+  alert:
+    name: Report a failure
+    needs: [govulncheck, codeql, dependency-review]
+    if: ${{ failure() && github.event_name != 'pull_request' }}
+    permissions:
+      issues: write
+    uses: SpliceFS/.github/.github/workflows/report-failure-v1.yml@main
+    with:
+      assignee: ${{ vars.ALERT_ASSIGNEE }}

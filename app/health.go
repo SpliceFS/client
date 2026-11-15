@@ -1,0 +1,161 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"io/fs"
+	"log/slog"
+	"path/filepath"
+	"slices"
+	"time"
+
+	"github.com/SpliceFS/client/mount"
+)
+
+const (
+	// probeInterval is the time between two health rounds. A hung mount is found within
+	// probeFailures rounds, and the service manager hears from the run loop every round.
+	probeInterval = 10 * time.Second
+	// defaultProbeTimeout is how long a round waits for the answer of one mount.
+	defaultProbeTimeout = 5 * time.Second
+	// defaultProbeFailures is how many checks in a row a mount may fail before it is
+	// counted as hung. One slow answer must not end a working mount.
+	defaultProbeFailures = 3
+)
+
+// tickSource delivers the ticks of a ticker, or the one tick of a timer, and is stopped
+// when nobody waits for them any more.
+type tickSource struct {
+	ticks <-chan time.Time
+	stop  func()
+}
+
+// systemTicker is the default source of ticks, shaped as a function so that tests can
+// replace it with ticks they send by hand.
+func systemTicker(interval time.Duration) tickSource {
+	ticker := time.NewTicker(interval)
+	return tickSource{ticks: ticker.C, stop: ticker.Stop}
+}
+
+// systemTimer is the default source of the timeout of one check. It has the shape of
+// systemTicker so that a test sends the timeout by hand: a real timer would decide that a
+// mount that answers is hung whenever the machine stalls for longer than the timeout.
+func systemTimer(timeout time.Duration) tickSource {
+	timer := time.NewTimer(timeout)
+	return tickSource{ticks: timer.C, stop: func() { timer.Stop() }}
+}
+
+// startCheck asks for the probe name in the root of target in a goroutine of its own, so
+// that a mount that never answers holds up nothing but that goroutine. The channel has
+// room for the answer, so the goroutine ends whenever the answer comes, even if nobody
+// waits for it any more. The hook answerSent is called once the answer is in the channel.
+func (r *reloader) startCheck(target string) chan error {
+	answer := make(chan error, 1)
+	lstat, answerSent := r.opts.lstat, r.opts.answerSent
+	go func() {
+		_, err := lstat(filepath.Join(target, mount.ProbeName))
+		answer <- err
+		answerSent(target)
+	}()
+	return answer
+}
+
+// healthRound checks every live mount, mounts again the ones that are hung, and then
+// tells the service manager that the run loop is alive. It runs in the run loop, so
+// nothing else changes the mounts meanwhile.
+func (r *reloader) healthRound(ctx context.Context) {
+	if r.checkMounts(ctx) {
+		r.mountAgain(ctx)
+	}
+	// The heartbeat proves the run loop is running, not that every mount is healthy, so it
+	// is sent whatever the round found.
+	if err := r.opts.Notify("WATCHDOG=1"); err != nil {
+		r.opts.Logger.DebugContext(ctx, "could not send the heartbeat to the service manager",
+			slog.Any("err", err))
+	}
+}
+
+// checkMounts checks the mounts in the order of the set and detaches each one that has
+// failed too many checks in a row. It returns whether any was found hung, which is when
+// the missing mounts are to be made. It stops early when ctx ends, because an answer not
+// waited for is no failure of the mount.
+func (r *reloader) checkMounts(ctx context.Context) bool {
+	hung := false
+	for _, live := range r.set.list() {
+		passed := r.check(ctx, live)
+		if ctx.Err() != nil {
+			return hung
+		}
+		if passed {
+			live.failures = 0
+			continue
+		}
+		live.failures++
+		if live.failures >= r.opts.probeFailures {
+			hung = true
+			r.opts.Logger.ErrorContext(ctx, "mount does not answer, mounting it again",
+				slog.String("target", live.target))
+			// detach marks the mount, so that a requested mount stays on the requested list.
+			r.detach(ctx, live)
+			r.abortHung(live)
+		}
+	}
+	return hung
+}
+
+// abortHung cuts the kernel connection of a hung mount that detach has taken out of the
+// set, if its mount layer can. The detach alone leaves the requests that already wait on
+// a mount that does not answer waiting for good. Only a hung mount is aborted: a reload
+// or a stop detaches working mounts too, and their open files must be able to finish. A
+// mount still in the set was not detached, so it is left as it is. A failed abort changes
+// nothing else, because the mount is detached and is made again either way.
+func (r *reloader) abortHung(live *liveMount) {
+	aborter, ok := live.mounted.(mount.Aborter)
+	if !ok || slices.Contains(r.set.list(), live) {
+		return
+	}
+	if err := aborter.Abort(); err != nil {
+		r.opts.Logger.Warn("could not abort the connection of a hung mount",
+			slog.String("target", live.target), slog.Any("err", err))
+	}
+}
+
+// check reports whether live answered "does not exist" for the probe name in time. Any
+// other answer, or none, is a failure. A check that is still waiting from an earlier
+// round fails the mount without a second one, so that a hung mount does not collect a
+// goroutine per round.
+func (r *reloader) check(ctx context.Context, live *liveMount) bool {
+	if live.pending != nil {
+		select {
+		case <-live.pending: //nolint:errcheck // an old answer, discarded on purpose
+			// It answered after its round stopped waiting. That answer is old, so a new
+			// check is made.
+			live.pending = nil
+		default:
+			return false
+		}
+	}
+	live.pending = r.startCheck(live.target)
+	timeout := r.opts.newTimer(defaultProbeTimeout)
+	defer timeout.stop()
+	select {
+	case err := <-live.pending:
+		live.pending = nil
+		return errors.Is(err, fs.ErrNotExist)
+	case <-timeout.ticks:
+	case <-ctx.Done():
+	}
+	return false
+}
+
+// mountAgain mounts what is missing from the configuration applied last and the requested
+// mounts, the same step that a reload and a mount request end with. The files are not read
+// again, because a hung mount is no reason to believe they changed.
+func (r *reloader) mountAgain(ctx context.Context) {
+	eff, err := r.effective(r.last, r.store.list())
+	if err != nil {
+		r.opts.Logger.ErrorContext(ctx, "hung mounts not made again", slog.Any("err", err))
+		return
+	}
+	r.mountMissing(ctx, r.wanted(eff))
+}

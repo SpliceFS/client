@@ -1,0 +1,14 @@
+Package: splicefs-client
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: SpliceFS <anthony@splicefs.org>
+Installed-Size: @SIZE@
+Depends: fuse3
+Section: net
+Priority: optional
+Homepage: https://github.com/SpliceFS/client
+Description: client of the SpliceFS read-only multi-source filesystem
+ splicefs mounts a read-only folder whose files are streamed from several
+ SpliceFS servers at once. Every server that holds a copy of a file serves
+ blocks of it, and the client puts them back together and caches them on
+ local disk.

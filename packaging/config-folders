@@ -1,0 +1,6 @@
+# The folders the package creates, empty, under the configuration directory. The
+# administrator's files go in them; the package never puts a file there, so an upgrade
+# cannot overwrite or break what the administrator wrote.
+conf.d
+clusters.d
+mounts.d
