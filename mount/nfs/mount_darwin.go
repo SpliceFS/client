@@ -106,6 +106,7 @@ type environment struct {
 	isMounted func(target, from string) (bool, error)
 	serves    func(ctx context.Context, port int) (bool, error)
 	newTicker func(time.Duration) (<-chan time.Time, func())
+	rootAfter afterFunc // nil means timeAfterFunc
 }
 
 func systemEnvironment() environment {
@@ -168,7 +169,7 @@ func mountWith(fsys core.FS, opts mount.Options, env environment) (mount.Mounted
 	if err != nil {
 		return nil, err
 	}
-	srv, err := startServer(fsys, ln, serverConfig{owner: env.owner, logger: log})
+	srv, err := startServer(fsys, ln, serverConfig{owner: env.owner, logger: log, rootAfter: env.rootAfter})
 	if err != nil {
 		return nil, err
 	}

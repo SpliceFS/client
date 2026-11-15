@@ -102,8 +102,9 @@ func (f *fakeSystem) environment() environment {
 			}
 			return handle(cmd)
 		},
-		owner:  testOwner(),
-		listen: listenLoopback,
+		owner:     testOwner(),
+		rootAfter: neverEnds,
+		listen:    listenLoopback,
 		isMounted: func(target, from string) (bool, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()

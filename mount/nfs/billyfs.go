@@ -47,7 +47,7 @@ const (
 // (it answers NFS3ERR_ROFS before the filesystem is asked), so the mutating methods
 // below are only a second line of defence and return billy.ErrReadOnly.
 //
-// The attributes of the root never fail and never take longer than rootBudget, because
+// The attributes of the root never fail and never take longer than rootAttrBudget, because
 // the kernel asks for them before it looks up any name and before it accepts a mount:
 // with the cluster unreachable they would otherwise refuse the mount and delay even the
 // probe name, which is meant to be answered without the cluster.
@@ -59,9 +59,9 @@ type billyFS struct {
 	owner   owner
 	log     *slog.Logger
 
-	rootBudget time.Duration
-	created    time.Time // modification time of the root until the core has answered
-	root       rootAttr
+	rootAfter afterFunc // sets the time limit of a call for the root; tests drive it themselves
+	created   time.Time // modification time of the root until the core has answered
+	root      rootAttr
 
 	spaceMu   sync.Mutex
 	lastSpace core.Space // the last capacity the core reported; zero until it has
@@ -77,22 +77,22 @@ type rootAttr struct {
 	mu      sync.Mutex
 	last    core.Attr
 	known   bool
-	pending chan struct{} // closed when the running call has ended; nil if none runs
-	started time.Time
+	pending chan struct{}   // closed when the running call has ended; nil if none runs
+	expired <-chan struct{} // closed when the time limit of the running call is over
 }
 
 func newBillyFS(
 	base context.Context, fsys core.FS, timeout time.Duration, fileOwner owner, log *slog.Logger,
 ) *billyFS {
 	return &billyFS{
-		base:       base,
-		fsys:       fsys,
-		timeout:    timeout,
-		owner:      fileOwner,
-		log:        log,
-		rootBudget: rootAttrBudget,
-		created:    time.Now(),
-		pins:       newPinnedFiles(fsys, log),
+		base:      base,
+		fsys:      fsys,
+		timeout:   timeout,
+		owner:     fileOwner,
+		log:       log,
+		rootAfter: timeAfterFunc,
+		created:   time.Now(),
+		pins:      newPinnedFiles(fsys, log),
 	}
 }
 
@@ -290,7 +290,7 @@ func (b *billyFS) warnCoreFailure(operation, name string, err error) {
 		slog.String("op", operation), slog.String("name", name), slog.Any("err", err))
 }
 
-// rootAttr answers within rootBudget whatever the core does. It asks the core and
+// rootAttr answers within rootAttrBudget whatever the core does. It asks the core and
 // waits for the answer; if the core fails or is too slow it returns the last answer it
 // got, or a fixed read-only directory if it never got one. The real modification time is
 // kept whenever the core answers because macOS decides from it whether a cached listing
@@ -298,23 +298,24 @@ func (b *billyFS) warnCoreFailure(operation, name string, err error) {
 //
 // A call that is too slow is not abandoned: it keeps running and its result, if it
 // succeeds, is remembered for the next request. Requests that arrive meanwhile wait for
-// that same call instead of starting another, and only for what is left of its budget.
+// that same call instead of starting another, and only for what is left of its budget:
+// they all share the one time limit that started with the call.
 func (b *billyFS) rootAttr() core.Attr {
 	r := &b.root
 	r.mu.Lock()
 	if r.pending == nil {
 		r.pending = make(chan struct{})
-		r.started = time.Now()
-		go b.refreshRoot(r.pending)
+		expired := make(chan struct{})
+		r.expired = expired
+		cancel := b.rootAfter(rootAttrBudget, func() { close(expired) })
+		go b.refreshRoot(r.pending, cancel)
 	}
-	pending, wait := r.pending, b.rootBudget-time.Since(r.started)
+	pending, expired := r.pending, r.expired
 	r.mu.Unlock()
 
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
 	select {
 	case <-pending:
-	case <-timer.C:
+	case <-expired:
 	}
 
 	r.mu.Lock()
@@ -326,8 +327,9 @@ func (b *billyFS) rootAttr() core.Attr {
 }
 
 // refreshRoot is the one running call for the attributes of the root. It ends the call
-// by closing done.
-func (b *billyFS) refreshRoot(done chan struct{}) {
+// by closing done, and cancels the timer of its time limit, which is no longer needed.
+func (b *billyFS) refreshRoot(done chan struct{}, cancelTimer func() bool) {
+	defer cancelTimer()
 	ctx, cancel := b.callContext()
 	defer cancel()
 	attr, err := b.fsys.Stat(ctx, "")

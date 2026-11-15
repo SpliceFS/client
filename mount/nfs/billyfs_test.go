@@ -25,9 +25,17 @@ import (
 // testOwner is the owner every test filesystem reports.
 func testOwner() owner { return owner{uid: 501, gid: 20} }
 
+// neverEnds is the time limit of every test whose core answers: no timer ever runs, so
+// the answer comes from the core however long the machine of the test stalls. A test about
+// a core that is too slow uses a fakeClock and ends the limit itself.
+func neverEnds(time.Duration, func()) func() bool {
+	return func() bool { return true }
+}
+
 func newTestBilly(t *testing.T, fsys core.FS) *billyFS {
 	t.Helper()
 	b := newBillyFS(t.Context(), fsys, time.Minute, testOwner(), slog.New(slog.DiscardHandler))
+	b.rootAfter = neverEnds
 	// The files a test left open are closed at its end instead of by a timer later.
 	t.Cleanup(b.close)
 	return b
@@ -284,7 +292,8 @@ func TestBillyRootAttrAnswersWithinTheBudgetAndKeepsTheLateAnswer(t *testing.T) 
 	block := blockRoot(fsys)
 	t.Cleanup(block.release)
 	b := newTestBilly(t, fsys)
-	b.rootBudget = 10 * time.Millisecond
+	clock := &fakeClock{}
+	b.rootAfter = clock.after
 	b.created = time.Unix(1_600_000_000, 0)
 
 	answered := make(chan struct{})
@@ -293,6 +302,7 @@ func TestBillyRootAttrAnswersWithinTheBudgetAndKeepsTheLateAnswer(t *testing.T) 
 		wantRootDir(t, b, b.created)
 	}()
 	waitFor(t, block.started, "the core call to start")
+	clock.elapse()
 	waitFor(t, answered, "an answer while the core is blocked")
 	pending := pendingRoot(t, b)
 
@@ -314,7 +324,8 @@ func TestBillyRootAttrNeverRunsTwoCallsAtOnce(t *testing.T) {
 	block := blockRoot(fsys)
 	t.Cleanup(block.release)
 	b := newTestBilly(t, fsys)
-	b.rootBudget = 10 * time.Millisecond
+	clock := &fakeClock{}
+	b.rootAfter = clock.after
 	b.created = time.Unix(1_600_000_000, 0)
 
 	var wg sync.WaitGroup
@@ -322,6 +333,7 @@ func TestBillyRootAttrNeverRunsTwoCallsAtOnce(t *testing.T) {
 		wg.Go(func() { wantRootDir(t, b, b.created) })
 	}
 	waitFor(t, block.started, "the core call to start")
+	clock.elapse()
 	wg.Wait()
 	wantRootDir(t, b, b.created)
 	if n := rootStats(fsys); n != 1 {
@@ -333,12 +345,15 @@ func TestBillyRootAttrNeverRunsTwoCallsAtOnce(t *testing.T) {
 	pending := pendingRoot(t, b)
 	block.release()
 	waitFor(t, pending, "the call to end")
-	// With a long budget the next request waits for its own call, so the count below does
-	// not depend on how fast that call is scheduled.
-	b.rootBudget = 5 * time.Second
+	// The next call has a time limit of its own, which the test leaves running: the request
+	// waits for its call, so the count below does not depend on how fast that call is
+	// scheduled.
 	wantRootDir(t, b, fakeMTime())
 	if n := rootStats(fsys); n != 2 {
 		t.Errorf("the core got %d root calls after the first ended, want 2", n)
+	}
+	if got, want := clock.asked(), []time.Duration{rootAttrBudget, rootAttrBudget}; !slices.Equal(got, want) {
+		t.Errorf("time limits set = %v, want one of %v for each of the two calls", got, rootAttrBudget)
 	}
 }
 

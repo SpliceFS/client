@@ -169,9 +169,16 @@ func TestInterruptedReadCancelsTheCoreCall(t *testing.T) {
 // The Go syscall package offers extended attributes on Linux only.
 // The Linux kernel remembers that a name does not exist for as long as the client tells it
 // to. FreeBSD's FUSE asks again at every look-up, so this is checked on Linux only.
+//
+// The mount tells the kernel to remember for an hour, not the 5 seconds of a real mount: the
+// test is about the kernel keeping the answer, and with the real value it would fail on a
+// machine that stalls for 5 seconds between the two calls. The value that real mounts use is
+// checked in TestDefaultSettings and TestNodeOptionsCarryTheTimeouts.
 func TestMissingNamesAreRemembered(t *testing.T) {
 	fake := newFakeFS()
-	target, _ := mountFake(t, fake, defaultSettings(), nil)
+	long := defaultSettings()
+	long.negativeTimeout = time.Hour
+	target, _ := mountFake(t, fake, long, nil)
 	missing := filepath.Join(target, "nope")
 
 	if _, err := os.Stat(missing); !errors.Is(err, syscall.ENOENT) {
