@@ -163,10 +163,11 @@ hash_of() {
 }
 
 # The users, the signing keys and the node list that all servers share. The password hash
-# comes from the server program, so it is written here once and not per server.
+# comes from the server (server_hash_password in server-lib.sh), so it is written here once
+# and not per server.
 make_shared() {
     mkdir -p "$work/shared/users"
-    secret_hash="$(printf 'secret\n' | "$server_bin" hash-password)"
+    secret_hash="$(printf 'secret\n' | server_hash_password "$server_bin")"
     [ -n "$secret_hash" ] || fail "hash-password printed nothing"
     cat >"$work/shared/users/alice.yaml" <<EOF
 password_hash: "$secret_hash"
