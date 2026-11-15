@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.18] - 2026-11-15
+
+- Internal: the compatibility test waits for the server's published release, not just its tag.
+  Nothing changes for users.
+
 ## [0.5.17] - 2026-11-15
 
 - Internal: an interrupted FreeBSD image unpack is no longer mistaken for a cached image. Nothing
