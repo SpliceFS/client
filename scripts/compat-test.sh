@@ -219,7 +219,7 @@ EOF
     printf 'secret\n' >"$work/c/secret"
     chmod 600 "$work/c/secret"
     printf 'cluster: test\ntarget: %s\n' "$work/mnt" >"$work/c/mounts.d/m.yaml"
-    "$client_bin" --config "$work/c" mount >"$work/client.log" 2>&1 &
+    "$client_bin" --config "$work/c" >"$work/client.log" 2>&1 &
     client_pid=$!
 }
 

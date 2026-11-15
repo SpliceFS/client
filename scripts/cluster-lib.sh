@@ -362,7 +362,7 @@ share_listable() {
 
 start_client() {
     make_client_config
-    "$client_bin" --config "$work/c" mount >"$work/client.log" 2>&1 &
+    "$client_bin" --config "$work/c" >"$work/client.log" 2>&1 &
     client_pid=$!
     watch_pid="$client_pid"
     wait_until 30 "the mount at $work/mnt can be listed" share_listable

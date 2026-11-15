@@ -38,7 +38,7 @@ required_modules=fusefs
 # seconds first. Stopping the service makes daemon(8) end the client, which unmounts
 # everything.
 command=/usr/sbin/daemon
-command_args="-f -r -R 5 -P ${pidfile} -p ${childpidfile} -o ${logfile} ${program} mount"
+command_args="-f -r -R 5 -P ${pidfile} -p ${childpidfile} -o ${logfile} ${program}"
 
 extra_commands=reload
 start_precmd=splicefs_prestart
