@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.20] - 2026-11-15
+
+- Internal: the cluster scenarios make the fault happen before the reader continues, by signal
+  instead of a fixed pause. Nothing changes for users.
+
 ## [0.5.19] - 2026-11-15
 
 - Internal: the FreeBSD test proves a reload was applied before it checks the service. Nothing
