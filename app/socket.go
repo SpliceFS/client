@@ -58,6 +58,7 @@ type system struct {
 	abs       func(string) (string, error)
 	lstat     func(string) (fs.FileInfo, error)
 	chmod     func(string, fs.FileMode) error
+	flock     func(fd, how int) error
 	dial      func(ctx context.Context, path string) (net.Conn, error)
 	// clearMounts removes the mounts that a client that died left behind.
 	clearMounts func(ctx context.Context, recordPath string, targets []string) ([]nfs.Cleared, error)
@@ -72,6 +73,7 @@ func systemHost() system {
 		abs:         filepath.Abs,
 		lstat:       os.Lstat,
 		chmod:       os.Chmod,
+		flock:       syscall.Flock,
 		clearMounts: nfs.ClearStale,
 		dial: func(ctx context.Context, path string) (net.Conn, error) {
 			var d net.Dialer
@@ -130,32 +132,43 @@ func (s system) absPath(p string) (string, error) {
 	return filepath.Clean(abs), nil
 }
 
-// socket is the listening control socket. Closing it removes the socket file.
+// socket is the listening control socket. Closing it removes the socket file and gives
+// the lock back.
 type socket struct {
 	*net.UnixListener
 
+	// lock is the open lock file; the lock lasts as long as it stays open.
+	lock *os.File
 	once sync.Once
 	err  error
 }
 
-// Close closes the socket and removes its file. It may be called more than once.
+// Close closes the socket, removes its file and gives the lock back, in that order: a
+// client that takes the lock at once must not find the old socket file still there. It may
+// be called more than once.
 func (s *socket) Close() error {
-	s.once.Do(func() { s.err = s.UnixListener.Close() })
+	s.once.Do(func() { s.err = errors.Join(s.UnixListener.Close(), s.lock.Close()) })
 	return s.err
 }
 
-// claim creates the control socket at path with mode 0600. A socket file left by a
-// client that crashed is removed, but only after nothing answers on it: deleting the
-// socket of a running client would leave it unreachable and let a second one start.
+// claim creates the control socket at path with mode 0600, after taking the lock that
+// only one client of a configuration can hold. With the lock held, no other client is
+// between its own check and removal, so a socket file left by a client that crashed is
+// removed, but only after nothing answers on it: deleting the socket of a running client
+// would leave it unreachable and let a second one start.
 func (s system) claim(ctx context.Context, path string) (*socket, error) {
 	if err := s.prepareDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	listener, err := s.listen(ctx, path)
+	lock, err := s.lockSocket(path)
 	if err != nil {
 		return nil, err
 	}
-	sock := &socket{UnixListener: listener}
+	listener, err := s.listen(ctx, path)
+	if err != nil {
+		return nil, errors.Join(err, lock.Close())
+	}
+	sock := &socket{UnixListener: listener, lock: lock}
 	if err := s.chmod(path, privateFileMode); err != nil {
 		return nil, errors.Join(fmt.Errorf("restrict %s: %w", path, err), sock.Close())
 	}
@@ -183,7 +196,9 @@ func listenUnix(path string) (*net.UnixListener, error) {
 	return listener, nil
 }
 
-// clearStale removes the file at path if no client answers on it.
+// clearStale removes the file at path if no client answers on it. Every client of this
+// version holds the lock for as long as it listens, so one that answers here belongs to
+// an earlier version, which did not take the lock, or to something else.
 func (s system) clearStale(ctx context.Context, path string) error {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()

@@ -275,6 +275,11 @@ as root, which the packages do, and `mount` must be run by root, or by that user
 the helper finds the client of `/etc/splicefs/client`. To use another configuration folder,
 set `SPLICEFS_CONFIG` to it in the environment of `mount`.
 
+Only one client can run for a configuration folder. It holds a lock on a file with the ending
+`.lock`, next to the control socket, until it ends, and a second client that starts on the same
+folder fails with an error that says a client is already running. Leave the file in place; a
+crash or a reboot frees the lock, and the new client replaces the socket the crash left behind.
+
 ## Applying changes
 
 The client applies changes to `conf.d/`, `clusters.d/` and `mounts.d/` without a restart. Send

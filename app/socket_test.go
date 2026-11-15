@@ -228,6 +228,134 @@ func TestClaimRefusesALiveSocket(t *testing.T) {
 	}
 }
 
+// claimResult is what one claim returned.
+type claimResult struct {
+	sock *socket
+	err  error
+}
+
+// holdAfterTheCheck makes every claim of sys that has checked a leftover socket report it
+// on settled and then wait for release, which holds it between the check and the removal.
+func holdAfterTheCheck(sys *system, settled chan<- struct{}, release <-chan struct{}) {
+	checkLeftover := sys.dial
+	sys.dial = func(ctx context.Context, path string) (net.Conn, error) {
+		conn, err := checkLeftover(ctx, path)
+		settled <- struct{}{}
+		<-release
+		return conn, err
+	}
+}
+
+// endClaims frees the waiting claims one at a time, each only after the one before has
+// ended, and returns what both claims returned.
+func endClaims(release chan<- struct{}, results <-chan claimResult) []claimResult {
+	var ended []claimResult
+	for len(ended) < 2 {
+		select {
+		case res := <-results:
+			ended = append(ended, res)
+		case release <- struct{}{}:
+			ended = append(ended, <-results)
+		}
+	}
+	return ended
+}
+
+// TestRacingClaimsOfAStaleSocketAdmitOnlyOne makes the claims overlap on purpose. The dial
+// that checks the leftover socket reports once its answer is known and then waits, so the
+// test holds every claim that got that far between the check and the removal, which is
+// where two claims used to both decide that the leftover was theirs to remove. A claim is
+// settled when it waits there or has already been refused. The test starts releasing the
+// waiting claims only when both are settled, and frees one at a time, each after the one
+// before has ended, so the order is the same on every run and never depends on speed.
+func TestRacingClaimsOfAStaleSocketAdmitOnlyOne(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(shortDir(t), "c.sock")
+	staleSocket(t, path)
+
+	settled := make(chan struct{}, 4)
+	release := make(chan struct{})
+	sys := systemHost()
+	holdAfterTheCheck(&sys, settled, release)
+	results := make(chan claimResult, 2)
+	for range 2 {
+		go func() {
+			sock, err := sys.claim(t.Context(), path)
+			results <- claimResult{sock, err}
+			settled <- struct{}{}
+		}()
+	}
+	<-settled
+	<-settled
+
+	var started, refused int
+	for _, res := range endClaims(release, results) {
+		switch {
+		case res.err == nil:
+			started++
+			t.Cleanup(func() { closeQuietly(res.sock) })
+		case errors.Is(res.err, ErrAlreadyRunning):
+			refused++
+		default:
+			t.Errorf("claim failed for another reason: %v", res.err)
+		}
+	}
+	if started != 1 || refused != 1 {
+		t.Errorf("%d claims started and %d were refused, want 1 and 1", started, refused)
+	}
+}
+
+// TestClaimRefusesASocketThatAnswersWithoutTheLock covers a client that holds no lock, such
+// as one of an earlier version running next to this one: it is still a client, and its
+// socket must not be removed.
+func TestClaimRefusesASocketThatAnswersWithoutTheLock(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(shortDir(t), "c.sock")
+	ln, err := listenUnixSocket(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeQuietly(ln)
+
+	_, err = systemHost().claim(t.Context(), path)
+	errIs(t, err, ErrAlreadyRunning)
+	if !answers(path) {
+		t.Error("the socket of the running client was removed")
+	}
+}
+
+func TestClaimGivesTheLockBackWhenItFails(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(shortDir(t), "c.sock")
+	sys := systemHost()
+	sys.chmod = func(string, fs.FileMode) error { return errors.New("not permitted") }
+	if _, err := sys.claim(t.Context(), path); err == nil {
+		t.Fatal("claim succeeded although the mode cannot be set")
+	}
+	sock, err := systemHost().claim(t.Context(), path)
+	if err != nil {
+		t.Fatalf("the lock was not given back: %v", err)
+	}
+	closeQuietly(sock)
+}
+
+func TestClaimIsFreeAfterClose(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(shortDir(t), "c.sock")
+	first, err := systemHost().claim(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := systemHost().claim(t.Context(), path)
+	if err != nil {
+		t.Fatalf("the lock was not given back by Close: %v", err)
+	}
+	closeQuietly(second)
+}
+
 // claimSetup prepares a failing claim in a fresh directory and returns the socket path to claim.
 type claimSetup func(t *testing.T, dir string, sys *system) string
 
@@ -268,7 +396,24 @@ func setupDirectoryWritableByOthers(t *testing.T, dir string, _ *system) string 
 
 func setupPathTooLong(t *testing.T, dir string, _ *system) string {
 	t.Helper()
-	return filepath.Join(dir, strings.Repeat("x", 300)+".sock")
+	// Too long for a socket address, short enough for the lock file next to it.
+	return filepath.Join(dir, strings.Repeat("x", 200)+".sock")
+}
+
+func setupLockFileCannotBeOpened(t *testing.T, dir string, _ *system) string {
+	t.Helper()
+	path := filepath.Join(dir, "c.sock")
+	// A directory where the lock file belongs.
+	if err := os.Mkdir(lockPath(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func setupLockCallFails(t *testing.T, dir string, sys *system) string {
+	t.Helper()
+	sys.flock = func(int, int) error { return errors.New("no locks here") }
+	return filepath.Join(dir, "c.sock")
 }
 
 func setupLeftoverCannotBeChecked(t *testing.T, dir string, sys *system) string {
@@ -307,6 +452,8 @@ func TestClaimFailures(t *testing.T) {
 		{"directory is a symbolic link", setupDirectoryIsALink, "is not a directory"},
 		{"directory is writable by others", setupDirectoryWritableByOthers, "can be written by other users"},
 		{"path cannot be bound", setupPathTooLong, "listen on"},
+		{"lock file cannot be opened", setupLockFileCannotBeOpened, "open lock file"},
+		{"lock call fails", setupLockCallFails, "no locks here"},
 		{"a leftover cannot be checked", setupLeftoverCannotBeChecked, "check for a running client"},
 		{"a leftover cannot be removed", setupLeftoverCannotBeRemoved, "remove stale socket"},
 		{"the mode cannot be set", setupModeCannotBeSet, "restrict"},

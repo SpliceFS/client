@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.24] - 2026-11-15
+
+- Starting a second client on the same configuration while one runs is now always refused, also
+  right after a crash.
+
 ## [0.5.23] - 2026-11-15
 
 - Internal: tests prove the client keeps running after its mounts end by a round trip with the run
