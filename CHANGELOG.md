@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.22] - 2026-11-15
+
+- Internal: a macOS test no longer declares a slow but healthy unmount hung. Nothing changes for
+  users.
+
 ## [0.5.21] - 2026-11-15
 
 - Internal: NFS and FUSE tests no longer depend on how fast the machine is. Nothing changes for
