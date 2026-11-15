@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.19] - 2026-11-15
+
+- Internal: the FreeBSD test proves a reload was applied before it checks the service. Nothing
+  changes for users.
+
 ## [0.5.18] - 2026-11-15
 
 - Internal: the compatibility test waits for the server's published release, not just its tag.
