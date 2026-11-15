@@ -25,7 +25,7 @@ type fullStack struct {
 	mount     *clienttest.Mount
 	ready     chan struct{}
 	backend   backend
-	// stop ends the mount command that startMount started, the way a stop signal does.
+	// stop ends the service that startService started, the way a stop signal does.
 	stop context.CancelFunc
 }
 
@@ -59,16 +59,16 @@ func newFullStack(t *testing.T, fsys core.FS, mounter app.Mounter) *fullStack {
 	return stack
 }
 
-// startMount runs "splicefs mount" and returns a channel that receives its exit status
+// startService runs "splicefs" and returns a channel that receives its exit status
 // and stderr when it ends.
-func (stack *fullStack) startMount() <-chan result {
+func (stack *fullStack) startService() <-chan result {
 	ended := make(chan result, 1)
 	ctx, stop := context.WithCancel(context.Background())
 	stack.stop = stop
 	stack.t.Cleanup(stop)
 	go func() {
 		var out, errOut bytes.Buffer
-		status := execute(ctx, []string{"--config", stack.configDir, "mount"}, &out, &errOut, stack.backend)
+		status := execute(ctx, []string{"--config", stack.configDir}, &out, &errOut, stack.backend)
 		ended <- result{status: status, stdout: out.String(), stderr: errOut.String()}
 	}()
 	return ended
@@ -97,7 +97,7 @@ type result struct {
 func TestRunningClientAnswersOnTheControlSocket(t *testing.T) {
 	t.Parallel()
 	stack := newFullStack(t, nil, nil)
-	ended := stack.startMount()
+	ended := stack.startService()
 	<-stack.ready
 
 	report, err := stack.report()
@@ -127,7 +127,7 @@ func TestRunningClientAnswersOnTheControlSocket(t *testing.T) {
 	}
 	stack.stop()
 	if end := <-ended; end.status != cli.ExitOK {
-		t.Errorf("mount ended with %+v after it was stopped", end)
+		t.Errorf("service ended with %+v after it was stopped", end)
 	}
 	if _, err := stack.report(); !errors.Is(err, app.ErrNotRunning) {
 		t.Errorf("status after the client ended = %v, want ErrNotRunning", err)
@@ -139,22 +139,22 @@ func TestRunningClientAnswersOnTheControlSocket(t *testing.T) {
 
 func isMounted(m app.MountReport) bool { return m.State == app.StateMounted }
 
-func TestMountRefusesASecondClient(t *testing.T) {
+func TestSecondServiceIsRefused(t *testing.T) {
 	t.Parallel()
 	stack := newFullStack(t, nil, nil)
-	ended := stack.startMount()
+	ended := stack.startService()
 	<-stack.ready
 
 	var out, errOut bytes.Buffer
-	status := execute(context.Background(), []string{"--config", stack.configDir, "mount"}, &out, &errOut, stack.backend)
+	status := execute(context.Background(), []string{"--config", stack.configDir}, &out, &errOut, stack.backend)
 	if status != cli.ExitError || !strings.Contains(errOut.String(), "a client is already running for this configuration") {
-		t.Errorf("second mount: status %d stderr %q", status, errOut.String())
+		t.Errorf("second service: status %d stderr %q", status, errOut.String())
 	}
 	if err := stack.unmount(true); err != nil {
 		t.Errorf("unmount: %v", err)
 	}
 	stack.stop()
 	if end := <-ended; end.status != cli.ExitOK {
-		t.Errorf("first mount ended with %+v", end)
+		t.Errorf("first service ended with %+v", end)
 	}
 }

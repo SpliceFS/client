@@ -199,7 +199,7 @@ func TestUnknownDefaultConfigDir(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"mount", []string{"mount"}},
+		{"service", nil},
 		{"config check", []string{"config", "check"}},
 		{"config show", []string{"config", "show"}},
 	}
@@ -227,7 +227,7 @@ func TestDefaultConfigDirIsNotLookedUp(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"directory given", []string{"--config", "/etc/example", "mount"}},
+		{"directory given", []string{"--config", "/etc/example"}},
 		{"version", []string{"--version"}},
 		{"help", []string{"--help"}},
 	}

@@ -18,11 +18,11 @@ import (
 // so that no other command of this test binary is running when the signal arrives.
 //
 //nolint:paralleltest // it sends a signal to the whole test process
-func TestMountStopsOnSignal(t *testing.T) {
+func TestServiceStopsOnSignal(t *testing.T) {
 	for name, sig := range map[string]syscall.Signal{"SIGTERM": syscall.SIGTERM, "SIGINT": syscall.SIGINT} {
 		t.Run(name, func(t *testing.T) {
 			stack := newFullStack(t, nil, nil)
-			ended := stack.startMount()
+			ended := stack.startService()
 			<-stack.ready
 			if _, err := stack.report(); err != nil {
 				t.Fatalf("status: %v", err)
@@ -41,11 +41,11 @@ func TestMountStopsOnSignal(t *testing.T) {
 	}
 }
 
-// TestMountReceivesSIGHUP sends SIGHUP while the run is active, which is the only time the
-// command has asked for it. A SIGHUP outside a mount would end the test process.
+// TestServiceReceivesSIGHUP sends SIGHUP while the run is active, which is the only time the
+// command has asked for it. A SIGHUP outside the service would end the test process.
 //
 //nolint:paralleltest // it sends SIGHUP to the whole test process
-func TestMountReceivesSIGHUP(t *testing.T) {
+func TestServiceReceivesSIGHUP(t *testing.T) {
 	cfg := &config.Config{}
 	b, recorded := fakeBackend(cfg, nil, nil)
 	b.run = func(_ context.Context, _ *config.Config, _ []string, opts app.Options) error {
@@ -66,7 +66,7 @@ func TestMountReceivesSIGHUP(t *testing.T) {
 		}
 		return nil
 	}
-	ran := executeWith(b, "--config", "/etc/example", "mount")
+	ran := executeWith(b, "--config", "/etc/example")
 	if ran.status != cli.ExitOK {
 		t.Fatalf("status %d\n%s", ran.status, ran.stderr)
 	}

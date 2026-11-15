@@ -107,7 +107,7 @@ func TestHelp(t *testing.T) {
 	helpRequests := [][]string{
 		{"-h"},
 		{"--help"},
-		{"mount", "--help"},
+		{"--log-level", "debug", "--help"},
 		{"--config", "/x", "config", "-h"},
 	}
 	for _, args := range helpRequests {
@@ -125,21 +125,22 @@ func TestBadUsage(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"no command", nil, "missing command"},
-		{"only global flags", []string{"--config", "/x"}, "missing command"},
 		{"unknown command", []string{"frobnicate"}, `unknown command "frobnicate"`},
+		{"mount is not a command", []string{"mount"}, `unknown command "mount"`},
+		{"targets are not words", []string{"/mnt/a"}, `unknown command "/mnt/a"`},
 		{"umount is the control tool's", []string{"umount"}, `unknown command "umount"`},
 		{"status is the control tool's", []string{"status"}, `unknown command "status"`},
-		{"unknown global flag", []string{"--bogus", "mount"}, "flag provided but not defined: -bogus"},
+		{"unknown global flag", []string{"--bogus"}, "flag provided but not defined: -bogus"},
 		{"missing value", []string{"--config"}, "flag needs an argument"},
-		{"bad log level", []string{"--log-level", "loud", "mount"}, `invalid --log-level "loud"`},
-		{"log level slog accepts but we do not", []string{"--log-level", "info+2", "mount"}, `invalid --log-level "info+2"`},
-		{"unknown mount flag", []string{"mount", "--force"}, "flag provided but not defined: -force"},
+		{"missing target", []string{"--target"}, "flag needs an argument"},
+		{"bad log level", []string{"--log-level", "loud"}, `invalid --log-level "loud"`},
+		{"log level slog accepts but we do not", []string{"--log-level", "info+2"}, `invalid --log-level "info+2"`},
+		{"umount is the control tool's", []string{"--force"}, "flag provided but not defined: -force"},
 		{"config without a word", []string{"config"}, "config needs one of: check, show"},
 		{"config with an unknown word", []string{"config", "fix"}, "config needs one of: check, show"},
 		{"config with two words", []string{"config", "check", "show"}, "config needs one of"},
 		{"unknown config flag", []string{"config", "--json", "check"}, "not defined: -json"},
-		{"global flag after the command", []string{"mount", "--config", "/x"}, "flag provided but not defined: -config"},
+		{"global flag after the command", []string{"config", "--config", "/x"}, "flag provided but not defined: -config"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -158,32 +159,32 @@ func TestBadUsage(t *testing.T) {
 
 func TestVersionWinsOverACommand(t *testing.T) {
 	t.Parallel()
-	ran := execFake("--version", "mount")
+	ran := execFake("--version", "config", "check")
 	if want := "splicefs " + version.String() + "\n"; ran.status != cli.ExitOK || ran.stdout != want {
 		t.Errorf("status %d stdout %q", ran.status, ran.stdout)
 	}
 }
 
-// mountedWith is what a mount command handed to the client library.
-type mountedWith struct {
+// servedWith is what the client was started with.
+type servedWith struct {
 	loadDir   string
 	configDir string
 	targets   []string
 }
 
-func TestMountLoadsTheConfigurationAndPassesTargets(t *testing.T) {
+func TestServiceLoadsTheConfigurationAndPassesTargets(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Mounts: []config.Mount{{Target: "/mnt/a"}}}
 	tests := []struct {
 		name string
 		args []string
-		want mountedWith
+		want servedWith
 	}{
-		{"defaults", []string{"mount"}, mountedWith{defaultDir, defaultDir, nil}},
+		{"defaults", nil, servedWith{defaultDir, defaultDir, nil}},
 		{
 			"targets and options",
-			[]string{"--config", "/etc/example", "--log-level", "debug", "mount", "/mnt/a", "/mnt/b"},
-			mountedWith{"/etc/example", "/etc/example", []string{"/mnt/a", "/mnt/b"}},
+			[]string{"--config", "/etc/example", "--log-level", "debug", "--target", "/mnt/a", "--target", "/mnt/b"},
+			servedWith{"/etc/example", "/etc/example", []string{"/mnt/a", "/mnt/b"}},
 		},
 	}
 	for _, tt := range tests {
@@ -194,7 +195,7 @@ func TestMountLoadsTheConfigurationAndPassesTargets(t *testing.T) {
 			if ran.status != cli.ExitOK || ran.stdout != "" {
 				t.Fatalf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
-			got := mountedWith{recorded.loadDir, recorded.runOpts.ConfigDir, recorded.runTargets}
+			got := servedWith{recorded.loadDir, recorded.runOpts.ConfigDir, recorded.runTargets}
 			if got.loadDir != tt.want.loadDir || got.configDir != tt.want.configDir ||
 				!slices.Equal(got.targets, tt.want.targets) {
 				t.Errorf("mounted with %+v, want %+v", got, tt.want)
@@ -206,7 +207,7 @@ func TestMountLoadsTheConfigurationAndPassesTargets(t *testing.T) {
 	}
 }
 
-func TestMountHandsTheClientItsHooks(t *testing.T) {
+func TestServiceHandsTheClientItsHooks(t *testing.T) {
 	t.Parallel()
 	cfg := &config.Config{Mounts: []config.Mount{{Target: "/mnt/a"}}}
 	b, recorded := fakeBackend(cfg, nil, nil)
@@ -215,7 +216,7 @@ func TestMountHandsTheClientItsHooks(t *testing.T) {
 		notified = append(notified, state)
 		return nil
 	}
-	if ran := executeWith(b, "mount"); ran.status != cli.ExitOK {
+	if ran := executeWith(b); ran.status != cli.ExitOK {
 		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
 	if recorded.runOpts.Reload == nil {
@@ -230,7 +231,7 @@ func TestMountHandsTheClientItsHooks(t *testing.T) {
 	}
 }
 
-func TestMountLogLevel(t *testing.T) {
+func TestServiceLogLevel(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name      string
@@ -238,9 +239,9 @@ func TestMountLogLevel(t *testing.T) {
 		wantDebug bool
 		wantInfo  bool
 	}{
-		{"info is the default", []string{"mount"}, false, true},
-		{"debug shows everything", []string{"--log-level", "debug", "mount"}, true, true},
-		{"warn hides info", []string{"--log-level", "warn", "mount"}, false, false},
+		{"info is the default", nil, false, true},
+		{"debug shows everything", []string{"--log-level", "debug"}, true, true},
+		{"warn hides info", []string{"--log-level", "warn"}, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -263,7 +264,7 @@ func TestMountLogLevel(t *testing.T) {
 	}
 }
 
-func TestMountFailures(t *testing.T) {
+func TestServiceFailures(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -277,7 +278,7 @@ func TestMountFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			b, recorded := fakeBackend(&config.Config{}, tt.loadErr, tt.runErr)
-			ran := executeWith(b, "mount")
+			ran := executeWith(b)
 			want := tt.loadErr
 			if want == nil {
 				want = tt.runErr

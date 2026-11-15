@@ -19,14 +19,18 @@ import (
 
 const (
 	program = "splicefs"
-	usage   = `usage: splicefs [--config DIR] [--log-level debug|info|warn|error] mount [TARGET...]
+	usage   = `usage: splicefs [--config DIR] [--log-level debug|info|warn|error] [--target TARGET]...
        splicefs [--config DIR] config check
        splicefs [--config DIR] config show
        splicefs --version
 
-mount keeps running, with or without mounts, until it is stopped. SIGHUP applies the
-configuration without a restart: mount files that were added are mounted, removed ones are
-detached, changed ones are mounted again.
+Without a command, splicefs is the client: it mounts what the configuration names and keeps
+running, with or without mounts, until it is stopped. --target limits it to the mounts with
+that target and can be given more than once. SIGHUP applies the configuration without a
+restart: mount files that were added are mounted, removed ones are detached, changed ones
+are mounted again.
+
+Unmounting, the status and mounting one more directory are commands of splicefsctl.
 `
 )
 
@@ -40,7 +44,7 @@ func main() {
 }
 
 // run is the whole program. argv is the process's os.Args, program name first. It returns
-// the exit status. A mount stays in the foreground until ctx is cancelled or the process
+// the exit status. The service stays in the foreground until ctx is cancelled or the process
 // receives SIGINT or SIGTERM.
 func run(ctx context.Context, argv []string, _ io.Reader, stdout, stderr io.Writer) int {
 	_, args := cli.SplitArgv(argv)
@@ -77,7 +81,7 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer, b bac
 	if err := inv.ResolveConfigDir(b.defaultConfigDir); err != nil {
 		return prog.Fail(stderr, err)
 	}
-	// A stop signal ends the command that is running: it unmounts for mount.
+	// A stop signal ends the service, which unmounts what it mounted.
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := b.runCommand(ctx, inv, stdout, stderr); err != nil {
@@ -87,11 +91,10 @@ func execute(ctx context.Context, args []string, stdout, stderr io.Writer, b bac
 }
 
 func (b backend) runCommand(ctx context.Context, inv invocation, stdout, stderr io.Writer) error {
-	switch inv.command {
-	case commandMount:
-		return b.mount(ctx, inv, stderr)
+	if inv.command == commandConfig {
+		return b.runConfig(inv, stdout)
 	}
-	return b.runConfig(inv, stdout)
+	return b.serve(ctx, inv, stderr)
 }
 
 // runConfig implements config check and config show. A configuration with problems is an
@@ -109,9 +112,9 @@ func (b backend) runConfig(inv invocation, stdout io.Writer) error {
 	return showConfig(stdout, cfg)
 }
 
-// mount loads the configuration and keeps the mounts up until ctx ends. SIGHUP makes the
+// serve loads the configuration and keeps the mounts up until ctx ends. SIGHUP makes the
 // run read the same configuration directory again.
-func (b backend) mount(ctx context.Context, inv invocation, stderr io.Writer) error {
+func (b backend) serve(ctx context.Context, inv invocation, stderr io.Writer) error {
 	cfg, err := b.loadConfig(inv.ConfigDir)
 	if err != nil {
 		return err
