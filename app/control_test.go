@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -215,21 +216,18 @@ func TestUnmountOverTheSocket(t *testing.T) {
 
 func TestUnmountEverythingKeepsTheRunGoing(t *testing.T) {
 	t.Parallel()
-	env := newHarness(t)
-	r := env.start()
+	rig := newHealthRig(t, defaultProbeFailures, defaultProbeTimeout)
+	env := rig.env
+	rig.start()
 	if err := Unmount(context.Background(), env.socket, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "every view to be released", func() bool { return env.core.releasedCount() == 3 })
-	select {
-	case err := <-r.result:
-		t.Fatalf("Run ended with %v after the last unmount, want it to idle", err)
-	default:
-	}
-	if err := r.stop(); err != nil {
+	rig.wantAlive()
+	if err := rig.run.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil after a clean stop", err)
 	}
-	if got := env.notes.got(); len(got) != 2 || got[1] != "STOPPING=1" {
+	if got := env.notes.got(); !slices.Equal(got, []string{"READY=1", "WATCHDOG=1", "WATCHDOG=1", "STOPPING=1"}) {
 		t.Errorf("notifications = %v", got)
 	}
 }

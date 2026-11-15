@@ -461,24 +461,21 @@ func TestRunReportsAMountThatCannotBeRemoved(t *testing.T) {
 
 func TestRunKeepsRunningWhenEveryMountEnds(t *testing.T) {
 	t.Parallel()
-	env := newHarness(t)
-	r := env.start()
+	rig := newHealthRig(t, defaultProbeFailures, defaultProbeTimeout)
+	env := rig.env
+	rig.start()
 	for _, target := range env.mounter.targets() {
 		env.mounter.get(target).end(nil)
 	}
 	waitFor(t, "every view to be released", func() bool { return env.core.releasedCount() == 3 })
-	select {
-	case err := <-r.result:
-		t.Fatalf("Run ended with %v after its mounts ended, want it to idle", err)
-	default:
-	}
+	rig.wantAlive()
 	if got := len(env.status().Mounts); got != 0 {
 		t.Errorf("report lists %d mounts, want none", got)
 	}
-	if err := r.stop(); err != nil {
+	if err := rig.run.stop(); err != nil {
 		t.Fatalf("Run = %v, want nil after a clean stop", err)
 	}
-	if got := env.notes.got(); !slices.Equal(got, []string{"READY=1", "STOPPING=1"}) {
+	if got := env.notes.got(); !slices.Equal(got, []string{"READY=1", "WATCHDOG=1", "WATCHDOG=1", "STOPPING=1"}) {
 		t.Errorf("notifications = %v", got)
 	}
 	for _, target := range env.mounter.targets() {

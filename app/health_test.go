@@ -141,12 +141,17 @@ func (rig *healthRig) start() {
 	rig.run = rig.env.start()
 }
 
-// tick starts a round without waiting for it.
+// tick starts a round without waiting for it. It fails at once if the run has ended, because
+// an ended run takes no more ticks.
 func (rig *healthRig) tick() {
 	rig.env.t.Helper()
 	rig.rounds++
 	select {
 	case rig.ticks <- time.Now():
+	case err := <-rig.run.result:
+		// Put back for the cleanup, which waits for the result.
+		rig.run.result <- err
+		rig.env.t.Fatalf("Run ended with %v, so it did not take the tick", err)
 	case <-time.After(reloadTimeout):
 		rig.env.t.Fatal("the run did not take the tick")
 	}
@@ -161,6 +166,18 @@ func (rig *healthRig) round() {
 	case <-time.After(reloadTimeout):
 		rig.env.t.Fatal("the round did not send its heartbeat")
 	}
+}
+
+// wantAlive proves that the run loop is running now: it takes ticks sent by hand and ends each
+// round with its heartbeat. Looking at the result of Run proves nothing, because a run that
+// has decided to stop may not have returned yet. The control socket proves nothing either,
+// because it answers until the stop closes it. Only the run loop takes ticks, so a loop that
+// is leaving takes none. There are two rounds because a faulty loop may leave only after the
+// first one, which the second then catches.
+func (rig *healthRig) wantAlive() {
+	rig.env.t.Helper()
+	rig.round()
+	rig.round()
 }
 
 // wantBeats checks that every round sent exactly one heartbeat.
