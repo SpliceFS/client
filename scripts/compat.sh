@@ -117,14 +117,16 @@ timed "build the client" go build -buildvcs=false \
     -o "$tmp/splicefs" ./cmd/splicefs
 
 # Each server is built from its tag with that tag as its version, so that it reports what a
-# release reports. A tag that is listed twice is built once.
+# release reports. A tag that is listed twice is built once. Every program of the tag goes
+# into one folder, so that a newer server's splicefsdctl sits next to its splicefsd, where
+# server_hash_password looks for it.
 build_server() {
     dir="$tmp/server-$1"
     if [ ! -x "$dir/splicefsd" ]; then
         git clone -q --depth 1 --branch "$1" https://github.com/SpliceFS/server "$dir/src"
         (cd "$dir/src" && go build -buildvcs=false \
             -ldflags "-X github.com/SpliceFS/server/internal/version.version=$1" \
-            -o "$dir/splicefsd" ./cmd/splicefsd)
+            -o "$dir/" ./cmd/...)
     fi
 }
 
