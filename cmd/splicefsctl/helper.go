@@ -15,7 +15,7 @@ import (
 
 const (
 	// helperProgram is the name mount(8) looks for when it is given "-t splicefs" or reads
-	// an fstab line of that type. The packages link it to the splicefs program.
+	// an fstab line of that type. The packages link it to the splicefsctl program.
 	helperProgram = "mount.splicefs"
 	helperUsage   = "usage: mount.splicefs CLUSTER:PATH TARGET [-sfnv] [-o OPTIONS]\n"
 	// configEnv names the configuration directory when the helper runs, because mount(8)

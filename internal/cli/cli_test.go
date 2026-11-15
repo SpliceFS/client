@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"slices"
 	"testing"
 
 	"github.com/SpliceFS/client/internal/cli"
@@ -42,6 +43,29 @@ func TestHandled(t *testing.T) {
 			if done != tt.wantDone || status != tt.wantStatus || out.String() != tt.wantOut || errOut.String() != tt.wantErr {
 				t.Errorf("Handled = %d, %v, stdout %q, stderr %q; want %d, %v, %q, %q",
 					status, done, out.String(), errOut.String(), tt.wantStatus, tt.wantDone, tt.wantOut, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSplitArgv(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		argv     []string
+		wantName string
+		wantArgs []string
+	}{
+		{"name only", []string{"tool"}, "tool", nil},
+		{"with a path", []string{"/usr/bin/tool", "a", "b"}, "tool", []string{"a", "b"}},
+		{"no argv", nil, "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			name, args := cli.SplitArgv(tt.argv)
+			if name != tt.wantName || !slices.Equal(args, tt.wantArgs) {
+				t.Errorf("SplitArgv(%q) = %q, %q; want %q, %q", tt.argv, name, args, tt.wantName, tt.wantArgs)
 			}
 		})
 	}

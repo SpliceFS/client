@@ -27,7 +27,7 @@ type helperCalls struct {
 // helperBackend returns a backend whose client answers reply to every mount request, with
 // the given environment, and the working directory /work.
 func helperBackend(env map[string]string, reply error) (backend, *helperCalls) {
-	b, _ := fakeBackend(nil, nil, nil, nil, nil, app.Report{})
+	b, _ := fakeBackend(nil, nil, app.Report{})
 	recorded := &helperCalls{}
 	b.requestMount = func(_ context.Context, socketPath string, req app.MountRequest) error {
 		recorded.requests++
@@ -70,8 +70,8 @@ func TestDispatchByProgramName(t *testing.T) {
 		{"helper path", []string{"/sbin/mount.splicefs", "east:/m", "/mnt/m"}, true, cli.ExitOK},
 		{"helper link in usr", []string{"/usr/sbin/mount.splicefs", "east:/m", "/mnt/m"}, true, cli.ExitOK},
 		{"helper with bad usage", []string{"mount.splicefs"}, true, cli.ExitError},
-		{"normal name", []string{"splicefs", "--version"}, false, cli.ExitOK},
-		{"normal path", []string{"/usr/bin/splicefs", "--version"}, false, cli.ExitOK},
+		{"normal name", []string{"splicefsctl", "--version"}, false, cli.ExitOK},
+		{"normal path", []string{"/usr/bin/splicefsctl", "--version"}, false, cli.ExitOK},
 		{"similar name", []string{"/usr/bin/xmount.splicefs", "--version"}, false, cli.ExitOK},
 		{"no program name", nil, false, cli.ExitUsage},
 	}
@@ -86,7 +86,7 @@ func TestDispatchByProgramName(t *testing.T) {
 			if got := recorded.requests == 1; got != (tt.wantHelper && tt.wantStatus == cli.ExitOK) {
 				t.Errorf("mount requests = %d for helper = %v", recorded.requests, tt.wantHelper)
 			}
-			if !tt.wantHelper && tt.wantStatus == cli.ExitOK && ran.stdout != "splicefs "+version.String()+"\n" {
+			if !tt.wantHelper && tt.wantStatus == cli.ExitOK && ran.stdout != "splicefsctl "+version.String()+"\n" {
 				t.Errorf("stdout = %q, want the version", ran.stdout)
 			}
 		})

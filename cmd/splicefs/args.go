@@ -11,8 +11,6 @@ import (
 // The commands.
 const (
 	commandMount  = "mount"
-	commandUmount = "umount"
-	commandStatus = "status"
 	commandConfig = "config"
 )
 
@@ -24,11 +22,10 @@ const (
 
 // The errors of a command line. Each message is completed with the offending value.
 var (
-	errInvalidLogLevel    = errors.New("invalid --log-level")
-	errMissingCommand     = errors.New("missing command")
-	errUnknownCommand     = errors.New("unknown command")
-	errUnexpectedArgument = errors.New("unexpected argument")
-	errConfigWord         = errors.New("config needs one of: check, show")
+	errInvalidLogLevel = errors.New("invalid --log-level")
+	errMissingCommand  = errors.New("missing command")
+	errUnknownCommand  = errors.New("unknown command")
+	errConfigWord      = errors.New("config needs one of: check, show")
 )
 
 // invocation is a parsed command line.
@@ -36,12 +33,8 @@ type invocation struct {
 	cli.Flags
 	logLevel slog.Level
 	command  string
-	// targets are the mount targets given to mount and umount.
+	// targets are the mount targets given to mount.
 	targets []string
-	// force is the --force flag of umount.
-	force bool
-	// asJSON is the --json flag of status.
-	asJSON bool
 	// configCommand is check or show for the config command.
 	configCommand string
 }
@@ -93,10 +86,6 @@ func (inv *invocation) parseCommand(args []string) error {
 	switch inv.command {
 	case commandMount, commandConfig:
 		// These take no flags.
-	case commandUmount:
-		fs.BoolVar(&inv.force, "force", false, "")
-	case commandStatus:
-		fs.BoolVar(&inv.asJSON, "json", false, "")
 	default:
 		return fmt.Errorf("%w %q", errUnknownCommand, inv.command)
 	}
@@ -104,9 +93,6 @@ func (inv *invocation) parseCommand(args []string) error {
 		return err
 	}
 	inv.targets = fs.Args()
-	if inv.command == commandStatus && len(inv.targets) > 0 {
-		return fmt.Errorf("%w %q", errUnexpectedArgument, inv.targets[0])
-	}
 	if inv.command == commandConfig {
 		return inv.parseConfigCommand()
 	}

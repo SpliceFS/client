@@ -24,8 +24,8 @@ func TestMountStopsOnSignal(t *testing.T) {
 			stack := newFullStack(t, nil, nil)
 			ended := stack.startMount()
 			<-stack.ready
-			if status := stack.command("status"); status.status != cli.ExitOK {
-				t.Fatalf("status: %+v", status)
+			if _, err := stack.report(); err != nil {
+				t.Fatalf("status: %v", err)
 			}
 			if err := syscall.Kill(syscall.Getpid(), sig); err != nil {
 				t.Fatal(err)
@@ -34,7 +34,7 @@ func TestMountStopsOnSignal(t *testing.T) {
 			if end.status != cli.ExitOK {
 				t.Errorf("exit status = %d, want 0\n%s", end.status, end.stderr)
 			}
-			if calls := stack.mount.unmountCalls(); len(calls) != 1 || calls[0] {
+			if calls := stack.mount.UnmountCalls(); len(calls) != 1 || calls[0] {
 				t.Errorf("unmount calls (force) = %v, want one polite unmount", calls)
 			}
 		})
@@ -47,7 +47,7 @@ func TestMountStopsOnSignal(t *testing.T) {
 //nolint:paralleltest // it sends SIGHUP to the whole test process
 func TestMountReceivesSIGHUP(t *testing.T) {
 	cfg := &config.Config{}
-	b, recorded := fakeBackend(cfg, nil, nil, nil, nil, app.Report{})
+	b, recorded := fakeBackend(cfg, nil, nil)
 	b.run = func(_ context.Context, _ *config.Config, _ []string, opts app.Options) error {
 		if err := syscall.Kill(syscall.Getpid(), syscall.SIGHUP); err != nil {
 			return err

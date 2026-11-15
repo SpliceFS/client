@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"path/filepath"
 
 	"github.com/SpliceFS/client/internal/version"
 )
@@ -51,6 +52,15 @@ func (f *Flags) ResolveConfigDir(defaultDir func() (string, error)) error {
 	}
 	f.ConfigDir = dir
 	return nil
+}
+
+// SplitArgv separates the name a program was started under from its arguments. Linux
+// allows a process with no argv at all, so both can be empty.
+func SplitArgv(argv []string) (name string, args []string) {
+	if len(argv) == 0 {
+		return "", nil
+	}
+	return filepath.Base(argv[0]), argv[1:]
 }
 
 // Handled answers what needs no command: a help request, a command line that did not parse
