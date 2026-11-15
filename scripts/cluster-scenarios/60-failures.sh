@@ -12,15 +12,10 @@ fail_out_name="fail-read.bin"
 # The size of the first part that the slow reader copies before its pause.
 fail_first_mib=8
 
-# True once the slow reader has copied its first part, which is when it starts to sleep. The
-# scenario changes the servers then, so that the rest of the read meets the change.
-fail_first_part_read() {
-    fail_first_size="$(stat -c %s "$work/$fail_out_name" 2>/dev/null)" || return 1
-    [ "$fail_first_size" -ge $((fail_first_mib * 1024 * 1024)) ]
-}
-
 # Servers 1, 2 and 3 hold the same 160 MiB file: 32 blocks of 5 MiB, so every server is asked
-# for some of them and the read-ahead has blocks in flight when a server goes away.
+# for some of them and the read-ahead has blocks in flight when a server goes away. It returns
+# when the slow reader has copied its first part and is paused; the scenario then changes the
+# servers and calls slow_read_go, so that the rest of the read meets the change.
 fail_start_big_read() {
     put_random "$work/data1" big.bin $((160 * 1024 * 1024))
     stamp "$work/data1" big.bin "$time_mid"
@@ -28,8 +23,7 @@ fail_start_big_read() {
     put_copy "$work/data1/big.bin" 3 big.bin
     for fail_number in 1 2 3; do start_server "$fail_number"; done
     start_client
-    slow_read_start big.bin "$work/$fail_out_name" "$fail_first_mib" 3
-    wait_until 60 "the slow reader has copied its first part" fail_first_part_read
+    slow_read_start big.bin "$work/$fail_out_name" "$fail_first_mib"
 }
 
 # Waits for the slow reader and compares what it copied with the original file.
@@ -46,17 +40,19 @@ fail_finish_big_read() {
 fail_server_stops_in_read() {
     fail_start_big_read
     stop_server 3
+    slow_read_go
     fail_finish_big_read
 }
 scenario "a server stops in the middle of a read" fail_server_stops_in_read
 
 # Rule: a server that stops and is back a second later does not break the read either, whether
-# the client sees it gone, or back, or both.
+# the client sees it gone, or back, or both. The second of down time is part of the rule.
 fail_server_restarts_in_read() {
     fail_start_big_read
     stop_server 2
     sleep 1
     start_server 2
+    slow_read_go
     fail_finish_big_read
 }
 scenario "a server stops and comes back in the middle of a read" fail_server_restarts_in_read

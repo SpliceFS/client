@@ -18,8 +18,9 @@
 # has ended, waiting longer for it only delays the report).
 client_pid=""
 watch_pid=""
-# The background reader of slow_read_start.
+# The background reader of slow_read_start, and whether slow_read_go was called for it.
 slow_pid=""
+slow_released=""
 # The name of the running scenario, for the failure message.
 current_scenario="set-up"
 # With a mount path of "/" every share of the cluster is a folder below the mount point
@@ -590,33 +591,63 @@ expect_size() {
     wait_until "${3:-45}" "$1 has $2 bytes" size_is "$resolved_path" "$2"
 }
 
-# slow_read_start REL OUT FIRST_MIB PAUSE_SECONDS: a reader in the background copies the first
-# FIRST_MIB mebibytes of the file to OUT, sleeps, then copies the rest from the same open
-# file. The scenario changes things during the sleep. The file stays open in the reader, so
-# the rest is read through the same handle. Its errors go to slow.txt, which the failure
-# report shows.
+# slow_read_start REL OUT FIRST_MIB: a reader in the background copies the first FIRST_MIB
+# mebibytes of the file to OUT, then pauses with the file still open. This function returns
+# when the reader has said that it is paused. The scenario then makes its change (a server
+# stops, a file is overwritten), waits until the change is complete (the stop or the copy
+# has returned), and calls slow_read_go. Only then does the reader copy the rest from the
+# same open file, so every change is done before the rest of the read meets it, however long
+# it takes. Its errors go to slow.txt, which the failure report shows.
+# The reader says that it is paused by creating slow.paused. It waits for the go in a
+# blocking read of the FIFO slow.go. It opens the FIFO for reading and writing before it says
+# that it is paused, so the line that slow_read_go writes stays in the FIFO for it and
+# neither side ever waits for the other to open it.
 slow_read_start() {
     resolve_path "$1"
     slow_source="$resolved_path"
     slow_out="$2"
     slow_first=$(($3 * 1024 * 1024))
-    slow_pause="$4"
+    slow_paused_file="$work/slow.paused"
+    slow_go_fifo="$work/slow.go"
+    slow_released=""
+    rm -f "$slow_paused_file" "$slow_go_fifo"
+    mkfifo "$slow_go_fifo"
     : >"$work/slow.txt"
     (
         # The reader must not run the cleanup of this script, which removes the work folder.
         trap - EXIT INT TERM
         exec 4<"$slow_source"
+        exec 5<>"$slow_go_fifo"
         head -c "$slow_first" <&4 >"$slow_out"
-        sleep "$slow_pause"
+        : >"$slow_paused_file"
+        read -r slow_go_word <&5
         cat <&4 >>"$slow_out"
     ) 2>"$work/slow.txt" &
     slow_pid=$!
+    # A reader that ends before it is paused has failed; there is nothing to wait for then.
+    watch_pid="$slow_pid"
+    wait_until 60 "the slow reader is paused" slow_reader_paused
+    watch_pid=""
+}
+
+slow_reader_paused() {
+    [ -e "$slow_paused_file" ]
+}
+
+# Lets the reader of slow_read_start copy the rest of the file. It writes to a FIFO that the
+# reader holds open, so it returns at once.
+slow_read_go() {
+    [ -n "$slow_pid" ] || fail "slow_read_go without slow_read_start"
+    echo go 1<>"$slow_go_fifo"
+    slow_released=1
 }
 
 # Waits for the reader of slow_read_start (at most 120 s) and fails the scenario when it
-# failed. The caller compares the hash of OUT.
+# failed. The scenario must have called slow_read_go, or the reader waits for it for ever.
+# The caller compares the hash of OUT.
 slow_read_wait() {
     [ -n "$slow_pid" ] || fail "slow_read_wait without slow_read_start"
+    [ -n "$slow_released" ] || fail "slow_read_wait before slow_read_go: the reader is still paused"
     wait_until 120 "the slow reader ends" process_ended "$slow_pid"
     slow_status=0
     wait "$slow_pid" || slow_status=$?

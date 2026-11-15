@@ -20,13 +20,6 @@ live_start() {
     start_client
 }
 
-# True when the file at $1 holds at least $2 bytes. The slow reader writes its first part in
-# one go, so this tells the scenario that the read is now in its pause.
-live_has_bytes() {
-    live_size="$(stat -c %s "$1" 2>/dev/null)" || return 1
-    [ "$live_size" -ge "$2" ]
-}
-
 # Rule: a name that appears on a running server after the mount is up shows in the folder
 # listing once the listing time has passed, and its content is right.
 live_file_added() {
@@ -109,7 +102,8 @@ scenario "a file is replaced on every server while mounted" live_replaced_everyw
 # Rule: a reader that has the file open gets one complete copy, the one it started with, even
 # when one server overwrites its copy with other bytes of the same size and a newer time in the
 # middle of the read. The new bytes are made before the read starts, so that the overwrite in
-# the pause of the reader is a quick copy and not 160 MiB of random data.
+# the pause of the reader is a copy and not 160 MiB of random data. The reader goes on only
+# when the copy has returned.
 live_changes_during_read() {
     live_big_size=$((160 * 1024 * 1024))
     put_random "$work/data1" big.bin "$live_big_size"
@@ -119,10 +113,9 @@ live_changes_during_read() {
     put_random "$live_scratch" big.bin "$live_big_size"
     stamp "$live_scratch" big.bin "$time_new"
     live_start
-    slow_read_start big.bin "$live_scratch/out.bin" 8 3
-    wait_until 30 "the reader has copied its first 8 MiB" live_has_bytes \
-        "$live_scratch/out.bin" $((8 * 1024 * 1024))
+    slow_read_start big.bin "$live_scratch/out.bin" 8
     put_copy "$live_scratch/big.bin" 2 big.bin
+    slow_read_go
     slow_read_wait
     live_read_result="$(hash_of "$live_scratch/out.bin")"
     [ "$live_read_result" = "$live_original_hash" ] ||
