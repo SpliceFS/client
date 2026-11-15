@@ -14,7 +14,7 @@ The client uses two folders:
 see "Settings".
 
 ```
-splicefs --config /srv/splicefs/etc mount
+splicefs --config /srv/splicefs/etc
 ```
 
 Upgrades never touch the files you put in the configuration folder. The package creates three
@@ -216,8 +216,9 @@ On Linux, `mount -t splicefs` and `/etc/fstab` lines of type `splicefs` work too
 in `mounts.d/` is the normal way to define a mount and is what to use first. Use `mount` and
 fstab if you keep all your mounts in fstab, or for a one-off mount.
 
-The helper is `/usr/sbin/mount.splicefs`, a link to `/usr/bin/splicefs` that the packages
-install. `mount` runs it, and it only asks the running client for the mount. The client makes
+The helper is `/usr/sbin/mount.splicefs`, a link to `/usr/bin/splicefsctl` that the packages
+install. `mount` runs it, and it only asks the running client for the mount. The same request
+can be sent without `mount`: `splicefsctl [--config DIR] mount east:/media /mnt/media -o allow_other`. The client makes
 the mount, as it does for a mount file. So the client must be running, and the target folder
 must exist.
 
@@ -315,10 +316,10 @@ Run `splicefs config check` first. It finds mistakes in the files before the cli
   A cluster that cannot be reached is only a warning, and its mounts are made anyway, as at
   start.
 - A mount that cannot be detached is logged (`mount not detached`) and stays as it is.
-- A mount that you unmounted by hand, with `splicefs umount` or with `umount`, stays unmounted
+- A mount that you unmounted by hand, with `splicefsctl umount` or with `umount`, stays unmounted
   until the next reload or restart. A reload mounts it again if its file is still there.
 - The client keeps running when the last mount is gone, and when there never was one.
-- If you started the client with targets (`splicefs mount /mnt/files`), a reload looks only at
+- If you started the client with targets (`splicefs --target /mnt/files`), a reload looks only at
   mount files with those targets.
 
 A password file that cannot be read, two mounts that share a cache folder but set different
@@ -422,25 +423,33 @@ Both commands take `--config DIR`.
 
 ## Commands
 
+The client is the `splicefs` program. The commands that a person runs against the running
+client are in a second program, `splicefsctl`.
+
 ```
-splicefs [--config DIR] [--log-level LEVEL] mount [TARGET...]
-        mount every file in mounts.d, or only the named targets; stays in the foreground, with
-        or without mounts; SIGHUP applies the configuration; SIGINT or SIGTERM unmounts
+splicefs [--config DIR] [--log-level LEVEL] [--target TARGET]...
+        the client: mount every file in mounts.d, or only the mounts with the targets named by
+        --target (which can be given more than once); stays in the foreground, with or
+        without mounts; SIGHUP applies the configuration; SIGINT or SIGTERM unmounts
         everything and exits
-splicefs [--config DIR] umount [--force] [TARGET...]
-        ask the running client to unmount; a mount in use is refused unless --force is given;
-        the client keeps running; on macOS, when no client is running, remove the mounts an
-        earlier client left behind (see below)
-splicefs [--config DIR] status [--json]
-        mounts, nodes with their measured speed, cache use
 splicefs [--config DIR] config check
 splicefs [--config DIR] config show
 splicefs --version
+
+splicefsctl [--config DIR] umount [--force] [TARGET...]
+        ask the running client to unmount; a mount in use is refused unless --force is given;
+        the client keeps running; on macOS, when no client is running, remove the mounts an
+        earlier client left behind (see below)
+splicefsctl [--config DIR] status [--json]
+        mounts, nodes with their measured speed, cache use
+splicefsctl [--config DIR] mount CLUSTER:PATH TARGET [-o OPTIONS]
+        ask the running client for one more mount, as the mount helper does
+splicefsctl --version
 ```
 
 On macOS, a client that dies without unmounting (a crash, `kill -9`) leaves its mounts in
 place, and every program that touches such a folder waits and fails. The client records each
-NFS mount it makes. When no client is running, `splicefs umount [TARGET...]` looks at the
+NFS mount it makes. When no client is running, `splicefsctl umount [TARGET...]` looks at the
 recorded mounts, all of them or only the named targets, and removes each one that is still
 mounted and whose port nothing answers, with `umount -f`. It prints one line for each mount
 it removed, on standard output, and exits 0 when nothing failed. A recorded mount whose port
@@ -448,15 +457,15 @@ still answers is served by a client of another configuration and is left alone, 
 on standard error. If nothing was recorded, or everything recorded is already unmounted, the
 answer is the same as without this feature: `no client is running for this configuration`,
 exit status 1. A failed removal is printed with its target and gives exit status 1.
-`splicefs mount` does not clear such a mount: if the record holds a mount for a target and
-the mount table still lists it, `mount` does not mount there and says to run
-`splicefs umount TARGET`. Linux and FreeBSD keep no record, because FUSE clears a dead mount
+The client does not clear such a mount: if the record holds a mount for a target and
+the mount table still lists it, the client does not mount there and says to run
+`splicefsctl umount TARGET`. Linux and FreeBSD keep no record, because FUSE clears a dead mount
 when the client starts.
 
 `--log-level` takes `debug`, `info`, `warn` or `error`. The client logs to its standard error
 output, which is the journal under systemd and `/var/log/splicefs.log` under OpenRC.
 
-`mount` fails at once if a cluster rejects the user or password, or if a mount cannot be made
+The client fails at once if a cluster rejects the user or password, or if a mount cannot be made
 (a reload only logs these and skips the mount). If a cluster cannot be reached, it mounts anyway
 and the mount starts working when the cluster returns, so a machine can boot before its network
 is up.
@@ -474,7 +483,7 @@ Wants=network-online.target
 
 [Service]
 Type=notify
-ExecStart=/usr/local/bin/splicefs mount
+ExecStart=/usr/local/bin/splicefs
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 CacheDirectory=splicefs
@@ -485,7 +494,7 @@ WantedBy=multi-user.target
 
 The client tells systemd when every mount is up, so units ordered after it can rely on the
 mounts. With nothing configured it reports ready at once and runs without mounts. Stopping the
-unit unmounts everything. Running `splicefs mount` by hand does the same job without the unit.
+unit unmounts everything. Running `splicefs` by hand does the same job without the unit.
 
 The configuration of the server is described in the
 [server configuration reference](https://github.com/SpliceFS/server/blob/main/docs/configuration.md).
