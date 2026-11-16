@@ -5,7 +5,7 @@ import (
 	"slices"
 )
 
-// Status is a snapshot of the client for display, as "splicefs status" prints it.
+// Status is a snapshot of the client for display, as "splicefsctl status" prints it.
 type Status struct {
 	// Clusters is every current cluster, sorted by name.
 	Clusters []ClusterStatus

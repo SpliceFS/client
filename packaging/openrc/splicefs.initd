@@ -6,7 +6,6 @@ description="SpliceFS mounts"
 # Restart=on-failure does in the systemd unit. Stopping the service unmounts everything.
 supervisor=supervise-daemon
 command=/usr/bin/splicefs
-command_args="mount"
 output_log=/var/log/splicefs.log
 error_log=/var/log/splicefs.log
 extra_started_commands="reload"

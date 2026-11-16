@@ -92,7 +92,7 @@ including what detached mounts still held.
 ### Requested mounts
 
 On Linux, `mount -t splicefs` and fstab lines of type `splicefs` ask the running client for a
-mount. The mount helper is the `splicefs` program started under the name `mount.splicefs`. It
+mount. The mount helper is the `splicefsctl` program started under the name `mount.splicefs`. It
 only sends one request on the control socket. The client makes the mount.
 
 - All mount changes happen in the goroutine of the run loop: reloads, requests from the
@@ -275,11 +275,11 @@ The mount has to behave like a local disk for ordinary tools. These are requirem
   - **Linux and FreeBSD:** the mount is detected and cleared when the client starts.
   - **macOS:** nothing runs at login or at start, so nothing clears it by itself. The
     client writes a record of the NFS mounts it makes, in the runtime directory next to the
-    control socket (the same name with the ending `.nfs.json`). `splicefs umount`, when no
+    control socket (the same name with the ending `.nfs.json`). `splicefsctl umount`, when no
     client is running, finds a recorded mount that is still in the mount table with nothing
     answering on its port, and removes it with `umount -f`. A mount whose port still answers
-    is left alone. `splicefs mount` refuses to mount on a target that such a mount still
-    holds, and says to run `splicefs umount TARGET`; it does not clear the mount itself. The
+    is left alone. The client refuses to mount on a target that such a mount still
+    holds, and says to run `splicefsctl umount TARGET`; it does not clear the mount itself. The
     record is gone after a reboot, which also removes the mounts it lists.
 - **Kernel caching.** File contents never change under a given tag, so the kernel may keep
   file data and directory entries cached. On Linux and FreeBSD the client tells the kernel to

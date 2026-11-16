@@ -48,8 +48,12 @@ machine="$(uname -m)"
 pkg -N >/dev/null 2>&1 || env ASSUME_ALWAYS_YES=yes pkg bootstrap -y >/dev/null
 phase_done "bootstrap pkg"
 
+# The programs the package installs are the bin/ lines of plist, so that file is the one place
+# that lists them for this job. The folders the package owns are its @dir lines.
+programs="$(sed -n 's|^bin/||p' "$in/plist")"
+
 # One package per CPU type. goarch is how the build names the binary, abiarch how pkg names
-# the CPU type in an ABI string. The folders the package owns are the @dir lines of plist.
+# the CPU type in an ABI string.
 build() {
     goarch="$1"
     abiarch="$2"
@@ -59,7 +63,9 @@ build() {
     sed -n 's/^@dir //p' "$in/plist" | while read -r folder; do
         install -d "$stage/usr/local/$folder"
     done
-    install -m 0755 "$in/$program-$goarch" "$stage/usr/local/bin/$program"
+    for each in $programs; do
+        install -m 0755 "$in/$each-$goarch" "$stage/usr/local/bin/$each"
+    done
     install -m 0755 "$in/$program.rc" "$stage/usr/local/etc/rc.d/$program"
     sed -e "s|@NAME@|$name|" -e "s|@PROGRAM@|$program|g" -e "s|@VERSION@|$version|" \
         -e "s|@ABI@|FreeBSD:$major:$abiarch|" "$in/manifest.in" > "/tmp/manifest-$goarch"
@@ -172,9 +178,11 @@ write_repo_conf /usr/local/etc/pkg/repos/splicefs.conf splicefs "$repo_folder"
 pkg update -r splicefs
 pkg install -y -r splicefs "$name"
 phase_done "update the repository and install the package"
-[ -x "/usr/local/bin/$program" ] || fail "the program is not installed"
-"/usr/local/bin/$program" --version | grep -qF "$program_version" ||
-    fail "$program --version does not report $program_version"
+for each in $programs; do
+    [ -x "/usr/local/bin/$each" ] || fail "$each is not installed"
+    "/usr/local/bin/$each" --version | grep -qF "$program_version" ||
+        fail "$each --version does not report $program_version"
+done
 # pkg ends every process an install script leaves behind, so on FreeBSD a package cannot
 # start its service. What the package can and must do: the service is enabled without any
 # setting, so it starts at boot, and one command starts it now.
@@ -199,7 +207,9 @@ pkg delete -y "$name" >/dev/null
 # answers is one command whose status is the answer, so running it without set -e changes nothing.
 # shellcheck disable=SC2310
 if answers; then fail "the service still answers after the package was removed"; fi
-[ ! -e "/usr/local/bin/$program" ] || fail "remove left the program behind"
+for each in $programs; do
+    [ ! -e "/usr/local/bin/$each" ] || fail "remove left $each behind"
+done
 echo "removed: the service stopped"
 phase_done "remove the package"
 

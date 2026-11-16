@@ -10,11 +10,12 @@ import (
 	"strings"
 
 	"github.com/SpliceFS/client/app"
+	"github.com/SpliceFS/client/internal/cli"
 )
 
 const (
 	// helperProgram is the name mount(8) looks for when it is given "-t splicefs" or reads
-	// an fstab line of that type. The packages link it to the splicefs program.
+	// an fstab line of that type. The packages link it to the splicefsctl program.
 	helperProgram = "mount.splicefs"
 	helperUsage   = "usage: mount.splicefs CLUSTER:PATH TARGET [-sfnv] [-o OPTIONS]\n"
 	// configEnv names the configuration directory when the helper runs, because mount(8)
@@ -64,14 +65,14 @@ func hasIgnoredPrefix(opt string) bool {
 func (b backend) executeHelper(ctx context.Context, args []string, stderr io.Writer) int {
 	req, err := b.parseHelperArgs(args)
 	if err != nil {
-		sayf(stderr, "%s: %v\n%s", helperProgram, err, helperUsage)
-		return exitError
+		cli.Sayf(stderr, "%s: %v\n%s", helperProgram, err, helperUsage)
+		return cli.ExitError
 	}
 	if err := b.requestHelperMount(ctx, req); err != nil {
-		sayf(stderr, "%s: %v\n", helperProgram, err)
+		cli.Sayf(stderr, "%s: %v\n", helperProgram, err)
 		return exitMountFailed
 	}
-	return exitOK
+	return cli.ExitOK
 }
 
 // requestHelperMount sends req to the client of the configuration directory that the

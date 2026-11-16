@@ -27,8 +27,10 @@ out="$(cd "$out" && pwd)"
 . scripts/freebsd-lib.sh
 
 for arch in amd64 arm64; do
-    [ -f "$out/stage/freebsd-$arch/$program" ] ||
-        fail "$out/stage/freebsd-$arch/$program does not exist; run package-binaries.sh first"
+    for each in $programs; do
+        [ -f "$out/stage/freebsd-$arch/$each" ] ||
+            fail "$out/stage/freebsd-$arch/$each does not exist; run package-binaries.sh first"
+    done
 done
 
 [ -f "$out/keys/splicefs.rsa" ] && [ -f "$out/keys/splicefs.rsa.pub" ] ||
@@ -50,7 +52,9 @@ build_and_test() {
     job="$out/freebsd-job/$release"
     freebsd_job_folder "$job" freebsd-job.sh "$name" "$program" "$pkgver" "$VERSION"
     for arch in amd64 arm64; do
-        cp "$out/stage/freebsd-$arch/$program" "$job/$program-$arch"
+        for each in $programs; do
+            cp "$out/stage/freebsd-$arch/$each" "$job/$each-$arch"
+        done
     done
     cp "packaging/freebsd/$program.rc" packaging/freebsd/manifest.in packaging/freebsd/plist \
         packaging/freebsd/check-lib.sh "$job/"

@@ -62,6 +62,7 @@ each node, `splicefsd`, is in the [server repository](https://github.com/SpliceF
   mount per file, and a cluster root or any subdirectory can be mounted anywhere
 - `splicefs config check` validates the files; `splicefs config show` prints the result and
   the file each value came from
+- `splicefsctl` unmounts, shows the status of the running client and mounts one more directory
 - Applies a changed configuration on `SIGHUP` without a restart: new mounts appear, removed
   ones are detached at once, files that are open keep working until they are closed
 - On Linux, `mount -t splicefs` and `/etc/fstab` lines of type `splicefs` work too: the helper
@@ -113,11 +114,11 @@ Check the files and apply them without a restart:
 ```
 splicefs config check
 systemctl reload splicefs        # on Alpine: rc-service splicefs reload; on FreeBSD: service splicefs reload
-splicefs status                  # mounts, node speeds, cache use
+splicefsctl status                # mounts, node speeds, cache use
 ```
 
 The files of the cluster appear in `/mnt/files`. To stop a mount, delete its file and reload,
-or run `splicefs umount /mnt/files`; a mount unmounted by hand stays unmounted until the next
+or run `splicefsctl umount /mnt/files`; a mount unmounted by hand stays unmounted until the next
 reload or restart.
 
 On Linux you can also mount with `mount` or fstab instead of a mount file. The client must be
@@ -130,7 +131,7 @@ echo 'example:/ /mnt/files splicefs _netdev,nofail,x-systemd.requires=splicefs.s
 
 The cache is in `/var/cache/splicefs` unless a file in `conf.d/` says otherwise. On a macOS
 build the folders are `~/.splicefs/client` and `~/Library/Caches/splicefs`, and there is no
-service: run `splicefs mount`, which stays in the foreground, and send it `SIGHUP` to apply a
+service: run `splicefs`, which stays in the foreground, and send it `SIGHUP` to apply a
 changed configuration. The [configuration reference](docs/configuration.md) lists every
 setting.
 
@@ -195,7 +196,10 @@ machine, `make package-test PLATFORM=linux/amd64` tests the other CPU type by em
 ## Repository layout
 
 ```
-cmd/splicefs/  the splicefs program: the mount, umount, status and config commands
+cmd/splicefs/     the splicefs program, the client: mounts what the configuration names and keeps
+                  running; the config check and config show commands
+cmd/splicefsctl/  the splicefsctl program: umount, status and mount, which talk to the running
+                  client; started as mount.splicefs it is the helper of mount(8)
 app/           builds the client from the configuration, mounts it, serves the control socket
                and applies a changed configuration on SIGHUP
 config/        loads and validates the files in conf.d, clusters.d and mounts.d

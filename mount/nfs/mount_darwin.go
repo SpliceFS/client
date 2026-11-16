@@ -156,7 +156,7 @@ func mountWith(fsys core.FS, opts mount.Options, env environment) (mount.Mounted
 	// the target itself never read.
 	record := recorder{path: opts.RecordPath, log: log}
 	if record.leftBehind(env, ResolveTarget(opts.Target)) {
-		return nil, fmt.Errorf("%s %w; run \"splicefs umount %s\" to remove it",
+		return nil, fmt.Errorf("%s %w; run \"splicefsctl umount %s\" to remove it",
 			opts.Target, ErrLeftBehind, opts.Target)
 	}
 	// The mount table lists the real path, so symbolic links in the target (such as
@@ -176,7 +176,7 @@ func mountWith(fsys core.FS, opts mount.Options, env environment) (mount.Mounted
 	from := mountFrom(opts.Source)
 	// The entry is written before mount_nfs runs. A client that is killed right after the
 	// system accepted the mount would otherwise leave a mount that no record knows, and
-	// "splicefs umount" could never find it. An entry whose mount was never made does no
+	// "splicefsctl umount" could never find it. An entry whose mount was never made does no
 	// harm: the clean-up drops an entry that the mount table does not list.
 	record.add(recordEntry{
 		Target: target, From: from, Port: srv.Port(), PID: os.Getpid(), Created: time.Now().UTC(),

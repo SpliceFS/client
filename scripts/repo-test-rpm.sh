@@ -57,9 +57,13 @@ set -e
     cat /tmp/install.log
     fail "install from the repository failed"
 }
-"$program" --version | grep -qF "$VERSION" || fail "$program --version does not report $VERSION"
+for each in $programs; do
+    "$each" --version | grep -qF "$VERSION" || fail "$each --version does not report $VERSION"
+done
 rpm -e "$name" >/dev/null 2>&1 || fail "remove failed"
-[ ! -e "/usr/bin/$program" ] || fail "remove left the program behind"
+for each in $programs; do
+    [ ! -e "/usr/bin/$each" ] || fail "remove left $each behind"
+done
 
 # /repo is read-only, so the damaged copy is private. repomd.xml is what the index
 # signature covers; one more line in it makes the signature wrong.

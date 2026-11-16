@@ -65,7 +65,7 @@ fail_mount_exists() {
 
 fail_start_client_unlisted() {
     make_client_config
-    "$client_bin" --config "$work/c" mount >"$work/client.log" 2>&1 &
+    "$client_bin" --config "$work/c" >"$work/client.log" 2>&1 &
     client_pid=$!
     watch_pid="$client_pid"
     wait_until 30 "the mount at $work/mnt exists" fail_mount_exists
