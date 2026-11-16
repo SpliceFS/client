@@ -7,8 +7,8 @@
 # The rule it proves: with the same first version number, a client works with every server
 # whose second number is equal or higher. So the server is released first, and a client
 # whose second number is higher than any released server fails here. The runs are:
-#   works    the oldest server this client may be used with (MAIN.MINOR.0), and the newest
-#            server with the same first number
+#   works    the oldest released server with the same first and second number, and the
+#            newest released server with the same first number
 #   refused  the newest server with the same first number and a lower second number, which
 #            this client must refuse
 #
@@ -73,10 +73,10 @@ released() {
     esac
 }
 
-# The newest released tag of the tags on standard input (oldest first), or nothing. Only the
-# tags it has to look at are asked about, newest first.
-newest_released() {
-    awk '{ line[NR] = $0 } END { for (i = NR; i > 0; i--) print line[i] }' >"$tmp/candidates"
+# The first released tag of the tags on standard input, in their order, or nothing. Only the
+# tags it has to look at are asked about.
+first_released() {
+    cat >"$tmp/candidates"
     while read -r tag; do
         [ -n "$tag" ] || continue
         state="$(released "$tag")"
@@ -86,14 +86,19 @@ newest_released() {
         fi
     done <"$tmp/candidates"
 }
+# The newest released tag of the tags on standard input (oldest first), or nothing.
+newest_released() {
+    awk '{ line[NR] = $0 } END { for (i = NR; i > 0; i--) print line[i] }' | first_released
+}
 
 if [ -z "${SERVER_WORKS+set}" ]; then
-    oldest="v$main.$minor.0"
-    found="$(printf '%s\n' "$tags" | awk -v tag="$oldest" '$0 == tag { print tag }')"
-    state=no
-    if [ -n "$found" ]; then state="$(released "$oldest")"; fi
-    if [ "$state" != yes ]; then
-        echo "the server is released first: server $oldest is not released, so a client $main.$minor must wait until the release of server $main.$minor.0 is published" >&2
+    # Not MAIN.MINOR.0: older releases of a series may have been removed, and the rule is
+    # about the servers that can be installed.
+    oldest="$(printf '%s\n' "$tags" |
+        awk -F. -v main="$main" -v minor="$minor" 'substr($1, 2) == main && $2 + 0 == minor + 0' |
+        first_released)"
+    if [ -z "$oldest" ]; then
+        echo "the server is released first: no server $main.$minor is released, so a client $main.$minor must wait until one is published" >&2
         exit 1
     fi
     newest="$(printf '%s\n' "$tags" | awk -F. -v main="$main" 'substr($1, 2) == main' | newest_released)"
