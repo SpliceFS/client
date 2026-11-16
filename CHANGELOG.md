@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.29] - 2026-11-16
+
+- Internal: the FreeBSD package build runs every release again (the v0.5.27 release failed there).
+
 ## [0.5.28] - 2026-11-16
 
 - Internal: builds take their version from the VERSION file, so pull request packages carry the
