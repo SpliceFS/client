@@ -68,6 +68,8 @@ script_dir="$(cd "$script_dir" && pwd)"
 # record and the timers only run the command; compat.sh owns the record.
 # shellcheck source=timing.sh
 . "$script_dir/timing.sh"
+# shellcheck source=server-lib.sh
+. "$script_dir/server-lib.sh"
 # shellcheck source=cluster-lib.sh
 . "$script_dir/cluster-lib.sh"
 

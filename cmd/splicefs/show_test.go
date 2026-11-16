@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/SpliceFS/client/app"
 	"github.com/SpliceFS/client/config"
+	"github.com/SpliceFS/client/internal/cli"
 )
 
 // writeFiles creates the files, given by their path under dir, with their folders.
@@ -30,7 +30,7 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 // realConfigBackend loads the configuration from the files, as the program does, and
 // fails the test when anything else is asked of it.
 func realConfigBackend() backend {
-	b, _ := fakeBackend(nil, nil, nil, nil, nil, app.Report{})
+	b, _ := fakeBackend(nil, nil, nil)
 	b.loadConfig = config.LoadDir
 	return b
 }
@@ -65,7 +65,7 @@ func TestConfigCheck(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ran := executeWith(realConfigBackend(), "--config", tt.dir, "config", "check")
-			if ran.status != exitOK || ran.stdout != tt.want || ran.stderr != "" {
+			if ran.status != cli.ExitOK || ran.stdout != tt.want || ran.stderr != "" {
 				t.Errorf("status %d stdout %q stderr %q, want 0 %q", ran.status, ran.stdout, ran.stderr, tt.want)
 			}
 		})
@@ -82,7 +82,7 @@ func TestConfigCheckPrintsEveryProblem(t *testing.T) {
 		"mounts.d": "not a folder",
 	})
 	ran := executeWith(realConfigBackend(), "--config", dir, "config", "check")
-	if ran.status != exitError || ran.stdout != "" {
+	if ran.status != cli.ExitError || ran.stdout != "" {
 		t.Errorf("status %d stdout %q", ran.status, ran.stdout)
 	}
 	for _, want := range []string{"conf.d/cache.yaml", "colour", "mounts.d"} {
@@ -105,7 +105,7 @@ func TestConfigShow(t *testing.T) {
 		"mounts.d/docs.yaml": "cluster: east\npath: /docs\ntarget: /srv/docs\noffline: true\n",
 	})
 	ran := executeWith(realConfigBackend(), "--config", dir, "config", "show")
-	if ran.status != exitOK || ran.stderr != "" {
+	if ran.status != cli.ExitOK || ran.stderr != "" {
 		t.Fatalf("status %d stderr %q", ran.status, ran.stderr)
 	}
 	want := `cache:
@@ -161,9 +161,9 @@ mounts:
 
 func TestConfigShowWithoutClustersAndMounts(t *testing.T) {
 	t.Parallel()
-	b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
+	b, _ := fakeBackend(&config.Config{}, nil, nil)
 	ran := executeWith(b, "config", "show")
-	if !strings.HasSuffix(ran.stdout, "clusters: {}\nmounts: []\n") || ran.status != exitOK || ran.stderr != "" {
+	if !strings.HasSuffix(ran.stdout, "clusters: {}\nmounts: []\n") || ran.status != cli.ExitOK || ran.stderr != "" {
 		t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 	}
 }
@@ -174,18 +174,18 @@ func TestConfigFailures(t *testing.T) {
 	for _, command := range []string{"check", "show"} {
 		t.Run("load "+command, func(t *testing.T) {
 			t.Parallel()
-			b, _ := fakeBackend(nil, boom, nil, nil, nil, app.Report{})
+			b, _ := fakeBackend(nil, boom, nil)
 			ran := executeWith(b, "config", command)
-			if ran.status != exitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
+			if ran.status != cli.ExitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
 				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
 		})
 		t.Run("write "+command, func(t *testing.T) {
 			t.Parallel()
-			b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
+			b, _ := fakeBackend(&config.Config{}, nil, nil)
 			var errOut bytes.Buffer
 			status := execute(context.Background(), []string{"config", command}, failingWriter{}, &errOut, b)
-			if status != exitError || !strings.Contains(errOut.String(), "disk full") {
+			if status != cli.ExitError || !strings.Contains(errOut.String(), "disk full") {
 				t.Errorf("status %d stderr %q", status, errOut.String())
 			}
 		})
@@ -199,22 +199,20 @@ func TestUnknownDefaultConfigDir(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"mount", []string{"mount"}},
-		{"umount", []string{"umount"}},
-		{"status", []string{"status"}},
+		{"service", nil},
 		{"config check", []string{"config", "check"}},
 		{"config show", []string{"config", "show"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			b, recorded := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
+			b, recorded := fakeBackend(&config.Config{}, nil, nil)
 			b.defaultConfigDir = func() (string, error) { return "", boom }
 			ran := executeWith(b, tt.args...)
-			if ran.status != exitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
+			if ran.status != cli.ExitError || ran.stdout != "" || ran.stderr != "splicefs: "+boom.Error()+"\n" {
 				t.Errorf("status %d stdout %q stderr %q", ran.status, ran.stdout, ran.stderr)
 			}
-			if recorded.loadDir != "" || recorded.runCfg != nil || recorded.socketPath != "" || recorded.statusCalls != 0 {
+			if recorded.loadDir != "" || recorded.runCfg != nil {
 				t.Errorf("a command ran without a configuration directory: %+v", recorded)
 			}
 		})
@@ -229,16 +227,16 @@ func TestDefaultConfigDirIsNotLookedUp(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"directory given", []string{"--config", "/etc/example", "status"}},
+		{"directory given", []string{"--config", "/etc/example"}},
 		{"version", []string{"--version"}},
 		{"help", []string{"--help"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			b, _ := fakeBackend(&config.Config{}, nil, nil, nil, nil, app.Report{})
+			b, _ := fakeBackend(&config.Config{}, nil, nil)
 			b.defaultConfigDir = func() (string, error) { return "", errors.New("must not be asked") }
-			if ran := executeWith(b, tt.args...); ran.status != exitOK {
+			if ran := executeWith(b, tt.args...); ran.status != cli.ExitOK {
 				t.Errorf("status %d stdout %q stderr %q, want a command that ran", ran.status, ran.stdout, ran.stderr)
 			}
 		})

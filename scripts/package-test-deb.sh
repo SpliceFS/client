@@ -18,7 +18,9 @@ if ! dpkg -i "$deb" >/dev/null 2>&1; then
 fi
 dpkg -s "$name" | grep -q '^Status: install ok installed' || fail "package is not installed"
 
-"$program" --version | grep -qF "$VERSION" || fail "$program --version does not report $VERSION"
+for each in $programs; do
+    "$each" --version | grep -qF "$VERSION" || fail "$each --version does not report $VERSION"
+done
 [ -f "$unit" ] || fail "service unit is missing"
 if grep -q /usr/local/bin "$unit"; then fail "service unit points at /usr/local/bin"; fi
 [ -d "$confdir" ] || fail "$confdir is missing"
@@ -50,7 +52,9 @@ dpkg -i "$deb" >/dev/null || fail "installing over itself failed"
 
 touch "$kept"
 dpkg -r "$name" >/dev/null 2>&1 || fail "remove failed"
-[ ! -e "/usr/bin/$program" ] || fail "remove left the program behind"
+for each in $programs; do
+    [ ! -e "/usr/bin/$each" ] || fail "remove left $each behind"
+done
 [ -f "$kept" ] || fail "remove must keep the configuration"
 dpkg -P "$name" >/dev/null 2>&1 || fail "purge failed"
 [ ! -e "$confdir" ] || fail "purge must delete the configuration"

@@ -2,19 +2,15 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"log/slog"
+	"strings"
+
+	"github.com/SpliceFS/client/internal/cli"
 )
 
-// The commands.
-const (
-	commandMount  = "mount"
-	commandUmount = "umount"
-	commandStatus = "status"
-	commandConfig = "config"
-)
+// commandConfig is the one command. The client runs the service when no command is given.
+const commandConfig = "config"
 
 // The commands after "config".
 const (
@@ -24,64 +20,54 @@ const (
 
 // The errors of a command line. Each message is completed with the offending value.
 var (
-	errInvalidLogLevel    = errors.New("invalid --log-level")
-	errMissingCommand     = errors.New("missing command")
-	errUnknownCommand     = errors.New("unknown command")
-	errUnexpectedArgument = errors.New("unexpected argument")
-	errConfigWord         = errors.New("config needs one of: check, show")
+	errInvalidLogLevel = errors.New("invalid --log-level")
+	errUnknownCommand  = errors.New("unknown command")
+	errConfigWord      = errors.New("config needs one of: check, show")
 )
 
 // invocation is a parsed command line.
 type invocation struct {
-	configDir   string
-	logLevel    slog.Level
-	showVersion bool
-	command     string
-	// targets are the mount targets given to mount and umount.
+	cli.Flags
+
+	logLevel slog.Level
+	// command is empty when the service is to run.
+	command string
+	// targets are the mount targets the service is limited to; none means every mount.
 	targets []string
-	// force is the --force flag of umount.
-	force bool
-	// asJSON is the --json flag of status.
-	asJSON bool
 	// configCommand is check or show for the config command.
 	configCommand string
 }
 
 // parseArgs reads the command line. It returns flag.ErrHelp when help was asked for.
 func parseArgs(args []string) (invocation, error) {
-	// An empty configDir means the default, which execute looks up only when a command needs
-	// it, because finding it can fail.
 	inv := invocation{logLevel: slog.LevelInfo}
 	var level string
-	fs := newFlagSet(program)
-	fs.StringVar(&inv.configDir, "config", "", "")
+	fs := cli.NewFlagSet(program)
+	inv.Register(fs)
 	fs.StringVar(&level, "log-level", "info", "")
-	fs.BoolVar(&inv.showVersion, "version", false, "")
-	if err := parseFlags(fs, args); err != nil {
+	fs.Var((*targetList)(&inv.targets), "target", "")
+	if err := cli.ParseFlags(fs, args); err != nil {
 		return invocation{}, err
 	}
 	var ok bool
 	if inv.logLevel, ok = parseLevel(level); !ok {
 		return invocation{}, fmt.Errorf("%w %q: use debug, info, warn or error", errInvalidLogLevel, level)
 	}
-	if inv.showVersion {
+	if inv.ShowVersion || fs.NArg() == 0 {
 		return inv, nil
-	}
-	if fs.NArg() == 0 {
-		return invocation{}, errMissingCommand
 	}
 	inv.command = fs.Arg(0)
 	err := inv.parseCommand(fs.Args()[1:])
 	return inv, err
 }
 
-// parseFlags reads the flags of fs from args. The message is the flag package's own, which
-// already says what is wrong and is shown to the user as it is, so the wrapping adds no
-// words; it only keeps flag.ErrHelp recognizable for errors.Is.
-func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("%w", err)
-	}
+// targetList is the value of a flag that may be given several times.
+type targetList []string
+
+func (l *targetList) String() string { return strings.Join(*l, ",") }
+
+func (l *targetList) Set(value string) error {
+	*l = append(*l, value)
 	return nil
 }
 
@@ -101,44 +87,19 @@ func parseLevel(name string) (slog.Level, bool) {
 	return slog.LevelInfo, false
 }
 
-func newFlagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	return fs
-}
-
 // parseCommand reads the arguments that follow the command name.
 func (inv *invocation) parseCommand(args []string) error {
-	fs := newFlagSet(inv.command)
-	switch inv.command {
-	case commandMount, commandConfig:
-		// These take no flags.
-	case commandUmount:
-		fs.BoolVar(&inv.force, "force", false, "")
-	case commandStatus:
-		fs.BoolVar(&inv.asJSON, "json", false, "")
-	default:
+	if inv.command != commandConfig {
 		return fmt.Errorf("%w %q", errUnknownCommand, inv.command)
 	}
-	if err := parseFlags(fs, args); err != nil {
+	// The config command takes no flags.
+	fs := cli.NewFlagSet(inv.command)
+	if err := cli.ParseFlags(fs, args); err != nil {
 		return err
 	}
-	inv.targets = fs.Args()
-	if inv.command == commandStatus && len(inv.targets) > 0 {
-		return fmt.Errorf("%w %q", errUnexpectedArgument, inv.targets[0])
-	}
-	if inv.command == commandConfig {
-		return inv.parseConfigCommand()
-	}
-	return nil
-}
-
-// parseConfigCommand reads the word after "config", which is held in targets.
-func (inv *invocation) parseConfigCommand() error {
-	if len(inv.targets) != 1 || (inv.targets[0] != configCheck && inv.targets[0] != configShow) {
+	if fs.NArg() != 1 || (fs.Arg(0) != configCheck && fs.Arg(0) != configShow) {
 		return errConfigWord
 	}
-	inv.configCommand = inv.targets[0]
-	inv.targets = nil
+	inv.configCommand = fs.Arg(0)
 	return nil
 }

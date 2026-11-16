@@ -27,9 +27,13 @@ fi
 
 # The exact version is named because dist may hold older builds that apt would prefer.
 apt-get install -y -qq "$name=$debver" >/dev/null
-"$program" --version | grep -qF "$VERSION" || fail "$program --version does not report $VERSION"
+for each in $programs; do
+    "$each" --version | grep -qF "$VERSION" || fail "$each --version does not report $VERSION"
+done
 apt-get remove -y -qq "$name" >/dev/null
-[ ! -e "/usr/bin/$program" ] || fail "remove left the program behind"
+for each in $programs; do
+    [ ! -e "/usr/bin/$each" ] || fail "remove left $each behind"
+done
 
 # /repo is read-only, so the damaged copy is private. Release and InRelease are both
 # changed, otherwise apt would fall back to the intact one of the two.

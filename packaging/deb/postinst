@@ -6,9 +6,13 @@ set -e
 case "$1" in
     configure)
         # mount(8) looks for its helpers in /sbin. Where /sbin is a folder of its own and not a link
-        # to /usr/sbin, the helper needs a link there as well.
-        if [ ! -L /sbin ] && [ ! -e /sbin/mount.splicefs ]; then
-            ln -s /usr/bin/splicefs /sbin/mount.splicefs
+        # to /usr/sbin, the helper needs a link there as well. Versions before the control tool
+        # linked it to the splicefs program, which is not the helper any more.
+        if [ ! -L /sbin ]; then
+            helper_target="$(readlink /sbin/mount.splicefs 2>/dev/null)" || helper_target=""
+            if [ ! -e /sbin/mount.splicefs ] || [ "$helper_target" = /usr/bin/splicefs ]; then
+                ln -sf /usr/bin/splicefsctl /sbin/mount.splicefs
+            fi
         fi
         # A container or a chroot has no running systemd. The files are installed and
         # there is nothing to start.

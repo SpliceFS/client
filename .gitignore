@@ -148,6 +148,7 @@ $RECYCLE.BIN/
 /splicefs
 /splicefsd
 /cmd/*/splicefs
+/cmd/*/splicefsctl
 /cmd/*/splicefsd
 *.core
 

@@ -7,7 +7,16 @@
 : "${PACKAGE_DATE:?PACKAGE_DATE is not set}"
 
 name="$(sed -n 's/^Package: //p' packaging/deb/control)"
-program="$(basename cmd/*)"
+# Every program in cmd/ is installed. The one with a service unit is the service that the
+# package starts; any other is a tool for people, which talks to that service.
+programs=""
+for cmd_folder in cmd/*; do programs="$programs $(basename "$cmd_folder")"; done
+programs="${programs# }"
+program=""
+for candidate in $programs; do
+    if [ -f "packaging/systemd/$candidate.service" ]; then program="$candidate"; fi
+done
+[ -n "$program" ] || { echo "FAIL: no program in cmd/ has a unit in packaging/systemd" >&2; exit 1; }
 confdir="/etc/splicefs/${name#splicefs-}"
 # One folder name per line; see the file for why the package ships them empty.
 confsubdirs="$(grep -v -e '^#' -e '^$' packaging/config-folders)"

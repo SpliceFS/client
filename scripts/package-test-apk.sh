@@ -15,7 +15,9 @@ apk="$dir/alpine/$(apk --print-arch)/$name-$apkver-r0.apk"
 apk add -q --allow-untrusted "$apk" || fail "install failed"
 apk info -e "$name" >/dev/null || fail "package is not installed"
 
-"$program" --version | grep -qF "$VERSION" || fail "$program --version does not report $VERSION"
+for each in $programs; do
+    "$each" --version | grep -qF "$VERSION" || fail "$each --version does not report $VERSION"
+done
 [ -x "$init" ] || fail "service script is missing or not executable"
 [ -d "$confdir" ] || fail "$confdir is missing"
 for folder in $confsubdirs; do
@@ -44,7 +46,9 @@ fi
 
 touch "$kept"
 apk del -q "$name" || fail "remove failed"
-[ ! -e "/usr/bin/$program" ] || fail "remove left the program behind"
+for each in $programs; do
+    [ ! -e "/usr/bin/$each" ] || fail "remove left $each behind"
+done
 [ -f "$kept" ] || fail "remove must keep the configuration"
 
 # shellcheck source=/dev/null

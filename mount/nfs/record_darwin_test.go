@@ -629,7 +629,7 @@ func TestMountRefusesATargetThatAMountLeftBehindStillHolds(t *testing.T) {
 	if !errors.Is(err, ErrLeftBehind) {
 		t.Fatalf("mountWith = %v, want ErrLeftBehind", err)
 	}
-	want := target + ` is still mounted by a client that is no longer running; run "splicefs umount ` +
+	want := target + ` is still mounted by a client that is no longer running; run "splicefsctl umount ` +
 		target + `" to remove it`
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err, want)

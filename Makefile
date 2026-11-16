@@ -27,17 +27,18 @@ PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null
 PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
-.PHONY: script-modes all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test version-test timing-test \
+.PHONY: script-modes all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test version-test timing-test server-lib-test \
 	package package-order-test package-test service-test repo repo-test publish-fetch publish \
 	publish-check publish-test release-assets clean
 
 all: check build
 
+# Every program in cmd/ goes to bin/ under its own name.
 build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/splicefs ./cmd/splicefs
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
 
 # Everything CI runs except the linter.
-check: fmt-check vet cover package-lib-test version-test timing-test script-modes tracked-files
+check: fmt-check vet cover package-lib-test version-test timing-test server-lib-test script-modes tracked-files
 
 # A script that lost its executable bit fails only where it is run directly, which for the
 # publishing script is the release job. This finds it in every check. Libraries (-lib.sh, and
@@ -177,6 +178,11 @@ package-lib-test:
 # is part of check and runs on every system.
 timing-test:
 	scripts/timing-test.sh
+
+# How the test scripts ask a server for a password hash, with older and newer servers. It needs
+# no Docker, so it is part of check and runs on every system.
+server-lib-test:
+	scripts/server-lib-test.sh
 
 # Checks in a Debian, a Rocky Linux and an Alpine container that those versions sort the way
 # a release needs (a pre-release before its release) and that apk accepts them. It is a

@@ -17,9 +17,13 @@ apk add --update-cache "$name=$apkver-r0" >/tmp/add.log 2>&1 || {
     cat /tmp/add.log
     fail "install from the repository failed"
 }
-"$program" --version | grep -qF "$VERSION" || fail "$program --version does not report $VERSION"
+for each in $programs; do
+    "$each" --version | grep -qF "$VERSION" || fail "$each --version does not report $VERSION"
+done
 apk del -q "$name" || fail "remove failed"
-[ ! -e "/usr/bin/$program" ] || fail "remove left the program behind"
+for each in $programs; do
+    [ ! -e "/usr/bin/$each" ] || fail "remove left $each behind"
+done
 
 # Without the key the same repository must be refused.
 rm "$key"
