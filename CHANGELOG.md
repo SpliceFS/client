@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.28] - 2026-11-16
+
+- Internal: builds take their version from the VERSION file, so pull request packages carry the
+  version they will be released as.
+
 ## [0.5.27] - 2026-11-16
 
 - The client is now two programs: `splicefs` runs the client (its `mount TARGET...` is now `--target

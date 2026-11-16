@@ -169,7 +169,9 @@ Versions are `0.x.y` for now, with no suffixes. The promise about compatibility:
 
 Every merge into `main` is a release. The merge is tagged `v<VERSION>` automatically, which
 starts the Release workflow. Nobody creates tags or release branches by hand. One change, one
-version. The version printed by `--version` comes from the tag at build time.
+version. The version printed by `--version` comes from the file `VERSION` at build time, so a
+build of a commit reports the version that commit is released as, with or without git history and
+tags. A build with uncommitted changes to tracked files adds `-dirty`.
 
 The HTTP API has its own version in the URL (`/v1/`). A server keeps serving an API version
 for as long as a supported client release uses it.
