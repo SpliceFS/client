@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.26] - 2026-11-16
+
+- Internal: the compatibility test uses the oldest released server of the series instead of
+  requiring MAIN.MINOR.0.
+
 ## [0.5.25] - 2026-11-15
 
 - Internal: the health check tests no longer depend on a real timer.
