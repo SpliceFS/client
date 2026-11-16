@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.27] - 2026-11-16
+
+- Internal: builds take their version from the VERSION file, so pull request packages carry the
+  version they will be released as.
+
 ## [0.5.26] - 2026-11-16
 
 - Internal: the compatibility test uses the oldest released server of the series instead of
