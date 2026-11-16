@@ -34,61 +34,43 @@ pull_image() {
     return 1
 }
 
-# VERSION is what git describe prints: v1.2.3 on a release, v1.2.3-rc.1 on a pre-release,
-# v1.2.3-4-gabc after either, only a commit when there is no release yet, and a trailing
-# -dirty when the tree has changes. Split it into core (1.2.3), pre (rc.1, may be empty) and
-# extra (4.gabc, plus dirty), which is everything that makes a build something other than
-# the tagged release.
-tag="$VERSION"
-dirty=""
-case "$tag" in
-    *-dirty) dirty=dirty; tag="${tag%-dirty}" ;;
-    *) ;; # a clean tree has nothing to strip
-esac
-core=0.0.0
-pre=""
+# VERSION is the version in the file VERSION as the Makefile makes it: v1.2.3 for a release,
+# v1.2.3-rc.1 for a pre-release, and a trailing -dirty when the tree has uncommitted changes.
+# Split it into core (1.2.3), pre (rc.1, may be empty) and extra (dirty, or empty), which is
+# what makes a build something other than the released version. Anything else is refused: a
+# version that is not in this form would be packaged under a number that sorts wrongly.
+release="${VERSION%-dirty}"
 extra=""
-case "$tag" in
-    v[0-9]*)
-        commits="$(printf '%s' "$tag" | sed -n 's/^.*-\([0-9][0-9]*-g[0-9a-f][0-9a-f]*\)$/\1/p')"
-        if [ -n "$commits" ]; then
-            tag="${tag%-"$commits"}"
-            extra="$(printf '%s' "$commits" | tr - .)"
-        fi
-        core="${tag#v}"
-        core="${core%%-*}"
-        if [ "$core" != "${tag#v}" ]; then pre="${tag#v"$core"-}"; fi
-        printf '%s' "$core" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' ||
-            fail "tag $tag is not vMAJOR.MINOR.PATCH[-pre-release]"
-        # Alpine takes only these pre-release words, so nothing else can be published.
-        if [ -n "$pre" ]; then
-            printf '%s' "$pre" | grep -Eq '^(alpha|beta|pre|rc)(\.?[0-9]+)?$' ||
-                fail "tag $tag: pre-release $pre must be alpha, beta, pre or rc, then a number"
-        fi
-        ;;
-    *)
-        extra="$tag"
-        ;;
-esac
-if [ -n "$dirty" ]; then extra="${extra:+$extra.}dirty"; fi
+if [ "$release" != "$VERSION" ]; then extra=dirty; fi
+printf '%s' "$release" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-.+)?$' ||
+    fail "version $VERSION is not vMAJOR.MINOR.PATCH[-pre-release]"
+core="${release#v}"
+core="${core%%-*}"
+pre=""
+if [ "$core" != "${release#v}" ]; then pre="${release#v"$core"-}"; fi
+# Alpine takes only these pre-release words, so nothing else can be published.
+if [ -n "$pre" ]; then
+    printf '%s' "$pre" | grep -Eq '^(alpha|beta|pre|rc)(\.?[0-9]+)?$' ||
+        fail "version $VERSION: pre-release $pre must be alpha, beta, pre or rc, then a number"
+fi
 
 # Debian and rpm: a tilde sorts before everything, so 1.2.3~rc.1 is older than 1.2.3, and
-# a plus suffix sorts after, so 1.2.3+4.gabc is newer than the release it follows.
+# a plus suffix sorts after, so 1.2.3+dirty is newer than the release it follows.
 debver="$core"
 if [ -n "$pre" ]; then debver="$debver~$pre"; fi
 if [ -n "$extra" ]; then debver="$debver+$extra"; fi
 rpmver="$debver"
 
 # An Alpine version allows digits and a fixed list of suffixes only, so the pre-release
-# becomes _rc1 and a build that is not exactly a tag carries the date of its commit:
-# 1.2.3_rc1_git20261112.
+# becomes _rc1 and a build that is not exactly the release carries the date of its
+# commit: 1.2.3_rc1_git20261112.
 apkver="$core"
 if [ -n "$pre" ]; then apkver="${apkver}_$(printf '%s' "$pre" | tr -d .)"; fi
 if [ -n "$extra" ]; then apkver="${apkver}_git$PACKAGE_DATE"; fi
 
 # FreeBSD compares versions field by field and knows rc and friends as older than the release,
-# so the pre-release becomes one more field (1.2.3.rc1) and a build that is not exactly a tag
-# carries the date of its commit as the last field: 1.2.3.20261112.
+# so the pre-release becomes one more field (1.2.3.rc1) and a build that is not exactly the
+# release carries the date of its commit as the last field: 1.2.3.20261112.
 pkgver="$core"
 if [ -n "$pre" ]; then pkgver="$pkgver.$(printf '%s' "$pre" | tr -d .)"; fi
 if [ -n "$extra" ]; then pkgver="$pkgver.$PACKAGE_DATE"; fi

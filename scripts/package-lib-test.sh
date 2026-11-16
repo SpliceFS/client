@@ -36,19 +36,21 @@ refuse() {
 }
 
 check v1.2.3 1.2.3 1.2.3 1.2.3
-check v1.2.3-4-gabc1234 1.2.3+4.gabc1234 1.2.3_git20261112 1.2.3.20261112
 check v1.2.3-rc.1 1.2.3~rc.1 1.2.3_rc1 1.2.3.rc1
 check v1.2.3-beta.2 1.2.3~beta.2 1.2.3_beta2 1.2.3.beta2
 check v1.2.3-alpha 1.2.3~alpha 1.2.3_alpha 1.2.3.alpha
-check v1.2.3-rc.1-4-gabc1234 1.2.3~rc.1+4.gabc1234 1.2.3_rc1_git20261112 1.2.3.rc1.20261112
-check abc1234 0.0.0+abc1234 0.0.0_git20261112 0.0.0.20261112
 check v1.2.3-dirty 1.2.3+dirty 1.2.3_git20261112 1.2.3.20261112
-check v1.2.3-4-gabc1234-dirty 1.2.3+4.gabc1234.dirty 1.2.3_git20261112 1.2.3.20261112
 check v1.2.3-rc.1-dirty 1.2.3~rc.1+dirty 1.2.3_rc1_git20261112 1.2.3.rc1.20261112
-check abc1234-dirty 0.0.0+abc1234.dirty 0.0.0_git20261112 0.0.0.20261112
 refuse v1.2.3-foo.1 v1.2.3-foo.1
 refuse v1.2 v1.2
 refuse v1.2.3-rc.1.2 v1.2.3-rc.1.2
+# What git describe prints between releases and without tags is not a version any more; a
+# build that gets one has not read the file VERSION.
+refuse v1.2.3-4-gabc1234 v1.2.3-4-gabc1234
+refuse abc1234 abc1234
+refuse abc1234-dirty abc1234-dirty
+refuse dev dev
+refuse 1.2.3 1.2.3
 
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "package versions: all mappings as expected"

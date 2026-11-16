@@ -21,7 +21,8 @@ APK_IMAGE ?= alpine:3.22
 # Empty tests this machine's own CPU type; linux/amd64 or linux/arm64 tests the other one
 # by emulation (Docker Desktop provides it).
 PLATFORM ?=
-# Alpine versions cannot carry a commit, so builds between releases carry its date.
+# Alpine versions cannot carry a commit, so a build with uncommitted changes carries the date
+# of its commit.
 PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
 PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
