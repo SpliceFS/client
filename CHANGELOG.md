@@ -6,6 +6,13 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.27] - 2026-11-16
+
+- The client is now two programs: `splicefs` runs the client (its `mount TARGET...` is now `--target
+  TARGET`), and the new `splicefsctl` has `umount`, `status` and `mount CLUSTER:PATH TARGET`.
+  Packages install both, `mount.splicefs` is now `splicefsctl`, and services start `splicefs` with
+  no command.
+
 ## [0.5.26] - 2026-11-16
 
 - Internal: the compatibility test uses the oldest released server of the series instead of
