@@ -1,4 +1,8 @@
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# The version this commit is, or will be, released as: the file VERSION, which the release bot
+# sets on every pull request. Git history is not read for it, because CI checks out one commit
+# without tags. -dirty marks uncommitted changes to tracked files; no git checkout is clean.
+# This is the one place that works it out: the scripts receive it as VERSION.
+VERSION ?= v$(shell cat VERSION)$(if $(shell git status --porcelain --untracked-files=no 2>/dev/null),-dirty)
 LDFLAGS := -s -w -X github.com/SpliceFS/client/internal/version.version=$(VERSION)
 
 # Image and flags for running the Linux checks from another system. The FUSE device
@@ -17,12 +21,13 @@ APK_IMAGE ?= alpine:3.22
 # Empty tests this machine's own CPU type; linux/amd64 or linux/arm64 tests the other one
 # by emulation (Docker Desktop provides it).
 PLATFORM ?=
-# Alpine versions cannot carry a commit, so builds between releases carry its date.
+# Alpine versions cannot carry a commit, so a build with uncommitted changes carries the date
+# of its commit.
 PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
 PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
 	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
 
-.PHONY: script-modes all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test freebsd-lib-test timing-test server-lib-test \
+.PHONY: script-modes all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test freebsd-lib-test version-test timing-test server-lib-test \
 	package package-order-test package-test service-test repo repo-test publish-fetch publish \
 	publish-check publish-test release-assets clean
 
@@ -33,7 +38,7 @@ build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
 
 # Everything CI runs except the linter.
-check: fmt-check vet cover package-lib-test freebsd-lib-test timing-test server-lib-test script-modes tracked-files
+check: fmt-check vet cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test script-modes tracked-files
 
 # A script that lost its executable bit fails only where it is run directly, which for the
 # publishing script is the release job. This finds it in every check. Libraries (-lib.sh, and
@@ -159,7 +164,12 @@ package-freebsd:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) LINUX_IMAGE=$(LINUX_IMAGE) \
 		FREEBSD=$(FREEBSD) scripts/package-freebsd.sh dist
 
-# The table of how a git tag becomes each package version. It needs no Docker, so it is part
+# Where the version comes from: the file VERSION, also in a checkout of one commit without
+# tags, which is what CI has. It needs no Docker, so it is part of check.
+version-test:
+	scripts/version-test.sh
+
+# The table of how a version becomes each package version. It needs no Docker, so it is part
 # of check and runs on every system.
 package-lib-test:
 	scripts/package-lib-test.sh

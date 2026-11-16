@@ -48,10 +48,10 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 export PACKAGE_DATE="${PACKAGE_DATE:-20261112}"
 
-# Ascending order of what the release process produces. An untagged build (0.0.0) is older
-# than every release, and each pre-release is older than its release.
-versions="abc1234 v0.9.0 v1.2.3-alpha v1.2.3-beta.2 v1.2.3-rc.1 v1.2.3-rc.1-4-gabc1234
-v1.2.3-rc.2 v1.2.3 v1.2.3-4-gabc1234 v1.2.4-rc.1 v1.2.4"
+# Ascending order of what the release process produces. Each pre-release is older than its
+# release, and a build with uncommitted changes is newer than the version it started from.
+versions="v0.9.0 v1.2.3-alpha v1.2.3-beta.2 v1.2.3-rc.1 v1.2.3-rc.1-dirty
+v1.2.3-rc.2 v1.2.3 v1.2.3-dirty v1.2.4-rc.1 v1.2.4"
 
 failed=0
 for format in deb rpm apk; do

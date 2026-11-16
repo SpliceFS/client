@@ -8,7 +8,8 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 ## [0.5.28] - 2026-11-16
 
-- Internal: the FreeBSD package build runs every release again (the v0.5.27 release failed there).
+- Internal: builds take their version from the VERSION file, so pull request packages carry the
+  version they will be released as.
 
 ## [0.5.27] - 2026-11-16
 
