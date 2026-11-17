@@ -53,9 +53,9 @@ run_system_test() {
 while read -r format image; do
     # Blank lines and comments are skipped; every other line is a system to test.
     case "$format" in "" | "#"*) continue ;; *) ;; esac
-    if [ -n "${ONLY:-}" ] && [ "$ONLY" != "$format" ] && [ "$ONLY" != "$image" ]; then
-        continue
-    fi
+    # system_selected is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2310
+    system_selected "$format" "$image" || continue
     # A format without a script for this kind is not a failure. The rpm and apk repository
     # tests are not written yet; whoever adds scripts/repo-test-<format>.sh starts them here.
     if [ ! -f "$root/scripts/$kind-test-$format.sh" ]; then

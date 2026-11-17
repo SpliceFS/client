@@ -203,8 +203,8 @@ package-test: package-order-test
 # that runs that system's own service manager, installs the package and checks that the
 # service starts by itself, runs as the user the unit names, answers the status command,
 # restarts, comes back after a reboot and stops when the package is removed. It needs the
-# packages in ./dist from make package. SYSTEMS=debian:12 runs only the lines of the list that
-# contain that text.
+# packages in ./dist from make package. ONLY=debian:12 or ONLY=deb runs only that image or
+# that format.
 service-test:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/service-test.sh
 

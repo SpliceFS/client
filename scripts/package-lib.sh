@@ -43,6 +43,13 @@ pull_image() {
     return 1
 }
 
+# Whether a line of packaging/test-systems is part of this run. ONLY names one format or one
+# image; empty means every line. Every script that walks the list asks here, so that CI can
+# run one format per job the same way each of them. Usage: system_selected FORMAT IMAGE.
+system_selected() {
+    [ -z "${ONLY:-}" ] || [ "$ONLY" = "$1" ] || [ "$ONLY" = "$2" ]
+}
+
 # VERSION is the version in the file VERSION as the Makefile makes it: v1.2.3 for a release,
 # v1.2.3-rc.1 for a pre-release, and a trailing -dirty when the tree has uncommitted changes.
 # Split it into core (1.2.3), pre (rc.1, may be empty) and extra (dirty, or empty), which is
