@@ -133,7 +133,7 @@ build-all-here:
 
 # The plain program archives in ./dist, one for each system and CPU type in ./dist/bin (make
 # build-all): the programs, LICENSE and README.txt, for people who run SpliceFS by hand. They
-# are released with the packages (make release-assets). Needs only tar and gzip.
+# are the files of the GitHub release (make release-assets). Needs only tar and gzip.
 archives:
 	$(PACKAGE_VARS) scripts/archive-programs.sh
 
@@ -408,9 +408,10 @@ publish-check:
 publish-test:
 	scripts/publish-test.sh
 
-# The files of this version for the GitHub release, in dist/release: the packages, the program
-# archives (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE is the OpenPGP
-# signing key; the default is the key signing-keys.sh put in dist/keys.
+# The files of this version for the GitHub release, in dist/release: the program archives
+# (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE is the OpenPGP signing key; the
+# default is the key signing-keys.sh put in dist/keys. The packages are not released here: the
+# package repository makes them from these archives.
 SIGNING_KEY_FILE ?= $(CURDIR)/dist/keys/splicefs-openpgp-signing-subkey.asc
 release-assets:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) SIGNING_KEY_FILE=$(SIGNING_KEY_FILE) \

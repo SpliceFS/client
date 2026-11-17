@@ -1,11 +1,11 @@
 #!/bin/sh
-# Collects the files of THIS version for the GitHub release into dist/release: the two deb
-# files, the two signed rpm files, the two apk files, the plain program archive of each system
-# and CPU type, SHA256SUMS and its detached OpenPGP signature SHA256SUMS.asc. Runs on the host
-# after make package, make repo and make archives (make release-assets). Variables: VERSION and PACKAGE_DATE as for the build; SIGNING_KEY_FILE
-# (required, armored secret signing key, no passphrase); DIST_DIR (default dist); KEYS_DIR
-# (default DIST_DIR/keys, must hold the public key splicefs.asc); RELEASE_DIR (default
-# DIST_DIR/release). The key is never printed.
+# Collects the files of THIS version for the GitHub release into dist/release: the plain program
+# archive of each system and CPU type, SHA256SUMS and its detached OpenPGP signature
+# SHA256SUMS.asc. The packages are not part of it: the package repository makes them from these
+# archives. Runs on the host after make archives (make release-assets). Variables: VERSION and
+# PACKAGE_DATE as for the build; SIGNING_KEY_FILE (required, armored secret signing key, no
+# passphrase); DIST_DIR (default dist); KEYS_DIR (default DIST_DIR/keys, must hold the public key
+# splicefs.asc); RELEASE_DIR (default DIST_DIR/release). The key is never printed.
 set -eu
 
 : "${SIGNING_KEY_FILE:?SIGNING_KEY_FILE is not set}"
@@ -31,24 +31,8 @@ fi
 mkdir -p "$out"
 rm -f "$out"/*
 
-# Only the files of this version, so older versions kept in the repositories are not
-# released again. The rpm files come from the repository, where createrepo signed them.
-# Both apk files have the same name, so the CPU type is added to tell them apart.
-for arch in amd64 arm64; do
-    f="$dist/${name}_${debver}_$arch.deb"
-    [ -f "$f" ] || fail "missing $f, run make package first"
-    cp "$f" "$out/"
-done
-for arch in x86_64 aarch64; do
-    f="$dist/repo/rpm/$arch/$name-$rpmver-1.$arch.rpm"
-    [ -f "$f" ] || fail "missing $f, run make package and make repo first"
-    cp "$f" "$out/"
-    f="$dist/alpine/$arch/$name-$apkver-r0.apk"
-    [ -f "$f" ] || fail "missing $f, run make package first"
-    cp "$f" "$out/$name-$apkver-r0.$arch.apk"
-done
-
-# The plain program archives, one for each system and CPU type of the build (make archives).
+# One archive for each system and CPU type of the build (make archives), and only those of this
+# version, so archives of older versions in the same folder are not released again.
 # The names are ours and hold no spaces, so the list is split on purpose.
 systems="$(built_systems "$dist")"
 for system in $systems; do
