@@ -55,7 +55,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	mkdir -p $@
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
-	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test \
+	freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test build-all-test \
 	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
 	publish-fetch publish publish-check publish-test release-assets release-pack release-unpack \
 	release-parts-test clean
@@ -113,7 +113,7 @@ $(MOUNT_PARTS): RUN_OPTS = --privileged --device /dev/fuse
 unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
-unit-here: cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test part-test \
+unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test \
 	build-all-test cluster-groups-test fuzz-test release-parts-test
 
 # The same tests with the race detector, which makes them several times slower.
@@ -306,6 +306,9 @@ package-lib-test:
 
 freebsd-lib-test:
 	scripts/freebsd-lib-test.sh
+
+freebsd-repo-files-test:
+	scripts/freebsd-repo-files-test.sh
 
 # The helper that prints how long a part took, and the script that compiles every program.
 # Neither needs Docker nor a compiler, so both are part of check.

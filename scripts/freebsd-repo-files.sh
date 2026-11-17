@@ -7,11 +7,13 @@
 #
 #   freebsd-repo-files.sh input <major> <archive>   writes /out/<archive>, the machine's input:
 #       the signing keys and the packages published before for this FreeBSD major version
+#   freebsd-repo-files.sh remove-input <archive>     removes that archive once the machine ran
 #   freebsd-repo-files.sh merge                      merges what the machine returned in
 #       /out/freebsd/repo into /out/repo/freebsd and removes the returned copy
 set -eu
 
-out=/out
+# /out is the output folder mounted into the container; OUT lets the host test use a folder.
+out="${OUT:-/out}"
 published="$out/repo/freebsd"
 
 fail() {
@@ -39,6 +41,13 @@ input_archive() {
     rm -f "$archive"
     ( umask 077 && tar --no-xattrs -cf "$archive" -C "$stage" . )
     rm -rf "$stage"
+}
+
+# Removes the input archive of one machine once the machine has run. It holds the private key
+# and belongs to root, so the step that made it removes it, and no key file outlives the run.
+remove_input() {
+    rm -f "$out/$1"
+    rmdir "$out/freebsd-input" 2>/dev/null || true
 }
 
 # Merges the repository folders the machine returned into the published ones. The catalog
@@ -76,6 +85,7 @@ merge_repo() {
 
 case "${1:-}" in
     input) input_archive "${2:?major}" "${3:?archive}" ;;
+    remove-input) remove_input "${2:?archive}" ;;
     merge) merge_repo ;;
-    *) fail "usage: freebsd-repo-files.sh input <major> <archive> | merge" ;;
+    *) fail "usage: freebsd-repo-files.sh input <major> <archive> | remove-input <archive> | merge" ;;
 esac
