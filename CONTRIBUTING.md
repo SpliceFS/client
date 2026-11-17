@@ -14,7 +14,7 @@ held to. Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Development setup
 
-You need Go 1.26 or newer and `make`. Linting uses
+You need Go 1.27 or newer and `make`. Linting uses
 [golangci-lint](https://golangci-lint.run) version 2 and [ShellCheck](https://www.shellcheck.net).
 With Docker you need none of the tools: `make check-in-images` runs the same checks in the images
 of ghcr.io/splicefs and keeps the Go caches in `./.cache`. The parts that mount for real (`unit`,

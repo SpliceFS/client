@@ -1,6 +1,6 @@
 module github.com/SpliceFS/client
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/SpliceFS/common v0.3.3
