@@ -56,6 +56,59 @@ system_selected() {
     [ -z "${ONLY:-}" ] || [ "$ONLY" = "$1" ] || [ "$ONLY" = "$2" ]
 }
 
+# Starts a server image as a container the way the images README boots one: the service
+# manager is process 1. The image sets the rest (the container variable and the stop signal).
+# The Alpine images need none of these options and are not harmed by them, so every system
+# is started the same way. The arguments are the rest of the docker run command: name,
+# platform, mounts, and the image last. Prints nothing on success.
+boot_system() {
+    docker run -d --privileged --cgroupns=host --tmpfs /run --tmpfs /run/lock --tmpfs /tmp "$@" >/dev/null
+}
+
+# Status 0 when the service manager of the container $2 has finished booting. For systemd that
+# is what is-system-running says; units that cannot work in a container make its state
+# degraded, which is fine. OpenRC (the apk format) is up once it reaches the default
+# runlevel, where the package adds the service. Usage: service_manager_up FORMAT CONTAINER.
+service_manager_up() {
+    case "$1" in
+        apk)
+            level="$(docker exec "$2" rc-status --runlevel 2>/dev/null)" || true
+            [ "$level" = default ]
+            ;;
+        *)
+            state="$(docker exec "$2" systemctl is-system-running 2>/dev/null)" || true
+            # Any other state means systemd is not up yet.
+            case "$state" in running | degraded) return 0 ;; *) return 1 ;; esac
+            ;;
+    esac
+}
+
+# Returns once the service manager of the container $2 has booted, so that a test never starts
+# on a system that is still coming up. It polls because the first commands cannot run until
+# the manager is process 1, and every wait has a limit: it ends with status 1 when the
+# container stops or when the manager is not up after 90 seconds.
+# Usage: wait_booted FORMAT CONTAINER.
+wait_booted() {
+    waited=0
+    # service_manager_up is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2310
+    until service_manager_up "$1" "$2"; do
+        # A container that cannot be inspected is counted as stopped.
+        running="$(docker inspect -f '{{.State.Running}}' "$2")" || running=""
+        if [ "$running" != true ]; then
+            echo "the container stopped before its service manager was up:" >&2
+            docker logs --tail 30 "$2" >&2 || true
+            return 1
+        fi
+        waited=$((waited + 1))
+        if [ "$waited" -ge 90 ]; then
+            echo "the service manager is not up after 90 seconds" >&2
+            return 1
+        fi
+        sleep 1
+    done
+}
+
 # VERSION is the version in the file VERSION as the Makefile makes it: v1.2.3 for a release,
 # v1.2.3-rc.1 for a pre-release, and a trailing -dirty when the tree has uncommitted changes.
 # Split it into core (1.2.3), pre (rc.1, may be empty) and extra (dirty, or empty), which is
