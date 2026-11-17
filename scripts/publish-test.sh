@@ -27,7 +27,7 @@ base="$tmp/base"
 cp -R dist/repo "$base"
 freebsd_dirs=""
 majors=$(awk '!/^#/ && NF { split($1, v, "."); print v[1] }' \
-    packaging/freebsd/images | sort -un)
+    packaging/freebsd/releases | sort -un)
 for major in $majors; do
     for arch in amd64 aarch64; do
         d="freebsd/FreeBSD:$major:$arch"

@@ -3,13 +3,14 @@
 # The code that exists only for FreeBSD cannot be tested anywhere else, and the code shared
 # with Linux has to be proven on FreeBSD's own FUSE. The test programs are built for FreeBSD
 # by scripts/freebsd-tests.sh; this script runs them in a virtual machine of every FreeBSD
-# release in packaging/freebsd/images, as root, with the kernel modules listed in
-# packaging/freebsd/test-modules loaded
-# (scripts/freebsd-check-job.sh). It runs on the host (make check-freebsd) and needs
-# Docker, curl and xz.
+# release in packaging/freebsd/releases (its prepared image, scripts/freebsd-lib.sh), as
+# root, with the kernel modules listed in packaging/freebsd/test-modules loaded
+# (scripts/freebsd-check-job.sh). It runs on the host (make check-freebsd) and needs Docker
+# and hardware virtualization (KVM).
 #
-# Environment: FREEBSD limits the run to one release (for example 15.1); LINUX_IMAGE is the
-# container image QEMU is installed into; VM_TIMEOUT is the most seconds one machine may run;
+# Environment: FREEBSD limits the run to one release (for example 15.1); FREEBSD_IMAGE is
+# the image of a release, with @RELEASE@ where the release goes; LINUX_IMAGE is the Go image,
+# where the coverage is checked; VM_TIMEOUT is the most seconds one machine may run;
 # FREEBSD_ONLY names one package folder (for example mount/fuse) to test alone, which is for
 # work on that package: the coverage gate is then skipped, and the run says so.
 set -eu
@@ -31,12 +32,11 @@ trap 'timing_report "Tests on FreeBSD"' EXIT
 . scripts/freebsd-lib.sh
 
 work="$out/freebsd-check"
-archive="$work/$machine/in.tar"
+archive="$work/in.tar"
 [ -f "$archive" ] || fail "$archive does not exist; run freebsd-tests.sh first"
 
 run_tests() {
     release="$1"
-    disk="$2"
     # Not under $work: the container that built the test programs made that folder, as root
     # on Linux, and this script, which runs as the user, could not create anything in it.
     job="$out/freebsd-check-job/$release"
@@ -45,11 +45,11 @@ run_tests() {
     mkdir -p "$results"
     freebsd_job_folder "$job" freebsd-check-job.sh "${FREEBSD_ONLY:-}"
     if [ -f packaging/freebsd/test-modules ]; then cp packaging/freebsd/test-modules "$job/"; fi
-    echo "FreeBSD $release ($machine): running the tests"
-    timed "FreeBSD $release: machine run" freebsd_run "$disk" "$job" "$results" "$archive"
-    [ "$run_status" -eq 0 ] || fail "the tests failed on FreeBSD $release ($machine)"
+    echo "FreeBSD $release: running the tests"
+    timed "FreeBSD $release: machine run" freebsd_run "$release" "$job" "$results" "$archive"
+    [ "$run_status" -eq 0 ] || fail "the tests failed on FreeBSD $release"
     if [ -n "${FREEBSD_ONLY:-}" ]; then
-        echo "ok   FreeBSD $release ($machine), $FREEBSD_ONLY only: coverage NOT checked"
+        echo "ok   FreeBSD $release, $FREEBSD_ONLY only: coverage NOT checked"
         return 0
     fi
     # The profiles name source files, so the gate needs the Go tools and the source: it
@@ -60,8 +60,8 @@ run_tests() {
     timed "FreeBSD $release: coverage check" \
         docker run --rm --user 0 -v "$source_dir":/src:ro -v "$out":/out "$image" \
         sh -c "cd /src && sh scripts/freebsd-coverage.sh '/out/${results#"$out"/}/cover'" ||
-        fail "coverage on FreeBSD $release ($machine) is not 100%"
-    echo "ok   FreeBSD $release ($machine)"
+        fail "coverage on FreeBSD $release is not 100%"
+    echo "ok   FreeBSD $release"
 }
 
 freebsd_each_release run_tests

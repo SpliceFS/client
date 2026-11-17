@@ -12,6 +12,10 @@ LDFLAGS := -s -w -X github.com/SpliceFS/client/internal/version.version=$(VERSIO
 LINUX_IMAGE ?= ghcr.io/splicefs/go:v1
 RPM_IMAGE ?= ghcr.io/splicefs/rpm-build:v1
 APK_IMAGE ?= ghcr.io/splicefs/apk-build:v1
+# The image of a FreeBSD release, which runs the FreeBSD machine of that release: a FreeBSD disk
+# that has been booted once and has pkg set up (amd64 only), with QEMU. @RELEASE@ is where the
+# release goes; the releases are listed in packaging/freebsd/releases.
+FREEBSD_IMAGE ?= ghcr.io/splicefs/freebsd-@RELEASE@:v2
 # Empty tests this machine's own CPU type; linux/amd64 or linux/arm64 tests the other one
 # by emulation (Docker Desktop provides it).
 PLATFORM ?=
@@ -220,16 +224,23 @@ compat:
 
 # Runs the tests on FreeBSD itself: the test programs are built for FreeBSD in the Go
 # container and run as root in a virtual machine of every FreeBSD release in
-# packaging/freebsd/images, with the same 100% coverage gate as make check. FreeBSD cannot
-# run in a container, so the machine runs under QEMU inside the Go container; this needs
-# Docker, curl and xz, nothing else. FREEBSD=15.1 limits the run to one release. Where the
-# machine has to be emulated (any computer but Linux on amd64) a run takes many minutes.
+# packaging/freebsd/releases, with the same 100% coverage gate as make check. FreeBSD cannot
+# run in a container, so the machine runs under QEMU in the image of the release
+# (FREEBSD_IMAGE). This needs Docker and KVM (Linux on amd64); a computer without /dev/kvm
+# stops at once, because an emulated machine takes many times as long. FREEBSD=15.1 limits the run to
+# one release.
 FREEBSD ?=
 FREEBSD_ONLY ?=
-.PHONY: check-freebsd
-check-freebsd: | $(CACHE_DIRS)
+.PHONY: check-freebsd freebsd-kvm
+check-freebsd: freebsd-kvm | $(CACHE_DIRS)
 	$(LINUX_RUN) sh scripts/freebsd-tests.sh dist/freebsd-check
-	LINUX_IMAGE=$(LINUX_IMAGE) FREEBSD=$(FREEBSD) FREEBSD_ONLY=$(FREEBSD_ONLY) scripts/check-freebsd.sh dist
+	LINUX_IMAGE=$(LINUX_IMAGE) FREEBSD_IMAGE=$(FREEBSD_IMAGE) FREEBSD=$(FREEBSD) \
+		FREEBSD_ONLY=$(FREEBSD_ONLY) scripts/check-freebsd.sh dist
+
+# First in every target that starts a FreeBSD machine, so that a computer that cannot is found
+# before anything is built.
+freebsd-kvm:
+	scripts/freebsd-require-kvm.sh
 
 # ShellCheck runs with every optional check on (see .shellcheckrc). The globs pick up a new
 # script in scripts/ without editing this file; the maintainer and Alpine scripts have no .sh
@@ -255,13 +266,15 @@ package: build-all
 	$(MAKE) --no-print-directory packages
 
 # FreeBSD packages in ./dist/freebsd, one per FreeBSD release and CPU type. FreeBSD cannot run
-# in a container, so each release in packaging/freebsd/images runs as a virtual machine (QEMU
-# inside the Go container), where pkg(8) builds the packages, installs the one for the
-# machine and checks that the service runs. FREEBSD=15.1 limits the run to one release.
+# in a container, so each release in packaging/freebsd/releases runs as a virtual machine (QEMU
+# in the image of the release, FREEBSD_IMAGE), where pkg(8) builds the packages for amd64 and
+# arm64, installs the amd64 one and checks that the service runs. The arm64 package is built in
+# the amd64 machine and checked from the file; it is not installed. This needs Docker and KVM,
+# as check-freebsd does. FREEBSD=15.1 limits the run to one release.
 .PHONY: package-freebsd
-package-freebsd: build-all keys
+package-freebsd: freebsd-kvm build-all keys
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) LINUX_IMAGE=$(LINUX_IMAGE) \
-		FREEBSD=$(FREEBSD) scripts/package-freebsd.sh dist
+		FREEBSD_IMAGE=$(FREEBSD_IMAGE) FREEBSD=$(FREEBSD) scripts/package-freebsd.sh dist
 
 # Where the version comes from: the file VERSION, also in a checkout of one commit without
 # tags, which is what CI has. It needs no Docker, so it is part of check.
