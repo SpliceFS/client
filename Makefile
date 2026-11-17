@@ -78,7 +78,13 @@ static: | $(CACHE_DIRS)
 static-checks: script-modes tracked-files
 	$(LINUX_RUN) make static-here
 
-static-here: fmt-check vet lint-shell lint-go
+static-here: fmt-check vet tidy-check lint-shell lint-go
+
+# go.mod and go.sum must be what go mod tidy writes, so that a dependency that is no longer
+# used, or one that is used and not listed, is found in the pull request. -diff changes no file.
+.PHONY: tidy-check
+tidy-check:
+	go mod tidy -diff
 
 # golangci-lint for each system the code is built for, because the files of a system are only
 # checked when that system is the target.
@@ -139,6 +145,12 @@ package-rpm:
 package-apk: RUN_OPTS = $(KEYS_MOUNT)
 package-apk: keys
 	scripts/part.sh package-apk $(APK_RUN) env $(PACKAGE_VARS) sh scripts/package-apk.sh /src/dist
+
+# The image the Go parts run in. CI keys its Go caches on it (.github/actions/go-cache), so
+# that a new image starts with empty caches.
+.PHONY: go-image
+go-image:
+	@echo $(LINUX_IMAGE)
 
 # Decides which keys everything is signed with and puts them in ./dist/keys.
 keys:
