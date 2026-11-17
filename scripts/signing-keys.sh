@@ -10,7 +10,7 @@ set -eu
 root="$(cd "$(dirname "$0")/.." && pwd)"
 keys="$root/dist/keys"
 files="splicefs-openpgp-signing-subkey.asc splicefs.asc splicefs.rsa splicefs.rsa.pub"
-image="${LINUX_IMAGE:-golang:1.27}"
+image="${LINUX_IMAGE:?LINUX_IMAGE is not set}"
 
 # Sets missing to the names in $files that the folder $1 lacks, empty when it has them all.
 # A function that is used as a condition runs with set -e off, so it reports in a variable.

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds or updates the signed apt repository in OUTPUT_DIR/repo/apt from the .deb files in
-# OUTPUT_DIR. It runs inside a Debian container (make repo), with the keys in /keys. The
-# pool keeps every file already in it, so older versions stay installable.
+# OUTPUT_DIR. It runs in the Go image (make repo), with the keys in /keys. The pool keeps
+# every file already in it, so older versions stay installable.
 set -eu
 
 out="${1:?usage: repo-apt.sh OUTPUT_DIR}"
@@ -16,11 +16,6 @@ pooled="$(find "$repo/pool" -name '*.deb' | head -n 1)"
     echo "FAIL: no .deb files in $out; run make package first" >&2
     exit 1
 }
-
-# apt-ftparchive is not in the build image. Quiet apt output, one line says what happened.
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq apt-utils >/dev/null
 
 # A published version must never change, so a pool file with the same name and different
 # content stops the run. Sorted input keeps the result the same on every run. ls prints

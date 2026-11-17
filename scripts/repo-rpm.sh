@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds or updates the signed rpm repositories in OUTPUT_DIR/repo/rpm, one per CPU type, from
-# the .rpm files in OUTPUT_DIR. It runs inside a Rocky Linux container (make repo), with the
-# keys in /keys. Every rpm is signed, and so is the index (repomd.xml), because dnf checks
+# the .rpm files in OUTPUT_DIR. It runs in the rpm-build image (make repo), with the keys in
+# /keys. Every rpm is signed, and so is the index (repomd.xml), because dnf checks
 # the packages with gpgcheck and the index with repo_gpgcheck. Rpms already in the
 # repository stay, so older versions stay installable.
 set -eu
@@ -15,8 +15,6 @@ pooled="$(find "$repo" -name '*.rpm' 2>/dev/null | head -n 1)"
     echo "FAIL: no .rpm files in $out; run make package first" >&2
     exit 1
 }
-
-dnf install -y -q createrepo_c rpm-sign gnupg2 >/dev/null
 
 # The signing home lives in this container's temporary filesystem and dies with it. The
 # secret file holds the signing subkey only, with no passphrase. The rpm macros are given on

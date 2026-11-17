@@ -52,6 +52,20 @@ refuse abc1234-dirty abc1234-dirty
 refuse dev dev
 refuse 1.2.3 1.2.3
 
+# The unit in the repository is written for a manual install under /usr/local; the unit a
+# package ships has the program in /usr/bin, and nothing else is lost.
+program="$(VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c '. scripts/package-lib.sh; echo "$program"')"
+got="$(VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c '. scripts/package-lib.sh; package_unit /dev/stdout' 2>&1)" || true
+got_lines="$(printf '%s\n' "$got" | wc -l)"
+repo_lines="$(wc -l < "packaging/systemd/$program.service")"
+if printf '%s\n' "$got" | grep -qx "ExecStart=/usr/bin/$program" &&
+    ! printf '%s\n' "$got" | grep -q '/usr/local/' && [ "$got_lines" -eq "$repo_lines" ]; then
+    echo "ok   the packaged unit has the program in /usr/bin"
+else
+    printf 'FAIL the packaged unit has the wrong program path or lost lines: %s\n' "$got"
+    failed=$((failed + 1))
+fi
+
 # ONLY limits a run to one format or one image, for every script that walks packaging/test-systems.
 # $1 ONLY, $2 format, $3 image, $4 selected (yes or no).
 selects() {

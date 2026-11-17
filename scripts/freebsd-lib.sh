@@ -108,7 +108,7 @@ freebsd_run() {
     # kvm and input are one word each or empty, so they are left unquoted on purpose. The
     # caller sets image and reads run_status.
     # shellcheck disable=SC2034,SC2086,SC2154
-    docker run --rm $kvm -e VM_TIMEOUT="${VM_TIMEOUT:-900}" -v "$source_dir":/src:ro -v "$out":/out "$image" \
+    docker run --rm --user 0 $kvm -e VM_TIMEOUT="${VM_TIMEOUT:-900}" -v "$source_dir":/src:ro -v "$out":/out "$image" \
         sh /src/scripts/freebsd-vm.sh "$machine" "/out/${1#"$out"/}" "/out/${2#"$out"/}" \
         "/out/${3#"$out"/}" $input || run_status=$?
 }

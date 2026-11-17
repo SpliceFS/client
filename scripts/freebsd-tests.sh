@@ -2,7 +2,7 @@
 # Builds the test program of every package for FreeBSD and packs them, with the source they
 # read their test files from, into one archive per CPU type: OUTPUT_DIR/<arch>/in.tar. The
 # FreeBSD machine of scripts/check-freebsd.sh unpacks the archive and runs the programs. It
-# runs inside the Go container (make check-freebsd), in a copy of the source.
+# runs in the Go image (make check-freebsd), in the source folder.
 set -eu
 
 out="${1:?usage: freebsd-tests.sh OUTPUT_DIR}"
@@ -34,7 +34,7 @@ for arch in amd64 arm64; do
         fi
     done
     phase_done "build the FreeBSD test programs for $arch"
-    tar -cf "$out/$arch/in.tar" --exclude=./.git --exclude=./dist --exclude=./bin .
+    tar -cf "$out/$arch/in.tar" --exclude=./.git --exclude=./.cache --exclude=./dist --exclude=./bin .
     tar -rf "$out/$arch/in.tar" -C "$stage" tests
     rm -rf "$stage"
     members="$(tar -tf "$out/$arch/in.tar")"

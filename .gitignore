@@ -58,6 +58,8 @@ temp/
 /build/
 /dist/
 /out/
+# The Go module and build caches that the make parts keep between runs.
+/.cache/
 /vendor/
 *.exe
 *.exe~

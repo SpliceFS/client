@@ -58,7 +58,7 @@ run_tests() {
     # inside timed changes nothing.
     # shellcheck disable=SC2310
     timed "FreeBSD $release: coverage check" \
-        docker run --rm -v "$source_dir":/src:ro -v "$out":/out -v splicefs-gomod:/go/pkg/mod "$image" \
+        docker run --rm --user 0 -v "$source_dir":/src:ro -v "$out":/out "$image" \
         sh -c "cd /src && sh scripts/freebsd-coverage.sh '/out/${results#"$out"/}/cover'" ||
         fail "coverage on FreeBSD $release ($machine) is not 100%"
     echo "ok   FreeBSD $release ($machine)"

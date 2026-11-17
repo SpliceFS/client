@@ -5,31 +5,55 @@
 VERSION ?= v$(shell cat VERSION)$(if $(shell git status --porcelain --untracked-files=no 2>/dev/null),-dirty)
 LDFLAGS := -s -w -X github.com/SpliceFS/client/internal/version.version=$(VERSION)
 
-# Image and flags for running the Linux checks from another system. The FUSE device
-# and the SYS_ADMIN capability are what a container needs to mount inside itself.
-LINUX_IMAGE ?= golang:1.27
-# Privileged, so that the tests see what a real machine and the CI runners see: /sys is
-# writable, which the abort of a FUSE connection needs.
-LINUX_DOCKER := docker run --rm --privileged --device /dev/fuse \
-	-v "$(CURDIR)":/src:ro -v splicefs-gomod:/go/pkg/mod
-LINUX_RUN := $(LINUX_DOCKER) $(LINUX_IMAGE)
-
-# Every package format is built by its own distribution's tool inside that distribution's
-# container, on every system, so a package built here is the package CI builds.
-RPM_IMAGE ?= rockylinux/rockylinux:9
-APK_IMAGE ?= alpine:3.22
+# The tools are in our images (ghcr.io/splicefs) and nothing of ours is: the source is mounted
+# into the image when a part runs. The Go image also runs the checks, the build and the Debian
+# packages; every other package format is built by its own distribution's tools in its own
+# image, so a package built here is the package CI builds.
+LINUX_IMAGE ?= ghcr.io/splicefs/go:v1
+RPM_IMAGE ?= ghcr.io/splicefs/rpm-build:v1
+APK_IMAGE ?= ghcr.io/splicefs/apk-build:v1
 # Empty tests this machine's own CPU type; linux/amd64 or linux/arm64 tests the other one
 # by emulation (Docker Desktop provides it).
 PLATFORM ?=
 # Alpine versions cannot carry a commit, so a build with uncommitted changes carries the date
 # of its commit.
 PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
-PACKAGE_RUN := docker run --rm -e VERSION=$(VERSION) -e PACKAGE_DATE=$(PACKAGE_DATE) \
-	-v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out -v splicefs-gomod:/go/pkg/mod
+# What the package scripts need to name their files. They read these as environment
+# variables; env sets them in an image that has no make.
+PACKAGE_VARS = VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE)
 
-.PHONY: script-modes all build check check-linux fmt fmt-check vet test cover fuzz lint package-lib-test freebsd-lib-test version-test timing-test server-lib-test \
-	package package-order-test package-test service-test repo repo-test publish-fetch publish \
-	publish-check publish-test release-assets clean
+# One runner per image: docker run with the source at /src, as the caller's own user, so that
+# every file a part writes belongs to the caller and not to root. The Go caches are folders
+# under CACHE, mounted where the images keep them; a named Docker volume is made by root,
+# which a user other than root cannot write to. A target that needs more options sets
+# RUN_OPTS; a target that has to run as root (RUN_USER) also keeps its own caches
+# (GO_CACHE), so that no file in the caller's caches belongs to root.
+CACHE ?= $(CURDIR)/.cache
+CACHE_DIRS := $(CACHE)/gomod $(CACHE)/gobuild
+ROOT_CACHE := $(CACHE)/root
+ROOT_CACHE_DIRS := $(ROOT_CACHE)/gomod $(ROOT_CACHE)/gobuild
+RUN_OPTS :=
+RUN_USER = $(shell id -u):$(shell id -g)
+GO_CACHE = $(CACHE)
+DOCKER_RUN = docker run --rm --user "$(RUN_USER)" $(RUN_OPTS) -v "$(CURDIR)":/src -w /src
+# The cache paths are named here as well as in the go image, so that the run works with any
+# Go image and any uid: HOME, GOPATH and GOCACHE all point at the mounted host folders.
+LINUX_RUN = $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod -v "$(GO_CACHE)/gobuild":/tmp/go-cache \
+	-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
+	-e GOLANGCI_LINT_CACHE=/tmp/go-cache/golangci-lint $(LINUX_IMAGE)
+RPM_RUN = $(DOCKER_RUN) $(RPM_IMAGE)
+APK_RUN = $(DOCKER_RUN) $(APK_IMAGE)
+# The signing keys, read only, for the steps that sign or check with them.
+KEYS_MOUNT := -v "$(CURDIR)/dist/keys":/keys:ro
+
+# Docker makes a folder that does not exist yet as root, so the caller makes them first.
+$(CACHE_DIRS) $(ROOT_CACHE_DIRS):
+	mkdir -p $@
+
+.PHONY: script-modes all build check check-in-images fmt fmt-check vet cover fuzz lint package-lib-test \
+	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test package \
+	package-order-test package-test service-test repo repo-test publish-fetch publish publish-check \
+	publish-test release-assets clean
 
 all: check build
 
@@ -37,8 +61,94 @@ all: check build
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
 
-# Everything CI runs except the linter.
-check: fmt-check vet cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test script-modes tracked-files
+# The parts of a build. Each is a make target that runs its inner target (the same name with
+# -here, the real work) in the image and prints how long it took (scripts/part.sh). A part
+# runs alone on any machine that has Docker, and in CI, with the same command; parts that do
+# not need each other can run at the same time. A -here target also runs on a machine that
+# has the tools.
+.PHONY: static static-checks static-here lint-go unit unit-here race race-here build-all build-all-here \
+	integration packages package-deb package-rpm package-apk keys
+
+# gofmt, go vet, golangci-lint and ShellCheck, and the two checks that read the git index.
+# Those run on the host and not in the image: a git worktree keeps its index outside the
+# folder that is mounted.
+static: | $(CACHE_DIRS)
+	scripts/part.sh static $(MAKE) --no-print-directory static-checks
+
+static-checks: script-modes tracked-files
+	$(LINUX_RUN) make static-here
+
+static-here: fmt-check vet lint-shell lint-go
+
+# golangci-lint for each system the code is built for, because the files of a system are only
+# checked when that system is the target.
+lint-go:
+	@set -e; for os in linux darwin freebsd; do \
+		echo "golangci-lint GOOS=$$os"; GOOS=$$os golangci-lint run; \
+	done
+
+# The tests of mount/fuse mount for real, and nothing else of the client needs more than an
+# ordinary user. As root the client mounts with mount(2); any other user needs a fusermount3
+# that finds the user in the passwd file and may mount, which an image does not give an
+# arbitrary uid. So the parts that run those tests (unit, race, integration) run as root, with
+# the FUSE device, privileged as the CI runners are (/sys is writable, which the abort of a FUSE
+# connection needs), and keep their own caches under CACHE/root.
+MOUNT_PARTS := unit race integration
+$(MOUNT_PARTS): RUN_USER = 0
+$(MOUNT_PARTS): GO_CACHE = $(ROOT_CACHE)
+$(MOUNT_PARTS): RUN_OPTS = --privileged --device /dev/fuse
+
+# The tests with the 100% coverage gate, and the tests of the scripts that need no Docker.
+unit: | $(ROOT_CACHE_DIRS)
+	scripts/part.sh unit $(LINUX_RUN) make unit-here
+
+unit-here: cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test part-test \
+	build-all-test
+
+# The same tests with the race detector, which makes them several times slower.
+race: | $(ROOT_CACHE_DIRS)
+	scripts/part.sh race $(LINUX_RUN) make race-here
+
+race-here:
+	go test -race ./...
+
+# Every program, for every system and CPU type, into ./dist/bin. The packages, the release and
+# the other parts read from there; nothing is compiled twice.
+build-all: | $(CACHE_DIRS)
+	scripts/part.sh build-all $(LINUX_RUN) make $(PACKAGE_VARS) build-all-here
+
+build-all-here:
+	LDFLAGS='$(LDFLAGS)' scripts/build-all.sh dist/bin
+
+# This client against the released servers, in a container that may mount (FUSE) as root;
+# SERVER_WORKS, SERVER_REFUSED, CLUSTER_ONLY and CLUSTER_SEED reach the container when set.
+integration: RUN_OPTS += -e SERVER_WORKS -e SERVER_REFUSED -e CLUSTER_ONLY -e CLUSTER_SEED
+integration: | $(ROOT_CACHE_DIRS)
+	scripts/part.sh integration $(LINUX_RUN) make compat
+
+# The packages of every format, from the programs in ./dist/bin (make build-all). Each format
+# is a target of its own.
+packages: package-deb package-rpm package-apk
+
+package-deb: | $(CACHE_DIRS)
+	scripts/part.sh package-deb $(LINUX_RUN) env $(PACKAGE_VARS) sh scripts/package-deb.sh /src/dist
+
+package-rpm:
+	scripts/part.sh package-rpm $(RPM_RUN) env $(PACKAGE_VARS) sh scripts/package-rpm.sh /src/dist
+
+package-apk: RUN_OPTS = $(KEYS_MOUNT)
+package-apk: keys
+	scripts/part.sh package-apk $(APK_RUN) env $(PACKAGE_VARS) sh scripts/package-apk.sh /src/dist
+
+# Decides which keys everything is signed with and puts them in ./dist/keys.
+keys:
+	LINUX_IMAGE=$(LINUX_IMAGE) scripts/signing-keys.sh
+
+# What a machine that has every tool runs: the three parts, natively.
+check: script-modes tracked-files static-here unit-here race-here
+
+# The same on any system that has Docker, in the images.
+check-in-images: static unit race
 
 # A script that lost its executable bit fails only where it is run directly, which for the
 # publishing script is the release job. This finds it in every check. Libraries (-lib.sh, and
@@ -55,19 +165,21 @@ script-modes:
 tracked-files:
 	scripts/tracked-files.sh
 
+# Not gofmt on the folder itself: that would also format the module cache in ./.cache. Hidden
+# folders hold no source of this project.
+GO_FILES = find . -name '*.go' -not -path './.*'
+
 fmt:
-	gofmt -w .
+	$(GO_FILES) | xargs gofmt -w
 
 fmt-check:
-	@out="$$(gofmt -l .)"; if [ -n "$$out" ]; then echo "not gofmt formatted:"; echo "$$out"; exit 1; fi
+	@out="$$($(GO_FILES) | xargs gofmt -l)"; if [ -n "$$out" ]; then echo "not gofmt formatted:"; echo "$$out"; exit 1; fi
 
 vet:
 	go vet ./...
 
-test:
-	go test -race ./...
-
-# Tests with the race detector; fails below 100% statement coverage.
+# Tests with coverage; fails below 100% statement coverage. The race detector has a part of
+# its own (race).
 cover:
 	scripts/coverage.sh coverage.out
 
@@ -84,29 +196,15 @@ fuzz:
 		done; \
 	done
 
-# The same checks on Linux, with real FUSE mounts, from any system that has Docker.
-# The source is copied inside the container so nothing is written to the working tree.
-check-linux:
-	$(LINUX_RUN) sh -c 'apt-get update -qq && apt-get install -y -qq fuse3 >/dev/null && \
-		cp -r /src /tmp/w && cd /tmp/w && make check'
-
 # Proves the compatibility rule: with the same first version number, this client works with
 # every released server whose second number is equal or higher, and refuses one with a lower
 # second number. It builds the client of this working copy and the released servers, mounts
 # for real and compares every file, so it needs Linux, FUSE and root. scripts/compat.sh says
-# which servers it uses; SERVER_WORKS and SERVER_REFUSED replace that choice.
-.PHONY: compat compat-linux
+# which servers it uses; SERVER_WORKS and SERVER_REFUSED replace that choice. make integration
+# runs it in a container that has FUSE.
+.PHONY: compat
 compat:
 	scripts/compat.sh
-
-# The same from any system that has Docker. SERVER_WORKS and SERVER_REFUSED go into the
-# container only when the caller has set them. docker run takes its options before the
-# image, so this line uses LINUX_DOCKER and names the image itself.
-COMPAT_ENV := $(foreach v,SERVER_WORKS SERVER_REFUSED CLUSTER_ONLY CLUSTER_SEED,$(if $(filter undefined,$(origin $(v))),,-e $(v)))
-compat-linux:
-	$(LINUX_DOCKER) $(COMPAT_ENV) $(LINUX_IMAGE) sh -c 'apt-get update -qq && \
-		apt-get install -y -qq fuse3 curl >/dev/null && \
-		cp -r /src /tmp/w && cd /tmp/w && scripts/compat.sh'
 
 # Runs the tests on FreeBSD itself: the test programs are built for FreeBSD in the Go
 # container and run as root in a virtual machine of every FreeBSD release in
@@ -117,10 +215,8 @@ compat-linux:
 FREEBSD ?=
 FREEBSD_ONLY ?=
 .PHONY: check-freebsd
-check-freebsd:
-	mkdir -p dist
-	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cp -r /src /tmp/w && cd /tmp/w && \
-		scripts/freebsd-tests.sh /out/freebsd-check'
+check-freebsd: | $(CACHE_DIRS)
+	$(LINUX_RUN) sh scripts/freebsd-tests.sh dist/freebsd-check
 	LINUX_IMAGE=$(LINUX_IMAGE) FREEBSD=$(FREEBSD) FREEBSD_ONLY=$(FREEBSD_ONLY) scripts/check-freebsd.sh dist
 
 # ShellCheck runs with every optional check on (see .shellcheckrc). The globs pick up a new
@@ -140,27 +236,18 @@ lint-shell:
 		packaging/freebsd/splicefs.rc packaging/freebsd/user-data.in
 
 # Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
-# for amd64 and arm64. The program is compiled once and every format wraps that binary. The
-# apk files are signed with the repository key that signing-keys.sh puts in dist/keys.
-package:
-	mkdir -p dist
-	scripts/signing-keys.sh
-	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cp -r /src /tmp/w && cd /tmp/w && \
-		scripts/package-binaries.sh /out && scripts/package-deb.sh /out'
-	$(PACKAGE_RUN) $(RPM_IMAGE) sh -c 'cd /src && scripts/package-rpm.sh /out'
-	$(PACKAGE_RUN) -v "$(CURDIR)/dist/keys":/keys:ro $(APK_IMAGE) \
-		sh -c 'cd /src && scripts/package-apk.sh /out'
+# for amd64 and arm64. The program is compiled once (build-all) and every format wraps that
+# binary. The apk files are signed with the repository key that signing-keys.sh puts in
+# dist/keys.
+package: build-all
+	$(MAKE) --no-print-directory packages
 
 # FreeBSD packages in ./dist/freebsd, one per FreeBSD release and CPU type. FreeBSD cannot run
 # in a container, so each release in packaging/freebsd/images runs as a virtual machine (QEMU
 # inside the Go container), where pkg(8) builds the packages, installs the one for the
 # machine and checks that the service runs. FREEBSD=15.1 limits the run to one release.
 .PHONY: package-freebsd
-package-freebsd:
-	mkdir -p dist
-	scripts/signing-keys.sh
-	$(PACKAGE_RUN) $(LINUX_IMAGE) sh -c 'cp -r /src /tmp/w && cd /tmp/w && \
-		scripts/package-binaries.sh /out'
+package-freebsd: build-all keys
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) LINUX_IMAGE=$(LINUX_IMAGE) \
 		FREEBSD=$(FREEBSD) scripts/package-freebsd.sh dist
 
@@ -176,6 +263,14 @@ package-lib-test:
 
 freebsd-lib-test:
 	scripts/freebsd-lib-test.sh
+
+# The helper that prints how long a part took, and the script that compiles every program.
+# Neither needs Docker nor a compiler, so both are part of check.
+part-test:
+	scripts/part-test.sh
+
+build-all-test:
+	scripts/build-all-test.sh
 
 # The timers the long test scripts print and put in the run summary. It needs no Docker, so it
 # is part of check and runs on every system.
@@ -210,17 +305,15 @@ service-test:
 
 # Signed package repositories in ./dist/repo, made from the packages make package left in
 # ./dist (it builds none). Keys come from scripts/signing-keys.sh, which is the one place that
-# picks real or throwaway keys. Each format runs in its own distribution's container, with
-# the keys mounted read-only.
-REPO_RUN := docker run --rm -v "$(CURDIR)":/src:ro -v "$(CURDIR)/dist":/out \
-	-v "$(CURDIR)/dist/keys":/keys:ro -w /src
-repo:
+# picks real or throwaway keys. Each format runs in the image of its own distribution's tools,
+# with the keys mounted read-only.
+repo: RUN_OPTS = $(KEYS_MOUNT)
+repo: keys | $(CACHE_DIRS)
 	@ls dist/*.deb dist/*.rpm dist/alpine/*/*.apk >/dev/null 2>&1 || \
 		{ echo "no packages in dist: run make package first"; exit 1; }
-	scripts/signing-keys.sh
-	$(REPO_RUN) $(LINUX_IMAGE) sh scripts/repo-apt.sh /out
-	$(REPO_RUN) $(RPM_IMAGE) sh scripts/repo-rpm.sh /out
-	$(REPO_RUN) $(APK_IMAGE) sh scripts/repo-apk.sh /out
+	$(LINUX_RUN) sh scripts/repo-apt.sh /src/dist
+	$(RPM_RUN) sh scripts/repo-rpm.sh /src/dist
+	$(APK_RUN) sh scripts/repo-apk.sh /src/dist
 
 # Installs from the repository on every system in packaging/test-systems with signature
 # checks on, and checks that a damaged repository is refused.

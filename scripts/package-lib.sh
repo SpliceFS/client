@@ -29,6 +29,12 @@ fail() {
     exit 1
 }
 
+# Writes the service unit as the packages ship it to the file $1. The unit in the repository
+# is written for a manual install under /usr/local; the packages put the program in /usr/bin.
+package_unit() {
+    sed 's|/usr/local/bin/|/usr/bin/|' "packaging/systemd/$program.service" > "$1"
+}
+
 # Fetches an image for one test system: up to 3 tries, 5 seconds apart, quiet on success.
 # A registry that fails to deliver now and then is not a fault of the package under test, so
 # the callers report a failed download as one. Pulling first also keeps the download out of

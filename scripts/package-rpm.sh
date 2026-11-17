@@ -1,13 +1,16 @@
 #!/bin/sh
-# Wraps the compiled program into rpm packages, one per CPU type, with rpmbuild. It runs
-# inside a Rocky Linux container (make package) after package-binaries.sh.
+# Wraps the compiled programs of OUTPUT_DIR/bin (scripts/build-all.sh) into rpm packages, one
+# per CPU type, with rpmbuild. It runs in the rpm-build image (make package-rpm) and compiles
+# nothing.
 set -eu
 
 out="${1:?usage: package-rpm.sh OUTPUT_DIR}"
 # shellcheck source=package-lib.sh
 . scripts/package-lib.sh
 
-dnf install -y -q rpm-build >/dev/null
+unit="$(mktemp)"
+trap 'rm -f "$unit"' EXIT
+package_unit "$unit"
 
 for arch in amd64 arm64; do
     case "$arch" in
@@ -19,8 +22,8 @@ for arch in amd64 arm64; do
     rpmbuild -bb --quiet --target "$rpmarch" \
         --define "_topdir $top" \
         --define "pkg_version $rpmver" \
-        --define "stage $out/stage/$arch" \
-        --define "unit $out/stage/$program.service" \
+        --define "stage $out/bin/linux-$arch" \
+        --define "unit $unit" \
         --define "src $PWD" \
         "packaging/rpm/$name.spec"
     cp "$top/RPMS/$rpmarch/$name-$rpmver-1.$rpmarch.rpm" "$out/"

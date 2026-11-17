@@ -3,7 +3,7 @@
 # in packaging/freebsd/images it starts that release as a virtual machine, where pkg(8)
 # builds the package for amd64 and arm64, installs the one for the machine and checks that
 # the service runs (scripts/freebsd-job.sh). It runs on the host (make package-freebsd)
-# after package-binaries.sh and scripts/signing-keys.sh and needs Docker, curl and xz.
+# after scripts/build-all.sh and scripts/signing-keys.sh and needs Docker, curl and xz.
 #
 # The machine also builds the signed package repository: it gets the keys and the packages
 # published before (OUTPUT_DIR/repo/freebsd/FreeBSD:<major>:<cpu>/) and returns the folders
@@ -28,8 +28,8 @@ out="$(cd "$out" && pwd)"
 
 for arch in amd64 arm64; do
     for each in $programs; do
-        [ -f "$out/stage/freebsd-$arch/$each" ] ||
-            fail "$out/stage/freebsd-$arch/$each does not exist; run package-binaries.sh first"
+        [ -f "$out/bin/freebsd-$arch/$each" ] ||
+            fail "$out/bin/freebsd-$arch/$each does not exist; run build-all.sh first"
     done
 done
 
@@ -42,7 +42,7 @@ published="$out/repo/freebsd"
 # user can do neither: both belong to root.
 repo_files() {
     source_folder="$(pwd)"
-    docker run --rm -v "$source_folder":/src:ro -v "$out":/out "$image" \
+    docker run --rm --user 0 -v "$source_folder":/src:ro -v "$out":/out "$image" \
         sh /src/scripts/freebsd-repo-files.sh "$@"
 }
 
@@ -53,7 +53,7 @@ build_and_test() {
     freebsd_job_folder "$job" freebsd-job.sh "$name" "$program" "$pkgver" "$VERSION"
     for arch in amd64 arm64; do
         for each in $programs; do
-            cp "$out/stage/freebsd-$arch/$each" "$job/$each-$arch"
+            cp "$out/bin/freebsd-$arch/$each" "$job/$each-$arch"
         done
     done
     cp "packaging/freebsd/$program.rc" packaging/freebsd/manifest.in packaging/freebsd/plist \
