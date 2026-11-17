@@ -177,8 +177,8 @@ check: script-modes tracked-files static-here unit-here race-here
 # The same on any system that has Docker, in the images.
 check-in-images: static unit race
 
-# A script that lost its executable bit fails only where it is run directly, which for the
-# publishing script is the release job. This finds it in every check. Libraries (-lib.sh, and
+# A script that lost its executable bit fails only where it is run directly, which is often a
+# CI job. This finds it in every check. Libraries (-lib.sh, and
 # timing.sh) are read by other scripts and never run, and so are the scenario files of the
 # cluster test.
 script-modes:
@@ -351,7 +351,7 @@ server-lib-test:
 # Checks in a Debian, a Rocky Linux and an Alpine system that those versions sort the way
 # a release needs (a pre-release before its release) and that apk accepts them. It is a
 # prerequisite of package-test, not of check, because it needs Docker; package-test is what CI
-# and the release job already run before anything is published.
+# runs, and the packages repository tests its packages again before it publishes them.
 package-order-test:
 	scripts/package-order-test.sh
 
