@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.35] - 2026-11-17
+
+- Releases include the plain programs for every system and CPU type, listed in the signed checksums.
+
 ## [0.5.34] - 2026-11-17
 
 - Internal: releases build in parallel and publish only after every build has finished.
