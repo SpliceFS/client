@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.31] - 2026-11-17
+
+- Internal: fuzzing runs in the go image, one parallel CI job per package.
+
 ## [0.5.30] - 2026-11-17
 
 - Internal: every build and test part runs in prebuilt images as its own parallel CI job;
