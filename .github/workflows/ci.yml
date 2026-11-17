@@ -112,14 +112,37 @@ jobs:
           path: dist/bin
           if-no-files-found: error
 
+  # The parts of the integration test are listed by scripts/compat.sh: the runs of the rule
+  # below, and each group of the cluster scenarios (scripts/cluster-groups). The jobs of the
+  # next job are made from that list, so a group is added to the file and nowhere else.
+  integration-parts:
+    needs: tip
+    name: The parts of the integration test
+    runs-on: ubuntu-latest
+    outputs:
+      parts: ${{ steps.parts.outputs.parts }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: List the parts
+        id: parts
+        run: |
+          parts="$(scripts/compat.sh parts | jq -Rsc 'split("\n") | map(select(. != ""))')"
+          echo "parts=$parts" >> "$GITHUB_OUTPUT"
+
   # The rule this proves: with the same first version number, a client works with every
   # server whose second number is equal or higher, and refuses one whose second number is
   # lower. So a change of this client must not break the released servers it has to work
-  # with. The client mounts for real, as root, in a container that has FUSE.
+  # with. The client mounts for real, as root, in a container that has FUSE. One job runs the
+  # compatibility runs, and one job each runs a group of the cluster scenarios, so that no
+  # job is longer than the others.
   integration:
-    needs: tip
-    name: The real client against the real servers
+    needs: integration-parts
+    name: The real client against the real servers (${{ matrix.part }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ${{ fromJSON(needs.integration-parts.outputs.parts) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: The FUSE device exists
@@ -128,7 +151,7 @@ jobs:
         with:
           folder: .cache/root
       - name: The real client against the real servers
-        run: make integration
+        run: make integration INTEGRATION_PART=${{ matrix.part }}
 
   # A macOS runner cannot run Linux containers, so this is the one part that runs on the
   # machine itself, with the Go release that is current. The mount layer of macOS is only
@@ -306,6 +329,7 @@ jobs:
       - unit
       - race
       - build
+      - integration-parts
       - integration
       - macos
       - fuzz

@@ -25,7 +25,7 @@ with `mount(2)`; every other part runs as your own user.
 make build        # build splicefs into ./bin
 make check        # with the tools installed: format check, vet, module files tidy, both linters, tests with the coverage gate, tests with the race detector
 make check-in-images # the same in our images (Docker); prints how long each part took
-make integration  # the real client against released servers (Docker; make compat on Linux as root)
+make integration  # the real client against released servers (Docker; make compat on Linux as root); INTEGRATION_PART=compat or a group of scripts/cluster-groups runs one part of it
 make lint         # golangci-lint (the configuration CI uses), then ShellCheck with every optional check on
 make fmt          # rewrite files with gofmt
 ```
