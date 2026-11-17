@@ -175,8 +175,9 @@ Requires Go 1.26 or newer.
 
 ```
 make build      # the binary is ./bin/splicefs
-make check      # everything CI runs: format check, vet, tests with the race detector, coverage gate
-make check-linux  # the same on Linux with real FUSE mounts, in a container (needs Docker)
+make check      # with the tools installed: format check, vet, module files tidy, both linters, tests with the coverage gate, tests with the race detector
+make check-in-images  # the same in our images, with real FUSE mounts (needs Docker)
+make build-all  # every program for linux, freebsd and darwin on amd64 and arm64 in ./dist/bin (needs Docker)
 make lint         # golangci-lint, then ShellCheck on every shell script with every optional check on
 make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (needs Docker)
 make package-test # installs and removes each package in a clean container of every system

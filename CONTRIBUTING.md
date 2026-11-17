@@ -16,17 +16,24 @@ held to. Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
 
 You need Go 1.26 or newer and `make`. Linting uses
 [golangci-lint](https://golangci-lint.run) version 2 and [ShellCheck](https://www.shellcheck.net).
+With Docker you need none of the tools: `make check-in-images` runs the same checks in the images
+of ghcr.io/splicefs and keeps the Go caches in `./.cache`. The parts that mount for real (`unit`,
+`race`, `integration`) run as root in their container, because the tests of `mount/fuse` mount
+with `mount(2)`; every other part runs as your own user.
 
 ```
 make build        # build splicefs into ./bin
-make check        # format check, vet, tests with the race detector, coverage gate
-make compat-linux # the real client against released servers (Docker; make compat on Linux as root)
+make check        # with the tools installed: format check, vet, module files tidy, both linters, tests with the coverage gate, tests with the race detector
+make check-in-images # the same in our images (Docker); prints how long each part took
+make integration  # the real client against released servers (Docker; make compat on Linux as root)
 make lint         # golangci-lint (the configuration CI uses), then ShellCheck with every optional check on
 make fmt          # rewrite files with gofmt
 ```
 
-`make check` is what CI runs, and CI runs golangci-lint the way `make lint` does. `make lint` also
-runs ShellCheck, which CI runs as its own job.
+The parts of a build are make targets: `make static`, `make unit`, `make race`, `make build-all`,
+`make integration` and `make packages` (or `make package-deb`, `make package-rpm`,
+`make package-apk`). Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when it
+ends; `make build-all` leaves the programs in `./dist/bin`, which the package targets read.
 
 ## Branches and pull requests
 
