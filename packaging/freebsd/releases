@@ -1,0 +1,6 @@
+# The FreeBSD releases the package is built and tested on, one per line. Each release runs
+# in its own prepared image, ghcr.io/splicefs/freebsd-<release> (FREEBSD_IMAGE in the
+# Makefile), and has two repository folders on the package server, FreeBSD:<major>:amd64 and
+# FreeBSD:<major>:aarch64. Adding a release also needs that image.
+14.5
+15.1

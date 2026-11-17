@@ -6,7 +6,7 @@
 # tested and must not be promised. Releases with shorter support (Ubuntu's interim releases,
 # Fedora) are not listed.
 deb debian:12
-# golang:1.27 is Debian 13 and is the image the packages are built in.
+# golang:1.27 is Debian 13.
 deb golang:1.27
 deb ubuntu:22.04
 deb ubuntu:24.04

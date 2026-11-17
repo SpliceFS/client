@@ -1,83 +1,50 @@
 # shellcheck shell=sh
 # Sourced by the scripts that need a FreeBSD machine (check-freebsd.sh, package-freebsd.sh).
-# FreeBSD cannot run in a container, so each FreeBSD release in packaging/freebsd/images runs
-# as a virtual machine under QEMU inside the Go container. The caller sets out (the absolute
-# output folder), image (the container image QEMU is installed into) and defines fail.
+# FreeBSD cannot run in a container, so each FreeBSD release in packaging/freebsd/releases runs
+# as a virtual machine under QEMU inside the prepared image of that release (ghcr.io/splicefs,
+# named by FREEBSD_IMAGE in the Makefile). The disk in the image has been booted once and has
+# pkg set up, so a run downloads, unpacks and installs nothing. The images are for amd64, and
+# the machine needs hardware virtualization (KVM). The caller sets out (the absolute output
+# folder) and defines fail.
 
-# This file is shared with repositories that have no timing.sh: without it, timed just runs
-# the command.
-if ! command -v timed >/dev/null 2>&1; then
-    timed() {
-        shift
-        "$@"
-    }
-fi
+# The device of hardware virtualization, on this computer and inside the container.
+kvm_device="${KVM_DEVICE:-/dev/kvm}"
 
-# The machine has the CPU type of this computer: its own type runs fastest, and with KVM
-# (Linux on amd64) at full speed.
-host_cpu="$(uname -m)"
-case "$host_cpu" in
-    x86_64 | amd64) machine=amd64 ;;
-    arm64 | aarch64) machine=arm64 ;;
-    *) fail "no FreeBSD image for $host_cpu" ;;
-esac
-
-# A checksum tool that fails gives an empty answer, which the caller reports as a mismatch.
-freebsd_checksum() {
-    if command -v sha256sum >/dev/null 2>&1; then
-        digest_line="$(sha256sum "$1")" || digest_line=""
-    else
-        digest_line="$(shasum -a 256 "$1")" || digest_line=""
-    fi
-    echo "${digest_line%% *}"
+# Fails when the machine could only be emulated, which takes many times as long and looks like
+# a hang. scripts/freebsd-require-kvm.sh runs it before anything is built.
+freebsd_require_kvm() {
+    [ -c "$kvm_device" ] ||
+        fail "the FreeBSD machine needs hardware virtualization (KVM), and $kvm_device is not a device on this computer. Run on Linux on amd64 with KVM."
 }
 
-# freebsd_unpack <packed image> <disk image>: the disk appears only when it is whole.
-freebsd_unpack() {
-    xz -dc "$1" >"$2.part"
-    mv "$2.part" "$2"
+# The prepared image of a release: FREEBSD_IMAGE, which the caller sets, with the release put in.
+# shellcheck disable=SC2154
+freebsd_image() {
+    echo "${FREEBSD_IMAGE%@RELEASE@*}$1${FREEBSD_IMAGE#*@RELEASE@}"
 }
 
-# Calls "$1 <release> <disk image>" for every release in the list that fits this machine,
-# after fetching its image when it is not in the cache yet. FREEBSD limits the run to one
-# release. An image is the official one of the FreeBSD project and must match the checksum
-# in the list, so a changed download cannot slip into a build.
+# Calls "$1 <release>" for every release in the list. FREEBSD limits the run to one release.
 freebsd_each_release() {
+    case "${FREEBSD_IMAGE:-}" in
+        *@RELEASE@*) ;;
+        *) fail "FREEBSD_IMAGE must name the image with @RELEASE@ where the release goes, for example ghcr.io/splicefs/freebsd-@RELEASE@:v2" ;;
+    esac
     # A name of its own: shell variables are global, and a step that loops with a variable
     # named like this one would replace the step to call for the next release.
     freebsd_step="$1"
-    # The caller sets out.
-    # shellcheck disable=SC2154
-    cache="$out/cache/freebsd"
-    mkdir -p "$cache"
     ran=0
-    while read -r release image_machine sum url; do
+    while read -r release; do
         # Blank lines and comments are skipped; any other line is a release.
         case "$release" in
             "" | "#"*) continue ;;
             *) ;;
         esac
-        [ "$image_machine" = "$machine" ] || continue
         [ -z "${FREEBSD:-}" ] || [ "$FREEBSD" = "$release" ] || continue
         ran=$((ran + 1))
-        packed="$cache/$(basename "$url")"
-        disk="${packed%.xz}"
-        if [ ! -f "$disk" ]; then
-            echo "fetching FreeBSD $release ($machine)"
-            timed "FreeBSD $release: download the image" curl -fsS -o "$packed.part" "$url"
-            digest="$(timed "FreeBSD $release: check the image checksum" freebsd_checksum "$packed.part")"
-            [ "$digest" = "$sum" ] ||
-                fail "$url does not have the checksum in packaging/freebsd/images"
-            mv "$packed.part" "$packed"
-            # Unpacked under a temporary name and renamed when complete: a run that is killed
-            # while unpacking must not leave a short disk that the next run takes as cached.
-            timed "FreeBSD $release: unpack the image" freebsd_unpack "$packed" "$disk"
-            rm -f "$packed"
-        fi
         # The loop reads the list on standard input, which the callback must not consume.
-        "$freebsd_step" "$release" "$disk" </dev/null
-    done < packaging/freebsd/images
-    [ "$ran" -gt 0 ] || fail "no image in packaging/freebsd/images for ${FREEBSD:-any release} on $machine"
+        "$freebsd_step" "$release" </dev/null
+    done < packaging/freebsd/releases
+    [ "$ran" -gt 0 ] || fail "no release in packaging/freebsd/releases matches ${FREEBSD:-any release}"
 }
 
 # freebsd_job_folder <folder> <job script> [argument ...]
@@ -94,21 +61,23 @@ freebsd_job_folder() {
     printf 'instance-id: %s\nlocal-hostname: build\n' "$(basename "$folder")" > "$folder/meta-data"
 }
 
-# freebsd_run <disk image> <job folder> <result folder> [input archive]
-# Runs the machine to completion. Every path is under $out, which the container sees as /out.
+# freebsd_run <release> <job folder> <result folder> [input archive]
+# Runs the machine of the release to completion, with the machine runner that its image
+# provides. Every path is under $out, which the container sees as /out.
 # Sets run_status to the status of the run and never fails itself, so that the caller reports
 # it (a function used as a condition runs with set -e off).
 freebsd_run() {
     run_status=0
     source_dir="$(pwd)"
-    kvm=""
-    if [ "$machine" = amd64 ] && [ -e /dev/kvm ]; then kvm="--device /dev/kvm"; fi
+    vm_image="$(freebsd_image "$1")"
     input=""
     if [ -n "${4:-}" ]; then input="/out/${4#"$out"/}"; fi
-    # kvm and input are one word each or empty, so they are left unquoted on purpose. The
-    # caller sets image and reads run_status.
+    # input is one word or empty, so it is left unquoted on purpose. The caller sets out and
+    # reads run_status.
     # shellcheck disable=SC2034,SC2086,SC2154
-    docker run --rm $kvm -e VM_TIMEOUT="${VM_TIMEOUT:-900}" -v "$source_dir":/src:ro -v "$out":/out "$image" \
-        sh /src/scripts/freebsd-vm.sh "$machine" "/out/${1#"$out"/}" "/out/${2#"$out"/}" \
-        "/out/${3#"$out"/}" $input || run_status=$?
+    docker run --rm --user 0 --device "$kvm_device" -e VM_TIMEOUT="${VM_TIMEOUT:-900}" \
+        -v "$source_dir":/src:ro -v "$out":/out "$vm_image" \
+        sh /src/scripts/freebsd-with-kvm.sh "$kvm_device" \
+        /freebsd/vm.sh amd64 /freebsd/disk.qcow2 "/out/${2#"$out"/}" "/out/${3#"$out"/}" \
+        $input || run_status=$?
 }

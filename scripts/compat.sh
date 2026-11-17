@@ -12,12 +12,37 @@
 #   refused  the newest server with the same first number and a lower second number, which
 #            this client must refuse
 #
+# Then several servers as one cluster are tried (scripts/cluster-test.sh), with the newest of
+# the servers that work; its scenarios are in groups (scripts/cluster-groups).
+#
 # SERVER_WORKS="tag tag" and SERVER_REFUSED="tag tag" replace that choice, to try the test
 # before a release exists. A SERVER_REFUSED that is set and empty means no refusal run.
+#
+# INTEGRATION_PART=compat runs only the runs above, and INTEGRATION_PART=GROUP only the cluster
+# scenarios of that group, which is how CI runs the test as several jobs. Empty runs it all.
+# "compat.sh parts" prints the parts, one per line, and runs nothing else.
 set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
+
+# The compatibility runs, then each group of the cluster scenarios.
+parts() {
+    echo compat
+    "$root/scripts/cluster-groups.sh" names
+}
+if [ "${1:-}" = parts ]; then
+    parts
+    exit 0
+fi
+
+part="${INTEGRATION_PART:-}"
+part_list="$(parts)"
+if [ -n "$part" ] && ! printf '%s\n' "$part_list" | grep -qxF "$part"; then
+    known="$(printf '%s\n' "$part_list" | tr '\n' ' ')"
+    echo "compat.sh: INTEGRATION_PART=$part is not a part of the integration test; the parts are: $known" >&2
+    exit 1
+fi
 
 # shellcheck source=timing.sh
 . "$root/scripts/timing.sh"
@@ -146,14 +171,21 @@ run_all() {
     done <"$tmp/run-list"
 }
 
-run_all works "$SERVER_WORKS"
-run_all refused "$SERVER_REFUSED"
+if [ -z "$part" ] || [ "$part" = compat ]; then
+    run_all works "$SERVER_WORKS"
+    run_all refused "$SERVER_REFUSED"
+fi
 
 # Several servers as one cluster are tried with the newest server this client works with:
 # all running, some of the listed ones not running, and servers that hold different files.
-cluster_tag="$(printf '%s\n' "$SERVER_WORKS" | tr ' ' '\n' | awk 'NF { last = $0 } END { print last }')"
-if [ -n "$cluster_tag" ]; then
-    "$root/scripts/cluster-test.sh" "$tmp/server-$cluster_tag/splicefsd" "$tmp/splicefs" </dev/null
+# The server was built above, or is built here when only the cluster is tried.
+if [ "$part" != compat ]; then
+    cluster_tag="$(printf '%s\n' "$SERVER_WORKS" | tr ' ' '\n' | awk 'NF { last = $0 } END { print last }')"
+    if [ -n "$cluster_tag" ]; then
+        [ -x "$tmp/server-$cluster_tag/splicefsd" ] ||
+            timed "build the released server $cluster_tag" build_server "$cluster_tag" </dev/null
+        CLUSTER_GROUP="$part" "$root/scripts/cluster-test.sh" "$tmp/server-$cluster_tag/splicefsd" "$tmp/splicefs" </dev/null
+    fi
 fi
 
 echo "compat: all runs as expected"

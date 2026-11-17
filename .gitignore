@@ -58,6 +58,8 @@ temp/
 /build/
 /dist/
 /out/
+# The Go module and build caches that the make parts keep between runs.
+/.cache/
 /vendor/
 *.exe
 *.exe~
@@ -158,8 +160,9 @@ $RECYCLE.BIN/
 cover.html
 
 # --- Virtual machine images and caches ---------------------------------------------
-# The FreeBSD build downloads disk images of several hundred megabytes into ./dist; these
-# rules catch one that is put anywhere else.
+# A virtual machine disk is several hundred megabytes and never belongs in the repository (the
+# FreeBSD disks live in the images of ghcr.io/splicefs); these rules catch one that is put
+# anywhere.
 *.qcow2
 *.img
 *.iso

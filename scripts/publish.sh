@@ -85,7 +85,7 @@ done
 # The FreeBSD versions come from the list the packages are built for, so they are written
 # down once. Each major version has one folder per CPU type.
 majors=$(awk '!/^#/ && NF { split($1, v, "."); print v[1] }' \
-  "$ROOT/packaging/freebsd/images" | sort -un)
+  "$ROOT/packaging/freebsd/releases" | sort -un)
 for major in $majors; do
   for arch in amd64 aarch64; do
     f=freebsd/FreeBSD:$major:$arch/meta.conf

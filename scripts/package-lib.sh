@@ -29,6 +29,12 @@ fail() {
     exit 1
 }
 
+# Writes the service unit as the packages ship it to the file $1. The unit in the repository
+# is written for a manual install under /usr/local; the packages put the program in /usr/bin.
+package_unit() {
+    sed 's|/usr/local/bin/|/usr/bin/|' "packaging/systemd/$program.service" > "$1"
+}
+
 # Fetches an image for one test system: up to 3 tries, 5 seconds apart, quiet on success.
 # A registry that fails to deliver now and then is not a fault of the package under test, so
 # the callers report a failed download as one. Pulling first also keeps the download out of
@@ -41,6 +47,13 @@ pull_image() {
         if [ "$tries" -lt 3 ]; then sleep 5; fi
     done
     return 1
+}
+
+# Whether a line of packaging/test-systems is part of this run. ONLY names one format or one
+# image; empty means every line. Every script that walks the list asks here, so that CI can
+# run one format per job the same way each of them. Usage: system_selected FORMAT IMAGE.
+system_selected() {
+    [ -z "${ONLY:-}" ] || [ "$ONLY" = "$1" ] || [ "$ONLY" = "$2" ]
 }
 
 # VERSION is the version in the file VERSION as the Makefile makes it: v1.2.3 for a release,

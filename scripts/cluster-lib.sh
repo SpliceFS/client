@@ -678,11 +678,18 @@ scenario() {
 }
 
 # Runs the registered scenarios in the order of registration. CLUSTER_ONLY=text keeps those
-# whose name contains the text; none left is an error, because a typo there would otherwise
-# look like a pass. The list is read on file descriptor 3 so that no scenario step can
-# consume it through standard input.
+# whose name contains the text, and CLUSTER_GROUP=name those of that group of
+# scripts/cluster-groups; with both, the scenarios that are in both. None left is an error,
+# because a typo there would otherwise look like a pass. The list is read on file descriptor 3
+# so that no scenario step can consume it through standard input.
 run_scenarios() {
     only="${CLUSTER_ONLY:-}"
+    group="${CLUSTER_GROUP:-}"
+    group_functions=""
+    if [ -n "$group" ]; then
+        # The script says what is wrong with an unknown group.
+        group_functions="$("$script_dir/cluster-groups.sh" scenarios "$group")" || exit 1
+    fi
     scenarios_total=0
     scenarios_ran=0
     while IFS= read -r registered <&3; do
@@ -694,6 +701,10 @@ run_scenarios() {
             *"$only"*) ;;
             *) continue ;;
         esac
+        # The group lists functions, which are unique, and a line of the list is a whole name.
+        if [ -n "$group" ] && ! printf '%s\n' "$group_functions" | grep -qxF "${registered%% *}"; then
+            continue
+        fi
         begin_scenario "$registered_name"
         # The function name is the label: it is unique and names the function to open.
         timed "${registered%% *}" "${registered%% *}"
@@ -701,8 +712,8 @@ run_scenarios() {
         scenarios_ran=$((scenarios_ran + 1))
     done 3<"$scenario_list"
     [ "$scenarios_total" -gt 0 ] || fail "no scenario is registered"
-    [ "$scenarios_ran" -gt 0 ] || fail "no scenario name contains CLUSTER_ONLY=$only"
-    if [ -n "$only" ]; then
-        echo "cluster: ran $scenarios_ran of $scenarios_total scenarios (CLUSTER_ONLY=$only)"
+    [ "$scenarios_ran" -gt 0 ] || fail "no scenario matches CLUSTER_GROUP=$group CLUSTER_ONLY=$only"
+    if [ -n "$only" ] || [ -n "$group" ]; then
+        echo "cluster: ran $scenarios_ran of $scenarios_total scenarios (CLUSTER_GROUP=$group CLUSTER_ONLY=$only)"
     fi
 }

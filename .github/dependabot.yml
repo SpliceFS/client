@@ -9,6 +9,9 @@ updates:
     ignore:
       - dependency-name: github.com/SpliceFS/common
   - package-ecosystem: github-actions
-    directory: /
+    # The action of this repository pins an action of its own, which / does not reach.
+    directories:
+      - /
+      - /.github/actions/go-cache
     schedule:
       interval: weekly

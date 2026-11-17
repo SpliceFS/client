@@ -6,8 +6,8 @@
 # when the package is removed. A failing system does not stop the run, so one run shows
 # every system that is broken. Runs on the host (make service-test, CI); it needs Docker and
 # curl. Environment: VERSION and PACKAGE_DATE as for the build; PLATFORM (linux/amd64 or
-# linux/arm64) tests that CPU type by emulation, empty means this machine's own; SYSTEMS
-# limits the run to the lines of packaging/test-systems that contain that text.
+# linux/arm64) tests that CPU type by emulation, empty means this machine's own; ONLY limits
+# the run to one format or one image of packaging/test-systems.
 #
 # What differs between package formats lives in scripts/service-test-<format>.sh, which this
 # file sources and which defines these functions (the first argument is the container):
@@ -159,7 +159,9 @@ systems="$(cat packaging/test-systems)"
 while read -r format image; do
     # Blank lines and comments are skipped; every other line is a system to test.
     case "$format" in "" | "#"*) continue ;; *) ;; esac
-    case "$format $image" in *"${SYSTEMS:-}"*) ;; *) continue ;; esac
+    # system_selected is one test whose status is the answer, so set -e being off inside it changes nothing.
+    # shellcheck disable=SC2310
+    system_selected "$format" "$image" || continue
     if [ ! -f "scripts/service-test-$format.sh" ]; then
         echo "skipped: no service test for $format yet ($image)"
         continue

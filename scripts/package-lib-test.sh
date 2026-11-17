@@ -52,5 +52,41 @@ refuse abc1234-dirty abc1234-dirty
 refuse dev dev
 refuse 1.2.3 1.2.3
 
+# The unit in the repository is written for a manual install under /usr/local; the unit a
+# package ships has the program in /usr/bin, and nothing else is lost.
+program="$(VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c '. scripts/package-lib.sh; echo "$program"')"
+got="$(VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c '. scripts/package-lib.sh; package_unit /dev/stdout' 2>&1)" || true
+got_lines="$(printf '%s\n' "$got" | wc -l)"
+repo_lines="$(wc -l < "packaging/systemd/$program.service")"
+if printf '%s\n' "$got" | grep -qx "ExecStart=/usr/bin/$program" &&
+    ! printf '%s\n' "$got" | grep -q '/usr/local/' && [ "$got_lines" -eq "$repo_lines" ]; then
+    echo "ok   the packaged unit has the program in /usr/bin"
+else
+    printf 'FAIL the packaged unit has the wrong program path or lost lines: %s\n' "$got"
+    failed=$((failed + 1))
+fi
+
+# ONLY limits a run to one format or one image, for every script that walks packaging/test-systems.
+# $1 ONLY, $2 format, $3 image, $4 selected (yes or no).
+selects() {
+    if ONLY="$1" VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c \
+        '. scripts/package-lib.sh; system_selected "$1" "$2"' sh "$2" "$3"; then got=yes; else got=no; fi
+    if [ "$got" = "$4" ]; then
+        printf 'ok   ONLY="%s" %s %s: %s\n' "$1" "$2" "$3" "$got"
+    else
+        printf 'FAIL ONLY="%s" %s %s: want %s got %s\n' "$1" "$2" "$3" "$4" "$got"
+        failed=$((failed + 1))
+    fi
+}
+
+selects "" deb debian:12 yes
+selects deb deb debian:12 yes
+selects rpm deb debian:12 no
+selects debian:12 deb debian:12 yes
+selects debian:12 deb ubuntu:24.04 no
+# A part of a name is not a name: the filter says which format or which image, not a pattern.
+selects deb rpm amazonlinux:2023 no
+selects debian rpm rockylinux/rockylinux:9 no
+
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "package versions: all mappings as expected"

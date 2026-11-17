@@ -1,10 +1,11 @@
 #!/bin/sh
-# Runs the tests with the race detector and fails unless statement coverage is 100%.
+# Runs the tests with coverage and fails unless statement coverage is 100%. The race detector
+# has a part of its own (make race).
 set -eu
 
 profile="${1:-coverage.out}"
 
-go test -race -covermode=atomic -coverprofile="$profile" ./...
+go test -coverprofile="$profile" ./...
 
 total="$(go tool cover -func="$profile" | awk '$1 == "total:" {print $3}')"
 if [ "$total" != "100.0%" ]; then
