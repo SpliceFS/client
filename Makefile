@@ -56,7 +56,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover fuzz lint package-lib-test \
 	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test \
-	cluster-groups-test package package-order-test package-test service-test repo repo-test \
+	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
 	publish-fetch publish publish-check publish-test release-assets clean
 
 all: check build
@@ -113,7 +113,7 @@ unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test part-test \
-	build-all-test cluster-groups-test
+	build-all-test cluster-groups-test fuzz-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(ROOT_CACHE_DIRS)
@@ -311,6 +311,11 @@ timing-test:
 # and runs on every system.
 cluster-groups-test:
 	scripts/cluster-groups-test.sh
+
+# The scripts that find the fuzz targets and run them, against a stand-in for go. It needs no
+# Docker, so it is part of check and runs on every system.
+fuzz-test:
+	scripts/fuzz-test.sh
 
 # How the test scripts ask a server for a password hash, with older and newer servers. It needs
 # no Docker, so it is part of check and runs on every system.
