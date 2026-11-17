@@ -50,18 +50,20 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         with:
           fetch-depth: 0   # the scanner needs history to attribute new code
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      # The mount tests need to mount, so the part runs as root with the FUSE device, which
+      # appears when the fuse kernel module is loaded (see the unit job of ci.yml).
+      - name: The FUSE device exists
+        if: steps.gate.outputs.enabled == 'true'
+        run: test -c /dev/fuse || sudo modprobe fuse
+      - uses: ./.github/actions/go-cache
         if: steps.gate.outputs.enabled == 'true'
         with:
-          go-version: stable
-      - name: Install FUSE
-        if: steps.gate.outputs.enabled == 'true'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq fuse3
-      # The mount tests need to mount, which works as root with no further setup. This is
-      # the same configuration CI measures coverage in.
+          folder: .cache/root
+      # The same part that CI runs, in the same image; it leaves coverage.out where
+      # sonar-project.properties looks for it.
       - name: Tests with coverage
         if: steps.gate.outputs.enabled == 'true'
-        run: sudo -E env "PATH=$PATH" scripts/coverage.sh coverage.out
+        run: make unit
       # Lands next to coverage.out; sonar-project.properties names both reports.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.gate.outputs.enabled == 'true'
