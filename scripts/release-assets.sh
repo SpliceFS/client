@@ -1,8 +1,8 @@
 #!/bin/sh
 # Collects the files of THIS version for the GitHub release into dist/release: the two deb
-# files, the two signed rpm files, the two apk files, SHA256SUMS and its detached OpenPGP
-# signature SHA256SUMS.asc. Runs on the host after make package and make repo (make
-# release-assets). Variables: VERSION and PACKAGE_DATE as for the build; SIGNING_KEY_FILE
+# files, the two signed rpm files, the two apk files, the plain program archive of each system
+# and CPU type, SHA256SUMS and its detached OpenPGP signature SHA256SUMS.asc. Runs on the host
+# after make package, make repo and make archives (make release-assets). Variables: VERSION and PACKAGE_DATE as for the build; SIGNING_KEY_FILE
 # (required, armored secret signing key, no passphrase); DIST_DIR (default dist); KEYS_DIR
 # (default DIST_DIR/keys, must hold the public key splicefs.asc); RELEASE_DIR (default
 # DIST_DIR/release). The key is never printed.
@@ -46,6 +46,15 @@ for arch in x86_64 aarch64; do
     f="$dist/alpine/$arch/$name-$apkver-r0.apk"
     [ -f "$f" ] || fail "missing $f, run make package first"
     cp "$f" "$out/$name-$apkver-r0.$arch.apk"
+done
+
+# The plain program archives, one for each system and CPU type of the build (make archives).
+# The names are ours and hold no spaces, so the list is split on purpose.
+systems="$(built_systems "$dist")"
+for system in $systems; do
+    f="$dist/$(archive_name "$system")"
+    [ -f "$f" ] || fail "missing $f, run make archives first"
+    cp "$f" "$out/"
 done
 
 # Sorted in the C locale so the file is the same on every system.
