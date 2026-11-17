@@ -1,0 +1,55 @@
+name: Release keys
+description: Writes the signing keys, and when given the upload key, to files for the make targets of a release.
+
+# The jobs of the release that sign or upload all need the same files, so they are written
+# once. The secrets reach this action as inputs, because an action cannot read the secrets of
+# the workflow itself, and only a job of the publish environment has them. The files are
+# found through variables that every later step of the job sees: SIGNING_DIR for the signing
+# keys, and for the upload UPLOAD_KEY_FILE and UPLOAD_KNOWN_HOSTS_FILE (see scripts/publish.sh).
+inputs:
+  signing-openpgp-subkey:
+    description: The OpenPGP signing subkey, armored, for the repositories and the release files.
+    required: true
+  signing-alpine-key:
+    description: The RSA key that signs Alpine packages and the FreeBSD catalog.
+    required: true
+  upload-ssh-key:
+    description: The private key that uploads to the package server. Left out, nothing for the upload is written.
+    default: ""
+  upload-known-hosts:
+    description: The known hosts line of the package server, written with the upload key.
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Only the two public key files are used from this repository.
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: SpliceFS/packages
+        path: public-keys
+    - name: Write the signing keys to files
+      shell: bash
+      env:
+        SIGNING_OPENPGP_SUBKEY: ${{ inputs.signing-openpgp-subkey }}
+        SIGNING_ALPINE_KEY: ${{ inputs.signing-alpine-key }}
+      run: |
+        umask 077
+        mkdir "$RUNNER_TEMP/signing"
+        printf '%s\n' "$SIGNING_OPENPGP_SUBKEY" \
+          > "$RUNNER_TEMP/signing/splicefs-openpgp-signing-subkey.asc"
+        printf '%s\n' "$SIGNING_ALPINE_KEY" > "$RUNNER_TEMP/signing/splicefs.rsa"
+        cp public-keys/keys/splicefs.asc public-keys/keys/splicefs.rsa.pub "$RUNNER_TEMP/signing/"
+        echo "SIGNING_DIR=$RUNNER_TEMP/signing" >> "$GITHUB_ENV"
+    - name: Write the upload key and the known hosts line to files
+      if: ${{ inputs.upload-ssh-key != '' }}
+      shell: bash
+      env:
+        UPLOAD_SSH_KEY: ${{ inputs.upload-ssh-key }}
+        UPLOAD_KNOWN_HOSTS: ${{ inputs.upload-known-hosts }}
+      run: |
+        umask 077
+        printf '%s\n' "$UPLOAD_SSH_KEY" > "$RUNNER_TEMP/upload_key"
+        printf '%s\n' "$UPLOAD_KNOWN_HOSTS" > "$RUNNER_TEMP/known_hosts"
+        echo "UPLOAD_KEY_FILE=$RUNNER_TEMP/upload_key" >> "$GITHUB_ENV"
+        echo "UPLOAD_KNOWN_HOSTS_FILE=$RUNNER_TEMP/known_hosts" >> "$GITHUB_ENV"

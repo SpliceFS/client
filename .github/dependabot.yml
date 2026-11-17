@@ -13,5 +13,6 @@ updates:
     directories:
       - /
       - /.github/actions/go-cache
+      - /.github/actions/release-keys
     schedule:
       interval: weekly

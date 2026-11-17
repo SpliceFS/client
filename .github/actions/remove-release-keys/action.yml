@@ -1,0 +1,15 @@
+name: Remove release keys
+description: Removes the files that the release-keys action wrote and the copies a build made of them.
+
+# The last step of every job that used release-keys, run whether the job failed or not. The
+# runner is thrown away after the job, so this is a second line of defence. dist/freebsd-input
+# holds the archives that carry the Alpine key into the FreeBSD machines.
+runs:
+  using: composite
+  steps:
+    - name: Remove the secret files
+      shell: bash
+      run: |
+        rm -rf "$RUNNER_TEMP/signing" dist/freebsd-input
+        rm -f "$RUNNER_TEMP/upload_key" "$RUNNER_TEMP/known_hosts"
+        rm -f dist/keys/splicefs-openpgp-signing-subkey.asc dist/keys/splicefs.rsa
