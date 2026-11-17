@@ -4,7 +4,9 @@
 # container. Runs on the host (make package-order-test, part of make package-test, so CI and
 # the release job run it). Every version in the list below must compare as older than the
 # next one, and apk must accept every Alpine version as valid.
-# Environment: DEB_IMAGE, RPM_IMAGE, APK_IMAGE name the images; PACKAGE_DATE as for the build.
+# The container is the first system of its format in packaging/test-systems, as in the upgrade
+# test. It is not booted, because the package manager alone answers the question.
+# Environment: PACKAGE_DATE as for the build.
 # Inside a container the script is called as: package-order-test.sh inside FORMAT VERSION...
 set -eu
 
@@ -55,14 +57,8 @@ v1.2.3-rc.2 v1.2.3 v1.2.3-dirty v1.2.4-rc.1 v1.2.4"
 
 failed=0
 for format in deb rpm apk; do
-    case "$format" in
-        deb) image="${DEB_IMAGE:-debian:12}" ;;
-        rpm) image="${RPM_IMAGE:-rockylinux/rockylinux:9}" ;;
-        apk) image="${APK_IMAGE:-alpine:3.22}" ;;
-        *)
-            echo "FAIL unknown format $format" >&2
-            exit 1 ;;
-    esac
+    image="$(awk -v f="$format" '$1 == f { print $2; exit }' packaging/test-systems)"
+    [ -n "$image" ] || { echo "FAIL packaging/test-systems has no $format system" >&2; exit 1; }
     list=""
     for v in $versions; do
         got="$(VERSION="$v" FORMAT="$format" sh -c \
