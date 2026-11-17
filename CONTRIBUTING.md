@@ -14,7 +14,7 @@ held to. Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Development setup
 
-You need Go 1.26 or newer and `make`. Linting uses
+You need Go 1.27 or newer and `make`. Linting uses
 [golangci-lint](https://golangci-lint.run) version 2 and [ShellCheck](https://www.shellcheck.net).
 With Docker you need none of the tools: `make check-in-images` runs the same checks in the images
 of ghcr.io/splicefs and keeps the Go caches in `./.cache`. The parts that mount for real (`unit`,
@@ -188,7 +188,7 @@ The HTTP API has its own version in the URL (`/v1/`). A server keeps serving an 
 for as long as a supported client release uses it.
 
 The Release workflow builds the deb, rpm and apk packages for both CPU types, signs the apt, rpm
-and Alpine repositories, installs every package and every repository in clean containers of each
+and Alpine repositories, installs every package and every repository in booted servers of each
 supported system, and only when all of that passes publishes the repositories to
 `packages.splicefs.org/client` (older versions stay in them). It then creates the GitHub release
 for the tag, with the packages, `SHA256SUMS` and its signature `SHA256SUMS.asc`, and the

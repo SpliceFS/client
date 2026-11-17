@@ -176,7 +176,7 @@ func TestLookupDescribesFilesAndDirectories(t *testing.T) {
 			}
 			want := fuse.Attr{
 				Ino: fakeInode(tt.path), Size: tt.wantSize, Blocks: tt.blocks, Mode: tt.wantMode, Nlink: 1,
-				Owner:   fuse.Owner{Uid: 1000, Gid: 1001},
+				Uid: 1000, Gid: 1001,
 				Atime:   uint64(fakeMTime().Unix()),
 				Mtime:   uint64(fakeMTime().Unix()),
 				Ctime:   uint64(fakeMTime().Unix()),
@@ -760,7 +760,7 @@ func TestEveryMutationIsRefusedWithEROFS(t *testing.T) {
 		t.Fatal(status)
 	}
 	defer rig.raw.Release(nil, &fuse.ReleaseIn{InHeader: *hdr(file), Fh: fileHandle})
-	setattr := &fuse.SetAttrIn{SetAttrInCommon: fuse.SetAttrInCommon{InHeader: *hdr(file)}}
+	setattr := &fuse.SetAttrIn{InHeader: *hdr(file)}
 
 	tests := []struct {
 		name string
@@ -791,7 +791,7 @@ func TestEveryMutationIsRefusedWithEROFS(t *testing.T) {
 		}},
 		{"setattr of a file", func() fuse.Status { return rig.raw.SetAttr(nil, setattr, &fuse.AttrOut{}) }},
 		{"setattr of a directory", func() fuse.Status {
-			dirAttr := &fuse.SetAttrIn{SetAttrInCommon: fuse.SetAttrInCommon{InHeader: *hdr(rootID)}}
+			dirAttr := &fuse.SetAttrIn{InHeader: *hdr(rootID)}
 			return rig.raw.SetAttr(nil, dirAttr, &fuse.AttrOut{})
 		}},
 		{"write", func() fuse.Status {

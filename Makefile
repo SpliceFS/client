@@ -339,24 +339,25 @@ fuzz-test:
 server-lib-test:
 	scripts/server-lib-test.sh
 
-# Checks in a Debian, a Rocky Linux and an Alpine container that those versions sort the way
+# Checks in a Debian, a Rocky Linux and an Alpine system that those versions sort the way
 # a release needs (a pre-release before its release) and that apk accepts them. It is a
 # prerequisite of package-test, not of check, because it needs Docker; package-test is what CI
 # and the release job already run before anything is published.
 package-order-test:
 	scripts/package-order-test.sh
 
-# Installs and removes each package in a clean container of every system listed in
-# packaging/test-systems (CI reads the same list) and reports each system's result.
+# Installs and removes each package in a clean, booted server of every system listed in
+# packaging/test-systems (CI reads the same list) and reports each system's result. ONLY names
+# one format (ONLY=deb) or one image, as written in that file.
 package-test: package-order-test
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh
 
 # Proves the service, not only the files: in a container per system in packaging/test-systems
-# that runs that system's own service manager, installs the package and checks that the
-# service starts by itself, runs as the user the unit names, answers the status command,
-# restarts, comes back after a reboot and stops when the package is removed. It needs the
-# packages in ./dist from make package. ONLY=debian:12 or ONLY=deb runs only that image or
-# that format.
+# that is booted as a server, with that system's own service manager as process 1, installs
+# the package and checks that the service starts by itself, runs as the user the unit names,
+# answers the status command, restarts, comes back after a reboot and stops when the package
+# is removed. It needs the packages in ./dist from make package. ONLY=deb, or ONLY=<an image
+# of packaging/test-systems>, runs only that format or that image.
 service-test:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/service-test.sh
 

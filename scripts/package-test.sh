@@ -1,7 +1,8 @@
 #!/bin/sh
-# Tests on every system in packaging/test-systems, each in its own throwaway container, and
-# keeps going after a failure so one run shows every system that is broken. Runs on the
-# host (make package-test, make repo-test, CI). Usage: package-test.sh [package|repo].
+# Tests on every system in packaging/test-systems, each in its own throwaway container that
+# is booted as a server (its service manager is process 1), and keeps going after a failure
+# so one run shows every system that is broken. Runs on the host (make package-test,
+# make repo-test, CI). Usage: package-test.sh [package|repo].
 # "package" (the default) install-tests the packages with scripts/package-test-<format>.sh;
 # "repo" tests the signed repository in dist/repo with scripts/repo-test-<format>.sh, which
 # sees the repository at /repo and only the PUBLIC keys at /keys. Environment: VERSION and
@@ -34,19 +35,29 @@ if [ "$kind" = repo ]; then
 fi
 systems="$(cat "$root/packaging/test-systems")"
 log="$(mktemp)"
+container="splicefs-$kind-test-$$"
 # The timing report is printed on every way out, so a failed run still shows where time went.
-trap 'rm -f "$log"; timing_report "$title"' EXIT
+cleanup() {
+    rm -f "$log"
+    docker rm -f "$container" >/dev/null 2>&1 || true
+    timing_report "$title"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 passed=0
 failed=0
 
-# Runs one system's test in its own container. The container's output goes to the log, so the
-# redirection is part of this function and not of the timed call, which prints to the console.
-# $mounts is split on purpose: it holds several -v options.
+# Runs one system's test in the booted system, so the install happens on a server that is up.
+# The container keeps the mounts and the working directory it was started with. The output goes
+# to the log, so the redirections are part of this function and not of the timed call, which
+# prints to the console. $mounts is split on purpose: it holds several -v options. Each step
+# runs only when the one before it worked; the conditions are tests whose status is the answer.
 run_system_test() {
-    # shellcheck disable=SC2086
-    docker run --rm --platform "$platform" \
-        -e VERSION -e PACKAGE_DATE -v "$root":/src:ro $mounts -w /src \
-        "$image" sh "scripts/$kind-test-$format.sh" /out >"$log" 2>&1
+    # shellcheck disable=SC2086,SC2310
+    boot_system --name "$container" --platform "$platform" \
+        -e VERSION -e PACKAGE_DATE -v "$root":/src:ro $mounts -w /src "$image" >"$log" 2>&1 &&
+        wait_booted "$format" "$container" >>"$log" 2>&1 &&
+        docker exec "$container" sh "scripts/$kind-test-$format.sh" /out >>"$log" 2>&1
 }
 
 # A here-document keeps the counters in this shell; a pipe would run the loop in a subshell.
@@ -87,6 +98,7 @@ while read -r format image; do
         tail -n 15 "$log" | sed 's/^/     /'
         failed=$((failed + 1))
     fi
+    docker rm -f "$container" >/dev/null 2>&1 || true
 done <<LIST
 $systems
 LIST
