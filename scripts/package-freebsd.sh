@@ -83,6 +83,8 @@ build_and_test() {
     archive="$out/freebsd-input/$release.tar"
     timed "FreeBSD $release: prepare the repository input" repo_files input "$major" "freebsd-input/$release.tar"
     timed "FreeBSD $release: machine run" freebsd_run "$release" "$job" "$out/freebsd" "$archive"
+    # Removed before the result is looked at, so that a failed run leaves no key file either.
+    repo_files remove-input "freebsd-input/$release.tar"
     [ "$run_status" -eq 0 ] || fail "FreeBSD $release failed"
     timed "FreeBSD $release: check the packages" check_packages "$major"
     timed "FreeBSD $release: merge the repository" repo_files merge
