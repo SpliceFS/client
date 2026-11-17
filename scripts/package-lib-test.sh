@@ -79,14 +79,73 @@ selects() {
     fi
 }
 
-selects "" deb debian:12 yes
-selects deb deb debian:12 yes
-selects rpm deb debian:12 no
-selects debian:12 deb debian:12 yes
-selects debian:12 deb ubuntu:24.04 no
+selects "" deb ghcr.io/splicefs/server-debian-12:v1.0 yes
+selects deb deb ghcr.io/splicefs/server-debian-12:v1.0 yes
+selects rpm deb ghcr.io/splicefs/server-debian-12:v1.0 no
+selects ghcr.io/splicefs/server-debian-12:v1.0 deb ghcr.io/splicefs/server-debian-12:v1.0 yes
+selects ghcr.io/splicefs/server-debian-12:v1.0 deb ghcr.io/splicefs/server-ubuntu-24.04:v1.0 no
 # A part of a name is not a name: the filter says which format or which image, not a pattern.
-selects deb rpm amazonlinux:2023 no
-selects debian rpm rockylinux/rockylinux:9 no
+selects deb rpm ghcr.io/splicefs/server-amazonlinux-2023:v1.0 no
+selects server-rocky-9 rpm ghcr.io/splicefs/server-rocky-9:v1.0 no
+
+# A system is started the way the images README boots a server image, and the test waits for
+# its service manager the way that manager reports it. A stand-in for docker records what it
+# is asked and answers as a system in the state given by the variables of each case.
+fake="$(mktemp -d)"
+trap 'rm -rf "$fake"' EXIT
+cat > "$fake/docker" <<'DOCKER'
+#!/bin/sh
+echo "$*" >> "$FAKE_LOG"
+case "$1 $3" in
+    "exec systemctl") echo "$FAKE_SYSTEMD" ;;
+    "exec rc-status") echo "$FAKE_RUNLEVEL" ;;
+    "inspect "*) echo "$FAKE_RUNNING" ;;
+    *) ;;
+esac
+DOCKER
+chmod +x "$fake/docker"
+
+# $1 what is passed to boot_system, $2 the command line docker must get.
+boots() {
+    : > "$fake/log"
+    # $1 is split on purpose: it holds several arguments.
+    # shellcheck disable=SC2086
+    got="$(PATH="$fake:$PATH" FAKE_LOG="$fake/log" VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c \
+        '. scripts/package-lib.sh; boot_system "$@"' sh $1 2>&1 && cat "$fake/log")" || true
+    if [ "$got" = "$2" ]; then
+        printf 'ok   boot_system %s\n' "$1"
+    else
+        printf 'FAIL boot_system %s: want "%s" got "%s"\n' "$1" "$2" "$got"
+        failed=$((failed + 1))
+    fi
+}
+
+# $1 format, $2 state of systemd, $3 runlevel of OpenRC, $4 whether the container runs,
+# $5 the status wait_booted must return. Each case is ready at once or never, so none waits.
+waits() {
+    : > "$fake/log"
+    got=0
+    PATH="$fake:$PATH" FAKE_LOG="$fake/log" FAKE_SYSTEMD="$2" FAKE_RUNLEVEL="$3" FAKE_RUNNING="$4" \
+        VERSION=v1.2.3 PACKAGE_DATE=20261112 sh -c '. scripts/package-lib.sh; wait_booted "$1" box' sh "$1" >/dev/null 2>&1 || got=$?
+    if [ "$got" -eq "$5" ]; then
+        printf 'ok   wait_booted %-4s systemd=%-8s runlevel=%-8s running=%-5s status %s\n' "$1" "$2" "$3" "$4" "$got"
+    else
+        printf 'FAIL wait_booted %-4s systemd=%-8s runlevel=%-8s running=%-5s want status %s got %s\n' \
+            "$1" "$2" "$3" "$4" "$5" "$got"
+        failed=$((failed + 1))
+    fi
+}
+
+boots "--name box ghcr.io/splicefs/server-debian-12:v1.0" "run -d --privileged --cgroupns=host --tmpfs /run --tmpfs /run/lock --tmpfs /tmp --name box ghcr.io/splicefs/server-debian-12:v1.0"
+waits deb running "" true 0
+waits rpm degraded "" true 0
+waits apk "" default true 0
+# A format is waited for with its own service manager: the other one's answer does not count.
+waits apk running "" false 1
+waits deb "" default false 1
+# A container that has stopped will never be ready, so the wait ends at once.
+waits deb starting "" false 1
+waits apk "" boot false 1
 
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "package versions: all mappings as expected"

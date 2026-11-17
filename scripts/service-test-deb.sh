@@ -6,45 +6,6 @@
 
 unit="$program.service"
 
-# The images ship without a service manager. The distribution's own systemd package is the
-# only thing installed; recommended packages are left out because systemd runs without them.
-init_command() {
-    echo '[ -x /lib/systemd/systemd ] || {
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -qq && apt-get install -y -qq --no-install-recommends systemd
-    } && exec /lib/systemd/systemd'
-}
-
-# systemd shuts down cleanly on this signal; docker stop's default would only kill it.
-stop_signal() {
-    echo SIGRTMIN+3
-}
-
-# Polls instead of using is-system-running --wait because the command cannot run at all
-# until systemd is process 1, and every wait must have a limit. Units that cannot work in a
-# container make the state degraded, which is fine.
-wait_ready() {
-    waited=0
-    while :; do
-        state="$(docker exec "$1" systemctl is-system-running 2>/dev/null || true)"
-        # Any other state means systemd is not up yet.
-        case "$state" in running | degraded) return 0 ;; *) ;; esac
-        # A container that cannot be inspected is counted as stopped.
-        running="$(docker inspect -f '{{.State.Running}}' "$1")" || running=""
-        if [ "$running" != true ]; then
-            echo "the container stopped before systemd was up:" >&2
-            docker logs --tail 30 "$1" >&2 || true
-            return 1
-        fi
-        waited=$((waited + 1))
-        if [ "$waited" -ge 90 ]; then
-            echo "systemd still reports '$state' after 90 seconds" >&2
-            return 1
-        fi
-        sleep 1
-    done
-}
-
 install_package() {
     pkg="/pkg/${name}_${debver}_${platform#linux/}.deb"
     docker exec "$1" test -f "$pkg" || fail "$pkg does not exist; run make package first"
@@ -69,7 +30,7 @@ service_restart() {
     docker exec "$1" systemctl restart "$unit"
 }
 
-# Reads the owner of the running process from /proc because the images have no ps.
+# Reads the owner of the running process from /proc, which every system has, whatever ps it ships.
 service_user() {
     docker exec "$1" sh -c '
         pid="$(systemctl show -p MainPID --value "$1")"

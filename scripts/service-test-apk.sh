@@ -4,47 +4,6 @@
 # from the harness.
 # shellcheck disable=SC2154 # those variables are set by the file that sources this one
 
-# The images ship without a service manager. The distribution's own openrc package is the
-# only thing installed. A container cannot reach the hardware that OpenRC's boot services
-# expect, so OpenRC is told it runs in a container; that only configures the test system.
-# The commands run on every boot of the container, so each one can run twice without harm.
-init_command() {
-    echo '[ -x /sbin/openrc ] || apk add -q openrc
-    sed -i "/^#*rc_sys=/d" /etc/rc.conf
-    echo "rc_sys=docker" >>/etc/rc.conf
-    exec /sbin/init'
-}
-
-# busybox init powers off on SIGUSR2 after running the shutdown entries of inittab, which
-# is how OpenRC stops its services; its default signal, SIGTERM, reboots.
-stop_signal() {
-    echo SIGUSR2
-}
-
-# Booted means OpenRC has reached the default runlevel, which is where the package adds the
-# service. Before OpenRC is installed rc-status does not exist, and every wait must have a
-# limit, so this polls.
-wait_ready() {
-    waited=0
-    while :; do
-        level="$(docker exec "$1" rc-status --runlevel 2>/dev/null || true)"
-        [ "$level" != default ] || return 0
-        # A container that cannot be inspected is counted as stopped.
-        running="$(docker inspect -f '{{.State.Running}}' "$1")" || running=""
-        if [ "$running" != true ]; then
-            echo "the container stopped before OpenRC was up:" >&2
-            docker logs --tail 30 "$1" >&2 || true
-            return 1
-        fi
-        waited=$((waited + 1))
-        if [ "$waited" -ge 90 ]; then
-            echo "OpenRC is in runlevel '$level' after 90 seconds" >&2
-            return 1
-        fi
-        sleep 1
-    done
-}
-
 install_package() {
     case "$platform" in
         linux/arm64) arch=aarch64 ;;
@@ -73,7 +32,7 @@ service_restart() {
 }
 
 # The main process is the one that runs the program, not supervise-daemon, whose command
-# line only mentions it. The owner is read from /proc because the images have no ps.
+# line only mentions it. The owner is read from /proc, which every system has, whatever ps it ships.
 service_user() {
     docker exec "$1" sh -c '
         for dir in /proc/[0-9]*; do
