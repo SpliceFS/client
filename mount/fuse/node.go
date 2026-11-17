@@ -36,7 +36,7 @@ func (e *env) newNode(a core.Attr) fs.InodeEmbedder {
 	if a.Dir {
 		return &dirNode{node{env: e}}
 	}
-	return &fileNode{node: node{env: e}}
+	return &fileNode{env: e}
 }
 
 // stableAttr gives a node the inode number the core assigned to its path.
