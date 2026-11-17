@@ -6,8 +6,8 @@
 #
 # The groups are balanced by how long their scenarios take, not by topic, so that the jobs end
 # at about the same time and none takes much more than a minute and a half. A new scenario goes
-# into the group that is the shortest. Measured on 2026-11-17 in seconds, with the start of
-# every scenario counted: cluster-1 67, cluster-2 67, cluster-3 70, cluster-4 69.
+# into the group that is the shortest. Measured on 2026-11-17 with make integration, the whole
+# part in seconds: cluster-1 74, cluster-2 79, cluster-3 74, cluster-4 69 (compat 17).
 #
 
 cluster-1 basics_two_running_files_on_one
