@@ -58,7 +58,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test build-all-test \
 	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
 	publish-fetch publish publish-check publish-test release-assets release-pack release-unpack \
-	release-parts-test clean
+	release-parts-test clean archives archive-programs-test
 
 all: check build
 
@@ -114,7 +114,7 @@ unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test \
-	build-all-test cluster-groups-test fuzz-test release-parts-test
+	build-all-test archive-programs-test cluster-groups-test fuzz-test release-parts-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(ROOT_CACHE_DIRS)
@@ -130,6 +130,12 @@ build-all: | $(CACHE_DIRS)
 
 build-all-here:
 	LDFLAGS='$(LDFLAGS)' scripts/build-all.sh dist/bin
+
+# The plain program archives in ./dist, one for each system and CPU type in ./dist/bin (make
+# build-all): the programs, LICENSE and README.txt, for people who run SpliceFS by hand. They
+# are released with the packages (make release-assets). Needs only tar and gzip.
+archives:
+	$(PACKAGE_VARS) scripts/archive-programs.sh
 
 # This client against the released servers, in a container that may mount (FUSE) as root;
 # SERVER_WORKS, SERVER_REFUSED, CLUSTER_ONLY, CLUSTER_SEED and INTEGRATION_PART reach the
@@ -318,6 +324,9 @@ part-test:
 build-all-test:
 	scripts/build-all-test.sh
 
+archive-programs-test:
+	scripts/archive-programs-test.sh
+
 # The timers the long test scripts print and put in the run summary. It needs no Docker, so it
 # is part of check and runs on every system.
 timing-test:
@@ -399,9 +408,9 @@ publish-check:
 publish-test:
 	scripts/publish-test.sh
 
-# The files of this version for the GitHub release, in dist/release: the packages, SHA256SUMS
-# and its signature. SIGNING_KEY_FILE is the OpenPGP signing key; the default is the key
-# signing-keys.sh put in dist/keys.
+# The files of this version for the GitHub release, in dist/release: the packages, the program
+# archives (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE is the OpenPGP
+# signing key; the default is the key signing-keys.sh put in dist/keys.
 SIGNING_KEY_FILE ?= $(CURDIR)/dist/keys/splicefs-openpgp-signing-subkey.asc
 release-assets:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) SIGNING_KEY_FILE=$(SIGNING_KEY_FILE) \

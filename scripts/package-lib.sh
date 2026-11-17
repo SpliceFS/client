@@ -35,6 +35,22 @@ package_unit() {
     sed 's|/usr/local/bin/|/usr/bin/|' "packaging/systemd/$program.service" > "$1"
 }
 
+# The file name of the plain program archive (archive-programs.sh) of the system $1, written
+# <os>-<arch>. The version is the one the Makefile made, without the v.
+archive_name() {
+    printf '%s-%s-%s.tar.gz\n' "$name" "${VERSION#v}" "$1"
+}
+
+# Prints the systems make build-all put in the folder $1/bin, one <os>-<arch> to a line. The
+# build decides what the release is made for, so the files that are made from its output ask
+# it here and keep no list of their own.
+built_systems() {
+    [ -d "$1/bin" ] || fail "missing $1/bin, run make build-all first"
+    found="$(cd "$1/bin" && LC_ALL=C ls)"
+    [ -n "$found" ] || fail "$1/bin holds no system, run make build-all first"
+    echo "$found"
+}
+
 # Fetches an image for one test system: up to 3 tries, 5 seconds apart, quiet on success.
 # A registry that fails to deliver now and then is not a fault of the package under test, so
 # the callers report a failed download as one. Pulling first also keeps the download out of
