@@ -191,8 +191,9 @@ The Release workflow builds the deb, rpm and apk packages for both CPU types, si
 and Alpine repositories, installs every package and every repository in booted servers of each
 supported system, and only when all of that passes publishes the repositories to
 `packages.splicefs.org/client` (older versions stay in them). It then creates the GitHub release
-for the tag, with the packages, `SHA256SUMS` and its signature `SHA256SUMS.asc`, and the
-merged pull request as the notes.
+for the tag, with the packages, one plain program archive for each system and CPU type,
+`SHA256SUMS` (which lists every file) and its signature `SHA256SUMS.asc`, and the merged pull
+request as the notes.
 
 ## License
 
