@@ -6,50 +6,6 @@
 
 unit="$program.service"
 
-# Rocky Linux 8 ships systemd; the other images do not. The distribution's own systemd
-# package is the only thing installed, without the packages it only recommends, because
-# systemd runs without them. dnf and zypper are told apart on the system itself, as
-# scripts/package-test-rpm.sh does.
-init_command() {
-    echo '[ -x /usr/lib/systemd/systemd ] || {
-        if command -v dnf >/dev/null 2>&1; then
-            dnf install -y -q --setopt=install_weak_deps=False systemd
-        else
-            zypper --non-interactive --gpg-auto-import-keys install --no-recommends systemd
-        fi
-    } && exec /usr/lib/systemd/systemd'
-}
-
-# systemd shuts down cleanly on this signal; docker stop's default would only kill it.
-stop_signal() {
-    echo SIGRTMIN+3
-}
-
-# Polls instead of using is-system-running --wait because the command cannot run at all
-# until systemd is process 1, and every wait must have a limit. Units that cannot work in a
-# container make the state degraded, which is fine.
-wait_ready() {
-    waited=0
-    while :; do
-        state="$(docker exec "$1" systemctl is-system-running 2>/dev/null || true)"
-        # Any other state means systemd is not up yet.
-        case "$state" in running | degraded) return 0 ;; *) ;; esac
-        # A container that cannot be inspected is counted as stopped.
-        running="$(docker inspect -f '{{.State.Running}}' "$1")" || running=""
-        if [ "$running" != true ]; then
-            echo "the container stopped before systemd was up:" >&2
-            docker logs --tail 30 "$1" >&2 || true
-            return 1
-        fi
-        waited=$((waited + 1))
-        if [ "$waited" -ge 90 ]; then
-            echo "systemd still reports '$state' after 90 seconds" >&2
-            return 1
-        fi
-        sleep 1
-    done
-}
-
 install_package() {
     # The file name carries the CPU type in rpm's own spelling.
     case "$platform" in
@@ -91,7 +47,7 @@ service_restart() {
     docker exec "$1" systemctl restart "$unit"
 }
 
-# Reads the owner of the running process from /proc because the images have no ps.
+# Reads the owner of the running process from /proc, which every system has, whatever ps it ships.
 service_user() {
     docker exec "$1" sh -c '
         pid="$(systemctl show -p MainPID --value "$1")"
