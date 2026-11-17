@@ -180,7 +180,7 @@ make check-in-images  # the same in our images, with real FUSE mounts (needs Doc
 make build-all  # every program for linux, freebsd and darwin on amd64 and arm64 in ./dist/bin (needs Docker)
 make lint         # golangci-lint, then ShellCheck on every shell script with every optional check on
 make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (needs Docker)
-make package-test # installs and removes each package in a clean container of every system
+make package-test # installs and removes each package in a booted server of every system
 make repo         # signed apt, rpm and Alpine repositories in ./dist/repo from the packages in ./dist
 make package-freebsd  # FreeBSD packages in ./dist/freebsd and their signed repository in ./dist/repo/freebsd, built and tested in a FreeBSD virtual machine (needs Docker and KVM, so Linux on amd64)
 make repo-test    # installs from the repositories with signature checks on, in every system
@@ -191,8 +191,12 @@ make publish-test   # checks publishing and release-assets against local folders
 make release-assets # package files, SHA256SUMS and its signature for the GitHub release in ./dist/release
 ```
 
-`make package-test` covers every system listed in `packaging/test-systems`. From an arm64
-machine, `make package-test PLATFORM=linux/amd64` tests the other CPU type by emulation.
+`make package-test` covers every system listed in `packaging/test-systems`, and so do
+`make service-test` and `make repo-test`. Each system is a server image of ghcr.io/splicefs
+(`server-debian-12` and the others): the vendor's own minimal server install, started with its
+service manager as process 1, with nothing of ours in it. `ONLY=deb` or `ONLY=<image>` limits
+a run to one format or one image. From an arm64 machine,
+`make package-test PLATFORM=linux/amd64` tests the other CPU type by emulation.
 
 ## Repository layout
 
