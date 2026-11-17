@@ -52,9 +52,8 @@ jobs:
           fetch-depth: 0   # the scanner needs history to attribute new code
       # The mount tests need to mount, so the part runs as root with the FUSE device, which
       # appears when the fuse kernel module is loaded (see the unit job of ci.yml).
-      - name: The FUSE device exists
+      - uses: ./.github/actions/fuse
         if: steps.gate.outputs.enabled == 'true'
-        run: test -c /dev/fuse || sudo modprobe fuse
       - uses: ./.github/actions/go-cache
         if: steps.gate.outputs.enabled == 'true'
         with:

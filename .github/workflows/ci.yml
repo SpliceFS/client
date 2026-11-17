@@ -63,8 +63,7 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: The FUSE device exists
-        run: test -c /dev/fuse || sudo modprobe fuse
+      - uses: ./.github/actions/fuse
       - uses: ./.github/actions/go-cache
         with:
           folder: .cache/root
@@ -87,8 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: The FUSE device exists
-        run: test -c /dev/fuse || sudo modprobe fuse
+      - uses: ./.github/actions/fuse
       - uses: ./.github/actions/go-cache
         with:
           folder: .cache/root
@@ -145,8 +143,7 @@ jobs:
         part: ${{ fromJSON(needs.integration-parts.outputs.parts) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: The FUSE device exists
-        run: test -c /dev/fuse || sudo modprobe fuse
+      - uses: ./.github/actions/fuse
       - uses: ./.github/actions/go-cache
         with:
           folder: .cache/root

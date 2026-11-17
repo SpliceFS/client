@@ -1,0 +1,10 @@
+name: FUSE device
+description: >-
+  Makes sure /dev/fuse exists on the runner, for the parts that mount inside a container.
+  The device appears when the fuse kernel module is loaded; on the runner images it usually is.
+runs:
+  using: composite
+  steps:
+    - name: The FUSE device exists
+      shell: sh
+      run: test -c /dev/fuse || sudo modprobe fuse
