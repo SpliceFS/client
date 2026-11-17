@@ -55,9 +55,9 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	mkdir -p $@
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover fuzz lint package-lib-test \
-	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test package \
-	package-order-test package-test service-test repo repo-test publish-fetch publish publish-check \
-	publish-test release-assets clean
+	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test \
+	cluster-groups-test package package-order-test package-test service-test repo repo-test \
+	publish-fetch publish publish-check publish-test release-assets clean
 
 all: check build
 
@@ -113,7 +113,7 @@ unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test part-test \
-	build-all-test
+	build-all-test cluster-groups-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(ROOT_CACHE_DIRS)
@@ -131,8 +131,12 @@ build-all-here:
 	LDFLAGS='$(LDFLAGS)' scripts/build-all.sh dist/bin
 
 # This client against the released servers, in a container that may mount (FUSE) as root;
-# SERVER_WORKS, SERVER_REFUSED, CLUSTER_ONLY and CLUSTER_SEED reach the container when set.
-integration: RUN_OPTS += -e SERVER_WORKS -e SERVER_REFUSED -e CLUSTER_ONLY -e CLUSTER_SEED
+# SERVER_WORKS, SERVER_REFUSED, CLUSTER_ONLY, CLUSTER_SEED and INTEGRATION_PART reach the
+# container when set. INTEGRATION_PART=compat runs only the compatibility runs, and a group
+# of scripts/cluster-groups (scripts/compat.sh parts lists them) runs only the cluster
+# scenarios of that group; CI runs each of them as a job of its own, and empty runs them all.
+integration: RUN_OPTS += -e SERVER_WORKS -e SERVER_REFUSED -e CLUSTER_ONLY -e CLUSTER_SEED \
+	-e INTEGRATION_PART
 integration: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh integration $(LINUX_RUN) make compat
 
@@ -301,6 +305,12 @@ build-all-test:
 # is part of check and runs on every system.
 timing-test:
 	scripts/timing-test.sh
+
+# The groups of the cluster scenarios: every scenario is in exactly one group, which is what
+# lets the integration test run as several jobs. It needs no Docker, so it is part of check
+# and runs on every system.
+cluster-groups-test:
+	scripts/cluster-groups-test.sh
 
 # How the test scripts ask a server for a password hash, with older and newer servers. It needs
 # no Docker, so it is part of check and runs on every system.

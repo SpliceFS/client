@@ -14,8 +14,10 @@
 # empty data folders, an empty cache, an empty node list and default client settings, and
 # prints "ok: <name>" when all its checks passed.
 #
-# CLUSTER_ONLY=text runs only the scenarios whose name contains the text. CLUSTER_PORT is the
-# port of server 1 (18490 if unset); server N listens on the Nth port from there.
+# CLUSTER_ONLY=text runs only the scenarios whose name contains the text. CLUSTER_GROUP=name
+# runs only the scenarios of that group in scripts/cluster-groups, which is how CI splits the
+# scenarios into jobs. CLUSTER_PORT is the port of server 1 (18490 if unset); server N listens
+# on the Nth port from there.
 #
 # It needs Linux, root and /dev/fuse (a mount is made), and it exits with status 2 where
 # they are missing. Everything lives in one temporary folder that is removed at the end,

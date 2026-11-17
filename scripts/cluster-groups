@@ -1,0 +1,51 @@
+# The groups of the cluster scenarios: which scenarios run together in one job of the
+# integration test (make integration INTEGRATION_PART=GROUP). One line per scenario,
+# "GROUP FUNCTION", where FUNCTION is the function the scenario is registered with in
+# cluster-scenarios/. scripts/cluster-groups.sh reads this file, and its check (part of
+# make unit) fails unless every scenario is in exactly one group.
+#
+# The groups are balanced by how long their scenarios take, not by topic, so that the jobs end
+# at about the same time and none takes much more than a minute and a half. A new scenario goes
+# into the group that is the shortest. Measured on 2026-11-17 in seconds, with the start of
+# every scenario counted: cluster-1 67, cluster-2 67, cluster-3 70, cluster-4 69.
+#
+
+cluster-1 basics_two_running_files_on_one
+cluster-1 trees_empty_folder
+cluster-1 more_same_content_other_times
+cluster-1 more_empty_and_full
+cluster-1 live_removed_from_all
+cluster-1 live_changes_during_read
+cluster-1 fail_every_server_stops
+
+cluster-2 trees_no_overlap
+cluster-2 more_file_in_a_folder_of_another_server
+cluster-2 live_file_added
+cluster-2 live_removed_from_one
+cluster-2 live_replaced_everywhere
+cluster-2 fail_server_without_share
+cluster-2 gen_mix_three_servers
+
+cluster-3 basics_three_servers_same_files
+cluster-3 basics_two_running_same_files
+cluster-3 versions_same_size_and_time
+cluster-3 versions_chosen_server_stops
+cluster-3 trees_partly_overlap
+cluster-3 more_newer_copy_on_most_servers
+cluster-3 more_cut_short_copy
+cluster-3 fail_server_restarts_in_read
+cluster-3 fail_first_server_down_at_start
+cluster-3 fail_two_servers_in_five
+cluster-3 gen_mix_after_server_stops
+
+cluster-4 basics_two_running_different_files
+cluster-4 versions_newest_wins
+cluster-4 versions_most_servers_win
+cluster-4 tail_differ_only_at_the_end
+cluster-4 trees_file_or_folder
+cluster-4 trees_unusual_names
+cluster-4 trees_hidden_names
+cluster-4 trees_many_files
+cluster-4 more_three_copies
+cluster-4 fail_server_stops_in_read
+cluster-4 fail_first_server_stops_after_start
