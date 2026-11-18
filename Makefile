@@ -55,7 +55,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	mkdir -p $@
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
-	freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test build-all-test \
+	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test \
 	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
 	release-assets release-assets-test clean archives \
 	archive-programs-test
@@ -113,7 +113,7 @@ $(MOUNT_PARTS): RUN_OPTS = --privileged --device /dev/fuse
 unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
-unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test \
+unit-here: cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test part-test \
 	build-all-test archive-programs-test cluster-groups-test fuzz-test
 
 # The same tests with the race detector, which makes them several times slower.
@@ -280,7 +280,7 @@ lint-shell:
 		packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm \
 		packaging/alpine/*.post-install packaging/alpine/*.post-upgrade \
 		packaging/alpine/*.pre-deinstall \
-		packaging/freebsd/splicefs.rc packaging/freebsd/user-data.in
+		packaging/freebsd/user-data.in
 
 # Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
 # for amd64 and arm64. The program is compiled once (build-all) and every format wraps that
@@ -288,17 +288,6 @@ lint-shell:
 # dist/keys.
 package: build-all
 	$(MAKE) --no-print-directory packages
-
-# FreeBSD packages in ./dist/freebsd, one per FreeBSD release and CPU type. FreeBSD cannot run
-# in a container, so each release in packaging/freebsd/releases runs as a virtual machine (QEMU
-# in the image of the release, FREEBSD_IMAGE), where pkg(8) builds the packages for amd64 and
-# arm64, installs the amd64 one and checks that the service runs. The arm64 package is built in
-# the amd64 machine and checked from the file; it is not installed. This needs Docker and KVM,
-# as check-freebsd does. FREEBSD=15.1 limits the run to one release.
-.PHONY: package-freebsd
-package-freebsd: freebsd-kvm build-all keys
-	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) LINUX_IMAGE=$(LINUX_IMAGE) \
-		FREEBSD_IMAGE=$(FREEBSD_IMAGE) FREEBSD=$(FREEBSD) scripts/package-freebsd.sh dist
 
 # Where the version comes from: the file VERSION, also in a checkout of one commit without
 # tags, which is what CI has. It needs no Docker, so it is part of check.
@@ -312,9 +301,6 @@ package-lib-test:
 
 freebsd-lib-test:
 	scripts/freebsd-lib-test.sh
-
-freebsd-repo-files-test:
-	scripts/freebsd-repo-files-test.sh
 
 # The helper that prints how long a part took, and the script that compiles every program.
 # Neither needs Docker nor a compiler, so both are part of check.

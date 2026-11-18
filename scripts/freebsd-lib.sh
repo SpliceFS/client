@@ -1,10 +1,10 @@
 # shellcheck shell=sh
-# Sourced by the scripts that need a FreeBSD machine (check-freebsd.sh, package-freebsd.sh).
+# Sourced by the script that needs a FreeBSD machine (check-freebsd.sh).
 # FreeBSD cannot run in a container, so each FreeBSD release in packaging/freebsd/releases runs
 # as a virtual machine under QEMU inside the prepared image of that release (ghcr.io/splicefs,
-# named by FREEBSD_IMAGE in the Makefile). The disk in the image has been booted once and has
-# pkg set up, so a run downloads, unpacks and installs nothing. The images are for amd64, and
-# the machine needs hardware virtualization (KVM). The caller sets out (the absolute output
+# named by FREEBSD_IMAGE in the Makefile). The disk in the image has been booted once, so a run
+# downloads, unpacks and installs nothing. The images are for amd64, and the machine needs
+# hardware virtualization (KVM). The caller sets out (the absolute output
 # folder) and defines fail.
 
 # The device of hardware virtualization, on this computer and inside the container.
