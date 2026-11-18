@@ -127,52 +127,39 @@ else
     fail "d fetch from an empty remote"; sed 's/^/     /' "$tmp/out"
 fi
 
-# (e) Release files for a pre-release version, from a private dist that holds one stand-in
-# file per package kind, and one plain program archive for each system of its dist/bin, under
-# the names package-lib.sh gives this version.
+# (e) Release files for a pre-release version, from a private dist that holds one plain program
+# archive for each system of its dist/bin, under the names package-lib.sh gives this version.
 export VERSION=v1.2.3-rc.1 PACKAGE_DATE=20261112
-name="$(VERSION="$VERSION" sh -c '. scripts/package-lib.sh; echo "$name $debver $rpmver $apkver"')"
-# shellcheck disable=SC2086 # four words without spaces
-set -- $name
-name="$1" debver="$2" rpmver="$3" apkver="$4"
+name="$(sh -c '. scripts/package-lib.sh; echo "$name"')"
 d="$tmp/dist"
-mkdir -p "$d/repo/rpm/x86_64" "$d/repo/rpm/aarch64" "$d/alpine/x86_64" "$d/alpine/aarch64"
 mkdir -p "$d/keys"
-for arch in amd64 arm64; do echo "deb $arch" > "$d/${name}_${debver}_$arch.deb"; done
-for arch in x86_64 aarch64; do
-    echo "rpm $arch" > "$d/repo/rpm/$arch/$name-$rpmver-1.$arch.rpm"
-    echo "apk $arch" > "$d/alpine/$arch/$name-$apkver-r0.apk"
-done
 systems="darwin-amd64 darwin-arm64 freebsd-amd64 freebsd-arm64 linux-amd64 linux-arm64"
 for system in $systems; do
     mkdir -p "$d/bin/$system"
     archive="$(sh -c '. scripts/package-lib.sh; archive_name "$1"' sh "$system")"
     echo "archive $system" > "$d/$archive"
 done
-# Another version in the same folders must not be collected.
-echo other > "$d/${name}_0.0.1_amd64.deb"
+# Another version in the same folder must not be collected, and neither must a package: the
+# packages are made and published by the package repository, not by this release.
 echo other > "$d/${name}-0.0.1-linux-amd64.tar.gz"
+echo package > "$d/${name}_1.2.3~rc.1_amd64.deb"
 cp dist/keys/splicefs.asc "$d/keys/"
 if DIST_DIR="$d" SIGNING_KEY_FILE="$root/dist/keys/splicefs-openpgp-signing-subkey.asc" \
     sh scripts/release-assets.sh >"$tmp/out" 2>&1; then
     rel="$d/release"
     count="$(find "$rel" -type f | wc -l | tr -d ' ')"
-    if [ "$count" -eq 14 ]; then pass "e release-assets made 14 files"; else
-        fail "e expected 14 files, got $count"; ls "$rel"; fi
+    if [ "$count" -eq 8 ]; then pass "e release-assets made 8 files"; else
+        fail "e expected 8 files, got $count"; ls "$rel"; fi
     if command -v sha256sum >/dev/null 2>&1; then sumcheck="sha256sum -c"; else
         sumcheck="shasum -a 256 -c"; fi
     if (cd "$rel" && $sumcheck SHA256SUMS >/dev/null 2>&1); then
         pass "e SHA256SUMS verifies with $sumcheck"
     else fail "e SHA256SUMS does not verify"; fi
-    if grep -q "$name-$apkver-r0.x86_64.apk" "$rel/SHA256SUMS" &&
-        grep -q "$name-$apkver-r0.aarch64.apk" "$rel/SHA256SUMS" &&
-        ! grep -F -q 0.0.1 "$rel/SHA256SUMS"; then
-        pass "e apk files carry the CPU type, the other version is not collected"
-    else fail "e file names in SHA256SUMS"; fi
     archives="$(grep -c "^[0-9a-f]*  $name-${VERSION#v}-.*\.tar\.gz\$" "$rel/SHA256SUMS" || true)"
-    if [ "$archives" -eq 6 ]; then
-        pass "e SHA256SUMS lists the plain program archive of each of the 6 systems"
-    else fail "e expected 6 program archives in SHA256SUMS, got $archives"; fi
+    listed="$(wc -l < "$rel/SHA256SUMS" | tr -d ' ')"
+    if [ "$archives" -eq 6 ] && [ "$listed" -eq 6 ]; then
+        pass "e SHA256SUMS lists the plain program archive of each of the 6 systems and nothing else"
+    else fail "e expected exactly the 6 program archives in SHA256SUMS, got $archives"; fi
     mkdir "$tmp/vh"; chmod 700 "$tmp/vh"
     if GNUPGHOME="$tmp/vh" gpg --batch --quiet --import dist/keys/splicefs.asc 2>/dev/null &&
         GNUPGHOME="$tmp/vh" gpg --batch --verify "$rel/SHA256SUMS.asc" "$rel/SHA256SUMS" \

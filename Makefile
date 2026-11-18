@@ -57,8 +57,8 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
 	freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test build-all-test \
 	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
-	publish-fetch publish publish-check publish-test release-assets release-pack release-unpack \
-	release-parts-test clean archives archive-programs-test
+	publish-fetch publish publish-check publish-test release-assets clean archives \
+	archive-programs-test
 
 all: check build
 
@@ -114,7 +114,7 @@ unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test \
-	build-all-test archive-programs-test cluster-groups-test fuzz-test release-parts-test
+	build-all-test archive-programs-test cluster-groups-test fuzz-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(ROOT_CACHE_DIRS)
@@ -133,7 +133,7 @@ build-all-here:
 
 # The plain program archives in ./dist, one for each system and CPU type in ./dist/bin (make
 # build-all): the programs, LICENSE and README.txt, for people who run SpliceFS by hand. They
-# are released with the packages (make release-assets). Needs only tar and gzip.
+# are the files of the GitHub release (make release-assets). Needs only tar and gzip.
 archives:
 	$(PACKAGE_VARS) scripts/archive-programs.sh
 
@@ -177,8 +177,8 @@ check: script-modes tracked-files static-here unit-here race-here
 # The same on any system that has Docker, in the images.
 check-in-images: static unit race
 
-# A script that lost its executable bit fails only where it is run directly, which for the
-# publishing script is the release job. This finds it in every check. Libraries (-lib.sh, and
+# A script that lost its executable bit fails only where it is run directly, which is often a
+# CI job. This finds it in every check. Libraries (-lib.sh, and
 # timing.sh) are read by other scripts and never run, and so are the scenario files of the
 # cluster test.
 script-modes:
@@ -351,7 +351,7 @@ server-lib-test:
 # Checks in a Debian, a Rocky Linux and an Alpine system that those versions sort the way
 # a release needs (a pre-release before its release) and that apk accepts them. It is a
 # prerequisite of package-test, not of check, because it needs Docker; package-test is what CI
-# and the release job already run before anything is published.
+# runs, and the packages repository tests its packages again before it publishes them.
 package-order-test:
 	scripts/package-order-test.sh
 
@@ -408,26 +408,14 @@ publish-check:
 publish-test:
 	scripts/publish-test.sh
 
-# The files of this version for the GitHub release, in dist/release: the packages, the program
-# archives (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE is the OpenPGP
-# signing key; the default is the key signing-keys.sh put in dist/keys.
+# The files of this version for the GitHub release, in dist/release: the program archives
+# (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE is the OpenPGP signing key; the
+# default is the key signing-keys.sh put in dist/keys. The packages are not released here: the
+# package repository makes them from these archives.
 SIGNING_KEY_FILE ?= $(CURDIR)/dist/keys/splicefs-openpgp-signing-subkey.asc
 release-assets:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) SIGNING_KEY_FILE=$(SIGNING_KEY_FILE) \
 		scripts/release-assets.sh
-
-# The release builds the FreeBSD packages and publishes in different jobs. release-pack puts what
-# the FreeBSD job of one release (FREEBSD=15.1) merged into dist/repo into one tar, and
-# release-unpack puts the tars of every release into the repository the publish job downloaded
-# (scripts/release-parts.sh).
-release-pack:
-	$(PACKAGE_VARS) scripts/release-parts.sh pack $(FREEBSD)
-
-release-unpack:
-	$(PACKAGE_VARS) scripts/release-parts.sh unpack
-
-release-parts-test:
-	scripts/release-parts-test.sh
 
 clean:
 	rm -rf bin dist coverage.out coverage.html
