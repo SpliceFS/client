@@ -26,15 +26,15 @@ GNUPGHOME="$tmp/gnupg" gpg --batch --pinentry-mode loopback --passphrase "" --ar
 GNUPGHOME="$tmp/gnupg" gpg --armor --export > "$tmp/keys/splicefs.asc"
 
 # Release files for a pre-release version, from a private dist that holds one plain program
-# archive for each system of its dist/bin, under the names package-lib.sh gives this version.
+# archive for each system of its dist/bin, under the names archive-lib.sh gives this version.
 export VERSION=v1.2.3-rc.1 PACKAGE_DATE=20261112
-name="$(sh -c '. scripts/package-lib.sh; echo "$name"')"
+name="$(sh -c '. scripts/archive-lib.sh; echo "$name"')"
 d="$tmp/dist"
 mkdir -p "$d/keys"
 systems="darwin-amd64 darwin-arm64 freebsd-amd64 freebsd-arm64 linux-amd64 linux-arm64"
 for system in $systems; do
     mkdir -p "$d/bin/$system"
-    archive="$(sh -c '. scripts/package-lib.sh; archive_name "$1"' sh "$system")"
+    archive="$(sh -c '. scripts/archive-lib.sh; archive_name "$1"' sh "$system")"
     echo "archive $system" > "$d/$archive"
 done
 # Another version in the same folder must not be collected, and neither must a file that is

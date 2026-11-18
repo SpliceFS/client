@@ -14,9 +14,9 @@ set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-# package-lib.sh reads VERSION and PACKAGE_DATE and says what the archives are called.
-# shellcheck source=package-lib.sh
-. scripts/package-lib.sh
+# archive-lib.sh reads VERSION and PACKAGE_DATE and says what the archives are called.
+# shellcheck source=archive-lib.sh
+. scripts/archive-lib.sh
 
 dist="${DIST_DIR:-$root/dist}"
 bin="$dist/bin"

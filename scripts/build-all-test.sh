@@ -11,15 +11,10 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 failed=0
 
-# A small repository of its own: two programs, one of them with a service unit, a package name
-# and the real libraries.
+# A small repository of its own: two programs and the real library.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/cmd/beta" "$tree/packaging/deb" \
-    "$tree/packaging/systemd" "$work/bin"
-cp "$root/scripts/build-all.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
-printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
-printf '[Service]\n' > "$tree/packaging/systemd/alpha.service"
-printf 'conf.d\n' > "$tree/packaging/config-folders"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/cmd/beta" "$work/bin"
+cp "$root/scripts/build-all.sh" "$root/scripts/archive-lib.sh" "$tree/scripts/"
 
 cat > "$work/bin/go" <<'EOT'
 #!/bin/sh
@@ -91,7 +86,7 @@ fi
 
 has_call "static binary, paths trimmed" "linux/arm64 cgo=0 build -trimpath -ldflags -s -w -X example.test/demo/v.v=v1.2.3 -o $work/out/linux-arm64/beta ./cmd/beta"
 has_call "darwin gets the Makefile flags" "darwin/amd64 cgo=0 build -trimpath -ldflags -s -w -X example.test/demo/v.v=v1.2.3 -o $work/out/darwin-amd64/alpha ./cmd/alpha"
-has_call "freebsd defaults to the folders of its packages" "freebsd/amd64 cgo=0 build -trimpath -ldflags -s -w -X example.test/demo/v.v=v1.2.3 -X example.test/demo/config.defaultConfigDir=/usr/local/etc/splicefs/demo -X example.test/demo/config.defaultCacheDir=/var/cache/splicefs -o $work/out/freebsd-amd64/alpha ./cmd/alpha"
+has_call "freebsd defaults to the folders of its packages" "freebsd/amd64 cgo=0 build -trimpath -ldflags -s -w -X example.test/demo/v.v=v1.2.3 -X example.test/demo/config.defaultConfigDir=/usr/local/etc/splicefs/client -X example.test/demo/config.defaultCacheDir=/var/cache/splicefs -o $work/out/freebsd-amd64/alpha ./cmd/alpha"
 lacks_call "only freebsd changes the default folders" "linux/amd64 cgo=0 build -trimpath -ldflags -s -w -X example.test/demo/v.v=v1.2.3 -X example.test/demo/config"
 
 # Without LDFLAGS the script must stop, not build programs that report no version.

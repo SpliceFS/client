@@ -24,12 +24,8 @@ check() {
 # alpha for every system, beta for Linux only, so that each archive holds what its own
 # system has.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/deb" "$tree/packaging/plain" \
-    "$tree/packaging/systemd"
-: > "$tree/packaging/systemd/alpha.service"
-cp "$root/scripts/archive-programs.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
-printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
-printf 'conf.d\n' > "$tree/packaging/config-folders"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/plain"
+cp "$root/scripts/archive-programs.sh" "$root/scripts/archive-lib.sh" "$tree/scripts/"
 printf 'how to run the programs\n' > "$tree/packaging/plain/README.txt"
 printf 'the license\n' > "$tree/LICENSE"
 for system in linux-amd64 linux-arm64 freebsd-amd64 freebsd-arm64 darwin-amd64 darwin-arm64; do
@@ -90,12 +86,12 @@ dist="$tree/dist"
 systems="darwin-amd64 darwin-arm64 freebsd-amd64 freebsd-arm64 linux-amd64 linux-arm64"
 expected=""
 for system in $systems; do expected="$expected
-splicefs-demo-1.2.3-$system.tar.gz"; done
+splicefs-client-1.2.3-$system.tar.gz"; done
 got="$(cd "$dist" && LC_ALL=C ls)"
 check "one archive for each system and CPU type, named with the version without the v" \
     "bin$expected" "$got"
 
-top=splicefs-demo-1.2.3-linux-amd64
+top=splicefs-client-1.2.3-linux-amd64
 got="$(tar -tzf "$dist/$top.tar.gz")"
 check "linux holds both programs, the license and the README, sorted" \
     "$top/
@@ -104,7 +100,7 @@ $top/README.txt
 $top/alpha
 $top/beta" "$got"
 
-top=splicefs-demo-1.2.3-darwin-arm64
+top=splicefs-client-1.2.3-darwin-arm64
 got="$(tar -tzf "$dist/$top.tar.gz")"
 check "darwin holds only the programs it was built with" \
     "$top/
@@ -113,7 +109,7 @@ $top/README.txt
 $top/alpha" "$got"
 
 # 15275200600 is 2026-11-12 00:00:00 UTC, the date given, in octal.
-top=splicefs-demo-1.2.3-linux-amd64
+top=splicefs-client-1.2.3-linux-amd64
 got="$(headers "$dist/$top.tar.gz")"
 check "owner and group 0, programs 755, other files 644, time is the date of the build" \
     "$top/ 755 0 0 15275200600
@@ -157,7 +153,7 @@ check "the time follows PACKAGE_DATE" "$top/ 755 0 0 13602760400" "${got%%
 # A pre-release or a build with changes names its version in full.
 archive v1.2.4-rc.1-dirty 20261112 >/dev/null
 got="no archive"
-if [ -f "$dist/splicefs-demo-1.2.4-rc.1-dirty-darwin-arm64.tar.gz" ]; then got=present; fi
+if [ -f "$dist/splicefs-client-1.2.4-rc.1-dirty-darwin-arm64.tar.gz" ]; then got=present; fi
 check "the pre-release version is kept in the name" present "$got"
 
 # $1 case name, $2 text the message must hold, the rest: the command to run in the repository.

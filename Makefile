@@ -58,7 +58,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test \
 	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
 	release-assets release-assets-test clean archives \
-	archive-programs-test
+	archive-programs-test archive-lib-test
 
 all: check build
 
@@ -114,7 +114,7 @@ unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test part-test \
-	build-all-test archive-programs-test cluster-groups-test fuzz-test
+	build-all-test archive-programs-test archive-lib-test cluster-groups-test fuzz-test
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(ROOT_CACHE_DIRS)
@@ -312,6 +312,11 @@ build-all-test:
 
 archive-programs-test:
 	scripts/archive-programs-test.sh
+
+# Which versions the build and the archives accept. It needs no Docker, so it is part of check
+# and runs on every system.
+archive-lib-test:
+	scripts/archive-lib-test.sh
 
 # The timers the long test scripts print and put in the run summary. It needs no Docker, so it
 # is part of check and runs on every system.
