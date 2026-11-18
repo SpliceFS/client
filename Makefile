@@ -6,24 +6,17 @@ VERSION ?= v$(shell cat VERSION)$(if $(shell git status --porcelain --untracked-
 LDFLAGS := -s -w -X github.com/SpliceFS/client/internal/version.version=$(VERSION)
 
 # The tools are in our images (ghcr.io/splicefs) and nothing of ours is: the source is mounted
-# into the image when a part runs. The Go image also runs the checks, the build and the Debian
-# packages; every other package format is built by its own distribution's tools in its own
-# image, so a package built here is the package CI builds.
+# into the image when a part runs. The Go image runs the checks and the build.
 LINUX_IMAGE ?= ghcr.io/splicefs/go:v1
-RPM_IMAGE ?= ghcr.io/splicefs/rpm-build:v1
-APK_IMAGE ?= ghcr.io/splicefs/apk-build:v1
 # The image of a FreeBSD release, which runs the FreeBSD machine of that release: a FreeBSD disk
 # that has been booted once and has pkg set up (amd64 only), with QEMU. @RELEASE@ is where the
 # release goes; the releases are listed in packaging/freebsd/releases.
 FREEBSD_IMAGE ?= ghcr.io/splicefs/freebsd-@RELEASE@:v2
-# Empty tests this machine's own CPU type; linux/amd64 or linux/arm64 tests the other one
-# by emulation (Docker Desktop provides it).
-PLATFORM ?=
-# Alpine versions cannot carry a commit, so a build with uncommitted changes carries the date
-# of its commit.
+# The date of the commit: the time of every file in the program archives, so that a rebuild of
+# the same commit gives the same bytes.
 PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
-# What the package scripts need to name their files. They read these as environment
-# variables; env sets them in an image that has no make.
+# What the scripts that name their files need. They read these as environment variables; env
+# sets them in an image that has no make.
 PACKAGE_VARS = VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE)
 
 # One runner per image: docker run with the source at /src, as the caller's own user, so that
@@ -45,18 +38,14 @@ DOCKER_RUN = docker run --rm --user "$(RUN_USER)" $(RUN_OPTS) -v "$(CURDIR)":/sr
 LINUX_RUN = $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod -v "$(GO_CACHE)/gobuild":/tmp/go-cache \
 	-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
 	-e GOLANGCI_LINT_CACHE=/tmp/go-cache/golangci-lint $(LINUX_IMAGE)
-RPM_RUN = $(DOCKER_RUN) $(RPM_IMAGE)
-APK_RUN = $(DOCKER_RUN) $(APK_IMAGE)
-# The signing keys, read only, for the steps that sign or check with them.
-KEYS_MOUNT := -v "$(CURDIR)/dist/keys":/keys:ro
 
 # Docker makes a folder that does not exist yet as root, so the caller makes them first.
 $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	mkdir -p $@
 
-.PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
+.PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint \
 	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test \
-	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
+	cluster-groups-test fuzz-test \
 	release-assets release-assets-test clean archives \
 	archive-programs-test archive-lib-test
 
@@ -72,7 +61,7 @@ build:
 # not need each other can run at the same time. A -here target also runs on a machine that
 # has the tools.
 .PHONY: static static-checks static-here lint-go unit unit-here race race-here build-all build-all-here \
-	integration fuzz fuzz-here fuzz-targets fuzz-packages packages package-deb package-rpm package-apk keys
+	integration fuzz fuzz-here fuzz-targets fuzz-packages
 
 # gofmt, go vet, golangci-lint and ShellCheck, and the two checks that read the git index.
 # Those run on the host and not in the image: a git worktree keeps its index outside the
@@ -113,7 +102,7 @@ $(MOUNT_PARTS): RUN_OPTS = --privileged --device /dev/fuse
 unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
-unit-here: cover package-lib-test freebsd-lib-test version-test timing-test server-lib-test part-test \
+unit-here: cover freebsd-lib-test version-test timing-test server-lib-test part-test \
 	build-all-test archive-programs-test archive-lib-test cluster-groups-test fuzz-test
 
 # The same tests with the race detector, which makes them several times slower.
@@ -147,29 +136,11 @@ integration: RUN_OPTS += -e SERVER_WORKS -e SERVER_REFUSED -e CLUSTER_ONLY -e CL
 integration: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh integration $(LINUX_RUN) make compat
 
-# The packages of every format, from the programs in ./dist/bin (make build-all). Each format
-# is a target of its own.
-packages: package-deb package-rpm package-apk
-
-package-deb: | $(CACHE_DIRS)
-	scripts/part.sh package-deb $(LINUX_RUN) env $(PACKAGE_VARS) sh scripts/package-deb.sh /src/dist
-
-package-rpm:
-	scripts/part.sh package-rpm $(RPM_RUN) env $(PACKAGE_VARS) sh scripts/package-rpm.sh /src/dist
-
-package-apk: RUN_OPTS = $(KEYS_MOUNT)
-package-apk: keys
-	scripts/part.sh package-apk $(APK_RUN) env $(PACKAGE_VARS) sh scripts/package-apk.sh /src/dist
-
 # The image the Go parts run in. CI keys its Go caches on it (.github/actions/go-cache), so
 # that a new image starts with empty caches.
 .PHONY: go-image
 go-image:
 	@echo $(LINUX_IMAGE)
-
-# Decides which keys everything is signed with and puts them in ./dist/keys.
-keys:
-	LINUX_IMAGE=$(LINUX_IMAGE) scripts/signing-keys.sh
 
 # What a machine that has every tool runs: the three parts, natively.
 check: script-modes tracked-files static-here unit-here race-here
@@ -182,7 +153,7 @@ check-in-images: static unit race
 # timing.sh) are read by other scripts and never run, and so are the scenario files of the
 # cluster test.
 script-modes:
-	@bad="$$(git ls-files -s -- 'scripts/*.sh' 'packaging/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ && $$4 != "scripts/timing.sh" && $$4 !~ /^scripts\/cluster-scenarios\// {print $$4}')"; \
+	@bad="$$(git ls-files -s -- 'scripts/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ && $$4 != "scripts/timing.sh" && $$4 !~ /^scripts\/cluster-scenarios\// {print $$4}')"; \
 	if [ -n "$$bad" ]; then echo "not executable in git:"; echo "$$bad"; exit 1; fi
 
 # Nothing that must stay private may be tracked: no compiled program (it carries the folder
@@ -267,37 +238,20 @@ freebsd-kvm:
 	scripts/freebsd-require-kvm.sh
 
 # ShellCheck runs with every optional check on (see .shellcheckrc). The globs pick up a new
-# script in scripts/ without editing this file; the maintainer and Alpine scripts have no .sh
-# extension, so they are named. The OpenRC script (not a shell ShellCheck knows), the rpm spec
-# and the FreeBSD manifest template are not shell files and are left out.
+# script in scripts/ without editing this file; the first-boot script of the FreeBSD machine has
+# no .sh extension, so it is named.
 lint: lint-shell
 	golangci-lint run
 
 # The shell part of lint by itself, for the CI job that has no Go tools.
 .PHONY: lint-shell
 lint-shell:
-	shellcheck scripts/*.sh scripts/cluster-scenarios/*.sh packaging/*.sh packaging/*/*.sh \
-		packaging/deb/postinst packaging/deb/prerm packaging/deb/postrm \
-		packaging/alpine/*.post-install packaging/alpine/*.post-upgrade \
-		packaging/alpine/*.pre-deinstall \
-		packaging/freebsd/user-data.in
-
-# Installable packages in ./dist: deb (dpkg-deb), rpm (rpmbuild) and apk (abuild), each
-# for amd64 and arm64. The program is compiled once (build-all) and every format wraps that
-# binary. The apk files are signed with the repository key that signing-keys.sh puts in
-# dist/keys.
-package: build-all
-	$(MAKE) --no-print-directory packages
+	shellcheck scripts/*.sh scripts/cluster-scenarios/*.sh packaging/freebsd/user-data.in
 
 # Where the version comes from: the file VERSION, also in a checkout of one commit without
 # tags, which is what CI has. It needs no Docker, so it is part of check.
 version-test:
 	scripts/version-test.sh
-
-# The table of how a version becomes each package version. It needs no Docker, so it is part
-# of check and runs on every system.
-package-lib-test:
-	scripts/package-lib-test.sh
 
 freebsd-lib-test:
 	scripts/freebsd-lib-test.sh
@@ -339,53 +293,13 @@ fuzz-test:
 server-lib-test:
 	scripts/server-lib-test.sh
 
-# Checks in a Debian, a Rocky Linux and an Alpine system that those versions sort the way
-# a release needs (a pre-release before its release) and that apk accepts them. It is a
-# prerequisite of package-test, not of check, because it needs Docker; package-test is what CI
-# runs, and the packages repository tests its packages again before it publishes them.
-package-order-test:
-	scripts/package-order-test.sh
-
-# Installs and removes each package in a clean, booted server of every system listed in
-# packaging/test-systems (CI reads the same list) and reports each system's result. ONLY names
-# one format (ONLY=deb) or one image, as written in that file.
-package-test: package-order-test
-	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh
-
-# Proves the service, not only the files: in a container per system in packaging/test-systems
-# that is booted as a server, with that system's own service manager as process 1, installs
-# the package and checks that the service starts by itself, runs as the user the unit names,
-# answers the status command, restarts, comes back after a reboot and stops when the package
-# is removed. It needs the packages in ./dist from make package. ONLY=deb, or ONLY=<an image
-# of packaging/test-systems>, runs only that format or that image.
-service-test:
-	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/service-test.sh
-
-# Signed package repositories in ./dist/repo, made from the packages make package left in
-# ./dist (it builds none). Keys come from scripts/signing-keys.sh, which is the one place that
-# picks real or throwaway keys. Each format runs in the image of its own distribution's tools,
-# with the keys mounted read-only.
-repo: RUN_OPTS = $(KEYS_MOUNT)
-repo: keys | $(CACHE_DIRS)
-	@ls dist/*.deb dist/*.rpm dist/alpine/*/*.apk >/dev/null 2>&1 || \
-		{ echo "no packages in dist: run make package first"; exit 1; }
-	$(LINUX_RUN) sh scripts/repo-apt.sh /src/dist
-	$(RPM_RUN) sh scripts/repo-rpm.sh /src/dist
-	$(APK_RUN) sh scripts/repo-apk.sh /src/dist
-
-# Installs from the repository on every system in packaging/test-systems with signature
-# checks on, and checks that a damaged repository is refused.
-repo-test:
-	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh repo
-
 # The files of this version for the GitHub release, in dist/release: the program archives
-# (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE is the OpenPGP signing key; the
-# default is the key signing-keys.sh put in dist/keys. The packages are not released here: the
-# package repository makes them from these archives.
-SIGNING_KEY_FILE ?= $(CURDIR)/dist/keys/splicefs-openpgp-signing-subkey.asc
+# (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE (the OpenPGP signing key) and
+# KEYS_DIR (the folder with the public key) come from the environment or the command line, see
+# scripts/release-assets.sh. The packages are not released here: the package repository makes
+# them from these archives.
 release-assets:
-	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) SIGNING_KEY_FILE=$(SIGNING_KEY_FILE) \
-		scripts/release-assets.sh
+	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) scripts/release-assets.sh
 
 # Proves release-assets.sh against a private dist and a throwaway key made by the test. Needs
 # gpg; it is not part of check, which runs where gpg may be missing.
