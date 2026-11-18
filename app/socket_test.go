@@ -33,10 +33,12 @@ func fakeSystem(env map[string]string, euid int) system {
 
 func TestSocketPath(t *testing.T) {
 	t.Parallel()
-	socketUnder := func(base, dir string) string {
+	// socketIn is the socket of the configuration folder dir in the socket folder folder.
+	socketIn := func(folder, dir string) string {
 		sum := sha256.Sum256([]byte(dir))
-		return base + "/splicefs/" + hex.EncodeToString(sum[:8]) + ".sock"
+		return folder + "/" + hex.EncodeToString(sum[:8]) + ".sock"
 	}
+	socketUnder := func(base, dir string) string { return socketIn(base+"/splicefs", dir) }
 	const configDir = "/etc/splicefs/client"
 	runtimeEnv := map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}
 	tests := []struct {
@@ -61,7 +63,13 @@ func TestSocketPath(t *testing.T) {
 			name: "ordinary user without runtime directory",
 			sys:  fakeSystem(nil, 1000),
 			dir:  configDir,
-			want: socketUnder("/tmp/example", configDir),
+			want: socketIn("/tmp/example/splicefs-1000", configDir),
+		},
+		{
+			name: "another ordinary user has another folder",
+			sys:  fakeSystem(nil, 1001),
+			dir:  configDir,
+			want: socketIn("/tmp/example/splicefs-1001", configDir),
 		},
 		{
 			name: "relative directory is made absolute",

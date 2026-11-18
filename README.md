@@ -129,9 +129,11 @@ mount -t splicefs example:/ /mnt/files
 echo 'example:/ /mnt/files splicefs _netdev,nofail,x-systemd.requires=splicefs.service 0 0' >> /etc/fstab
 ```
 
-The cache is in `/var/cache/splicefs` unless a file in `conf.d/` says otherwise. On a macOS
-build the folders are `~/.splicefs/client` and `~/Library/Caches/splicefs`, and there is no
-service: run `splicefs`, which stays in the foreground, and send it `SIGHUP` to apply a
+The cache is in `/var/cache/splicefs` unless a file in `conf.d/` says otherwise. Run as an
+ordinary user on Linux or FreeBSD, the folders are `~/.config/splicefs/client` and
+`~/.cache/splicefs` (`$XDG_CONFIG_HOME` and `$XDG_CACHE_HOME` replace the `~/.config` and
+`~/.cache` part), so no option is needed. On a macOS build the folders are
+`~/.splicefs/client` and `~/Library/Caches/splicefs`, and there is no service: run `splicefs`, which stays in the foreground, and send it `SIGHUP` to apply a
 changed configuration. The [configuration reference](docs/configuration.md) lists every
 setting.
 
