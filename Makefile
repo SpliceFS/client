@@ -71,8 +71,9 @@ build:
 # runs alone on any machine that has Docker, and in CI, with the same command; parts that do
 # not need each other can run at the same time. A -here target also runs on a machine that
 # has the tools.
-.PHONY: static static-checks static-here lint-go unit unit-here race race-here build-all build-all-here \
-	integration fuzz fuzz-here fuzz-targets fuzz-packages packages package-deb package-rpm package-apk keys
+.PHONY: static static-checks static-here lint-go unit unit-here fuse fuse-here race race-here build-all \
+	build-all-here integration fuzz fuzz-here fuzz-targets fuzz-packages packages package-deb package-rpm \
+	package-apk keys
 
 # gofmt, go vet, golangci-lint and ShellCheck, and the two checks that read the git index.
 # Those run on the host and not in the image: a git worktree keeps its index outside the
@@ -98,30 +99,48 @@ lint-go:
 		echo "golangci-lint GOOS=$$os"; GOOS=$$os golangci-lint run; \
 	done
 
-# The tests of mount/fuse mount for real, and nothing else of the client needs more than an
-# ordinary user. As root the client mounts with mount(2); any other user needs a fusermount3
-# that finds the user in the passwd file and may mount, which an image does not give an
-# arbitrary uid. So the parts that run those tests (unit, race, integration) run as root, with
-# the FUSE device, privileged as the CI runners are (/sys is writable, which the abort of a FUSE
-# connection needs), and keep their own caches under CACHE/root.
-MOUNT_PARTS := unit race integration
-$(MOUNT_PARTS): RUN_USER = 0
-$(MOUNT_PARTS): GO_CACHE = $(ROOT_CACHE)
-$(MOUNT_PARTS): RUN_OPTS = --privileged --device /dev/fuse
+# The tests of mount/fuse mount for real, and no other package of the client needs a mount. They
+# are the part fuse, and they run the way a person runs the client: as the caller, an ordinary
+# user, through the setuid fusermount3 of the image. The container has the FUSE device and is
+# privileged, as the CI runners are (/sys is writable, which the abort of a FUSE connection
+# needs); the process in it has no privilege of its own. fusermount3 needs the passwd file to
+# know the user, which an image does not have for an arbitrary uid, so the part mounts the two
+# files that scripts/fuse-user.sh writes. Every other part of the Go tests runs without FUSE, on
+# every package but this one (OTHER_PACKAGES), so that each package is tested by one of them.
+# Only integration needs root: scripts/compat-test.sh and scripts/cluster-test.sh refuse any
+# other user.
+FUSE_PACKAGE := ./mount/fuse
+OTHER_PACKAGES = $$(go list ./... | grep -vxF "$$(go list $(FUSE_PACKAGE))")
+FUSE_ETC := $(CACHE)/fuse-etc
+FUSE_DEVICE := --privileged --device /dev/fuse
+fuse: RUN_OPTS = $(FUSE_DEVICE) -v "$(FUSE_ETC)/passwd":/etc/passwd:ro -v "$(FUSE_ETC)/fuse.conf":/etc/fuse.conf:ro
+integration: RUN_USER = 0
+integration: GO_CACHE = $(ROOT_CACHE)
+integration: RUN_OPTS = $(FUSE_DEVICE)
 
 # The tests with the 100% coverage gate, and the tests of the scripts that need no Docker.
-unit: | $(ROOT_CACHE_DIRS)
+unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test \
 	fuse-user-test build-all-test archive-programs-test cluster-groups-test fuzz-test release-parts-test
 
+# The tests of mount/fuse, with the 100% coverage gate and the race detector in one run: they
+# take seconds, and the mounts are the slow part of either run. The coverage of every other
+# package is the unit part's.
+fuse: | $(CACHE_DIRS)
+	scripts/fuse-user.sh "$(FUSE_ETC)"
+	scripts/part.sh fuse $(LINUX_RUN) make fuse-here
+
+fuse-here:
+	scripts/coverage.sh coverage-fuse.out -race $(FUSE_PACKAGE)
+
 # The same tests with the race detector, which makes them several times slower.
-race: | $(ROOT_CACHE_DIRS)
+race: | $(CACHE_DIRS)
 	scripts/part.sh race $(LINUX_RUN) make race-here
 
 race-here:
-	go test -race ./...
+	go test -race $(OTHER_PACKAGES)
 
 # Every program, for every system and CPU type, into ./dist/bin. The packages, the release and
 # the other parts read from there; nothing is compiled twice.
@@ -171,11 +190,11 @@ go-image:
 keys:
 	LINUX_IMAGE=$(LINUX_IMAGE) scripts/signing-keys.sh
 
-# What a machine that has every tool runs: the three parts, natively.
-check: script-modes tracked-files static-here unit-here race-here
+# What a machine that has every tool runs: the four parts, natively.
+check: script-modes tracked-files static-here unit-here fuse-here race-here
 
 # The same on any system that has Docker, in the images.
-check-in-images: static unit race
+check-in-images: static unit fuse race
 
 # A script that lost its executable bit fails only where it is run directly, which for the
 # publishing script is the release job. This finds it in every check. Libraries (-lib.sh, and
@@ -206,9 +225,9 @@ vet:
 	go vet ./...
 
 # Tests with coverage; fails below 100% statement coverage. The race detector has a part of
-# its own (race).
+# its own (race). The tests of mount/fuse are the fuse part's.
 cover:
-	scripts/coverage.sh coverage.out
+	scripts/coverage.sh coverage.out $(OTHER_PACKAGES)
 
 # Every fuzz target, each for FUZZTIME one after another. FUZZ_PACKAGE=package limits the run
 # to the targets of one package, FUZZ_TARGET=package:Target to one target; both can be given.
@@ -434,4 +453,4 @@ release-parts-test:
 	scripts/release-parts-test.sh
 
 clean:
-	rm -rf bin dist coverage.out coverage.html
+	rm -rf bin dist coverage.out coverage-fuse.out coverage.html
