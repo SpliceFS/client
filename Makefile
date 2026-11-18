@@ -39,7 +39,13 @@ ROOT_CACHE_DIRS := $(ROOT_CACHE)/gomod $(ROOT_CACHE)/gobuild
 RUN_OPTS :=
 RUN_USER = $(shell id -u):$(shell id -g)
 GO_CACHE = $(CACHE)
-DOCKER_RUN = docker run --rm --user "$(RUN_USER)" $(RUN_OPTS) -v "$(CURDIR)":/src -w /src
+# The containers run without an AppArmor profile, as privileged ones do anyway. Under Docker's
+# docker-default profile the kernel of the Ubuntu CI runners stalls a datagram sent to an
+# abstract Unix socket (TestNotifyAbstractSocket hung for hours, the kernel log shows a trace in
+# apparmor_file_permission), and the tests check the client, not the profile. A machine without
+# AppArmor ignores the option.
+DOCKER_RUN = docker run --rm --user "$(RUN_USER)" --security-opt apparmor=unconfined $(RUN_OPTS) \
+	-v "$(CURDIR)":/src -w /src
 # The cache paths are named here as well as in the go image, so that the run works with any
 # Go image and any uid: HOME, GOPATH and GOCACHE all point at the mounted host folders.
 # Every run pulls its image first, with retries (scripts/docker-run.sh), so that one failed
