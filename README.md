@@ -224,7 +224,8 @@ mount/         the contract every mount layer offers; mount/fuse is Linux and Fr
 internal/      node HTTP client, cluster session, merged tree, block cache, block reader, and
                the version number set at build time
 docs/          design and configuration reference
-packaging/     the README of the program archives, the files of the FreeBSD test machine
+archive/       the README.txt that goes into the program archives
+packaging/     the files of the FreeBSD test machine
 scripts/       development helpers used by make and CI
 ```
 

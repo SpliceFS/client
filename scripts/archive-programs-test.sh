@@ -24,9 +24,9 @@ check() {
 # alpha for every system, beta for Linux only, so that each archive holds what its own
 # system has.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/plain"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/archive"
 cp "$root/scripts/archive-programs.sh" "$root/scripts/archive-lib.sh" "$tree/scripts/"
-printf 'how to run the programs\n' > "$tree/packaging/plain/README.txt"
+printf 'how to run the programs\n' > "$tree/archive/README.txt"
 printf 'the license\n' > "$tree/LICENSE"
 for system in linux-amd64 linux-arm64 freebsd-amd64 freebsd-arm64 darwin-amd64 darwin-arm64; do
     mkdir -p "$tree/dist/bin/$system"
@@ -136,7 +136,7 @@ rm "$dist"/*.tar.gz
 archive v1.2.3 20261112 >/dev/null
 (cd "$dist" && cksum -- *.tar.gz) > "$work/first"
 rm "$dist"/*.tar.gz
-find "$tree/dist/bin" "$tree/LICENSE" "$tree/packaging/plain" -type f -exec touch -t 202001010101 {} +
+find "$tree/dist/bin" "$tree/LICENSE" "$tree/archive" -type f -exec touch -t 202001010101 {} +
 archive v1.2.3 20261112 >/dev/null
 (cd "$dist" && cksum -- *.tar.gz) > "$work/second"
 first="$(cat "$work/first")"

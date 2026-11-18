@@ -1,7 +1,7 @@
 #!/bin/sh
 # Makes the plain program archives of THIS version into DIST_DIR: one tar.gz for each system
 # and CPU type that make build-all put in DIST_DIR/bin. Each holds the programs built for that
-# system, LICENSE and README.txt (packaging/plain), and nothing that installs or runs them:
+# system, LICENSE and README.txt (from archive/), and nothing that installs or runs them:
 # no service file, no mount helper, no install script. They are for people who run SpliceFS by
 # hand on a system the packages do not cover. Runs on the host after make build-all (make
 # archives) and needs only tar and gzip. Variables: VERSION and PACKAGE_DATE as for the build;
@@ -56,7 +56,7 @@ stage_system() {
     [ -n "$programs" ] || fail "$bin/$1 holds no programs, run make build-all first"
     mkdir -p "$2"
     cp "$bin/$1"/* "$2/"
-    cp LICENSE packaging/plain/README.txt "$2/"
+    cp LICENSE archive/README.txt "$2/"
     chmod 755 "$2" "$2"/*
     chmod 644 "$2/LICENSE" "$2/README.txt"
     TZ=UTC touch -t "${PACKAGE_DATE}0000" "$2" "$2"/*
