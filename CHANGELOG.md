@@ -8,7 +8,7 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 ## [0.5.40] - 2026-11-18
 
-- Internal: the client's FUSE tests run as an ordinary user.
+- Internal: a passing failure of the container registry no longer fails a build.
 
 ## [0.5.39] - 2026-11-18
 

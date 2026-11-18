@@ -42,11 +42,14 @@ GO_CACHE = $(CACHE)
 DOCKER_RUN = docker run --rm --user "$(RUN_USER)" $(RUN_OPTS) -v "$(CURDIR)":/src -w /src
 # The cache paths are named here as well as in the go image, so that the run works with any
 # Go image and any uid: HOME, GOPATH and GOCACHE all point at the mounted host folders.
-LINUX_RUN = $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod -v "$(GO_CACHE)/gobuild":/tmp/go-cache \
+# Every run pulls its image first, with retries (scripts/docker-run.sh), so that one failed
+# download from the registry does not fail the part.
+LINUX_RUN = scripts/docker-run.sh $(LINUX_IMAGE) $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod \
+	-v "$(GO_CACHE)/gobuild":/tmp/go-cache \
 	-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
 	-e GOLANGCI_LINT_CACHE=/tmp/go-cache/golangci-lint $(LINUX_IMAGE)
-RPM_RUN = $(DOCKER_RUN) $(RPM_IMAGE)
-APK_RUN = $(DOCKER_RUN) $(APK_IMAGE)
+RPM_RUN = scripts/docker-run.sh $(RPM_IMAGE) $(DOCKER_RUN) $(RPM_IMAGE)
+APK_RUN = scripts/docker-run.sh $(APK_IMAGE) $(DOCKER_RUN) $(APK_IMAGE)
 # The signing keys, read only, for the steps that sign or check with them.
 KEYS_MOUNT := -v "$(CURDIR)/dist/keys":/keys:ro
 
@@ -58,7 +61,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test fuse-user-test build-all-test \
 	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
 	publish-fetch publish publish-check publish-test release-assets clean archives \
-	archive-programs-test
+	archive-programs-test docker-run-test
 
 all: check build
 
@@ -123,7 +126,7 @@ unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover package-lib-test freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test \
-	fuse-user-test build-all-test archive-programs-test cluster-groups-test fuzz-test
+	fuse-user-test build-all-test archive-programs-test cluster-groups-test fuzz-test docker-run-test
 
 # The tests of mount/fuse, with the 100% coverage gate and the race detector in one run: they
 # take seconds, and the mounts are the slow part of either run. The coverage of every other
@@ -328,6 +331,10 @@ version-test:
 # of check and runs on every system.
 package-lib-test:
 	scripts/package-lib-test.sh
+
+# The pull with retries in front of every container run. It needs no Docker: a stand-in docker.
+docker-run-test:
+	scripts/docker-run-test.sh
 
 freebsd-lib-test:
 	scripts/freebsd-lib-test.sh
