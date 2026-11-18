@@ -50,20 +50,18 @@ jobs:
         if: steps.gate.outputs.enabled == 'true'
         with:
           fetch-depth: 0   # the scanner needs history to attribute new code
-      # The mount tests need to mount, so the part runs as root with the FUSE device, which
-      # appears when the fuse kernel module is loaded (see the unit job of ci.yml).
+      # The mount tests need the FUSE device, which appears when the fuse kernel module is loaded
+      # (see the fuse job of ci.yml).
       - uses: ./.github/actions/fuse
         if: steps.gate.outputs.enabled == 'true'
       - uses: ./.github/actions/go-cache
         if: steps.gate.outputs.enabled == 'true'
-        with:
-          folder: .cache/root
-      # The same part that CI runs, in the same image; it leaves coverage.out where
-      # sonar-project.properties looks for it.
+      # The same parts that CI runs, in the same image; they leave coverage.out and
+      # coverage-fuse.out where sonar-project.properties looks for them.
       - name: Tests with coverage
         if: steps.gate.outputs.enabled == 'true'
-        run: make unit
-      # Lands next to coverage.out; sonar-project.properties names both reports.
+        run: make unit fuse
+      # Lands next to the two reports above; sonar-project.properties names all three.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: steps.gate.outputs.enabled == 'true'
         with:
