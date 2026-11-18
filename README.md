@@ -203,7 +203,8 @@ make archives     # the plain program archives in ./dist, from the programs in .
 make release-assets # program archives, SHA256SUMS and its signature for the GitHub release in ./dist/release
 ```
 
-`make release-assets-test` checks the signing of the release files and needs gpg.
+`make release-assets-test` checks the signing of the release files and needs gpg; `make check` runs
+it where gpg is installed and says so when it skips it.
 
 The deb, rpm, Alpine and FreeBSD packages and their repositories are built, tested and published by
 [SpliceFS/packages](https://github.com/SpliceFS/packages).

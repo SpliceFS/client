@@ -46,7 +46,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint \
 	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test \
 	cluster-groups-test fuzz-test \
-	release-assets release-assets-test clean archives \
+	release-assets release-assets-test release-assets-check clean archives \
 	archive-programs-test archive-lib-test
 
 all: check build
@@ -103,7 +103,8 @@ unit: | $(ROOT_CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover freebsd-lib-test version-test timing-test server-lib-test part-test \
-	build-all-test archive-programs-test archive-lib-test cluster-groups-test fuzz-test
+	build-all-test archive-programs-test archive-lib-test cluster-groups-test fuzz-test \
+	release-assets-check
 
 # The same tests with the race detector, which makes them several times slower.
 race: | $(ROOT_CACHE_DIRS)
@@ -302,9 +303,16 @@ release-assets:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) scripts/release-assets.sh
 
 # Proves release-assets.sh against a private dist and a throwaway key made by the test. Needs
-# gpg; it is not part of check, which runs where gpg may be missing.
+# gpg.
 release-assets-test:
 	scripts/release-assets-test.sh
+
+# The same test wherever gpg is, as part of unit-here: our Go image has gpg, so the unit job of
+# CI always runs it. A machine without gpg says it skipped the test and goes on, so that make
+# check does not fail there for want of a tool the test needs.
+release-assets-check:
+	@if command -v gpg >/dev/null 2>&1; then $(MAKE) --no-print-directory release-assets-test; \
+	else echo "release-assets-test skipped: gpg is not installed"; fi
 
 clean:
 	rm -rf bin dist coverage.out coverage.html
