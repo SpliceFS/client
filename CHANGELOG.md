@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.37] - 2026-11-18
+
+- Internal: the client's packages are built and published by the packages repository; a client
+  release publishes the programs.
+
 ## [0.5.36] - 2026-11-18
 
 - Running the client as yourself on Linux or FreeBSD uses your own folders:
