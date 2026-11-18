@@ -225,7 +225,8 @@ internal/      node HTTP client, cluster session, merged tree, block cache, bloc
                the version number set at build time
 docs/          design and configuration reference
 archive/       the README.txt that goes into the program archives
-packaging/     the files of the FreeBSD test machine
+freebsd-test/  the files of the FreeBSD test machine: the releases it runs, the kernel modules it
+               loads and its first-boot configuration
 scripts/       development helpers used by make and CI
 ```
 

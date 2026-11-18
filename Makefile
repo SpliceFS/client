@@ -10,7 +10,7 @@ LDFLAGS := -s -w -X github.com/SpliceFS/client/internal/version.version=$(VERSIO
 LINUX_IMAGE ?= ghcr.io/splicefs/go:v1
 # The image of a FreeBSD release, which runs the FreeBSD machine of that release: a FreeBSD disk
 # that has been booted once and has pkg set up (amd64 only), with QEMU. @RELEASE@ is where the
-# release goes; the releases are listed in packaging/freebsd/releases.
+# release goes; the releases are listed in freebsd-test/releases.
 FREEBSD_IMAGE ?= ghcr.io/splicefs/freebsd-@RELEASE@:v2
 # The date of the commit: the time of every file in the program archives, so that a rebuild of
 # the same commit gives the same bytes.
@@ -220,7 +220,7 @@ compat:
 
 # Runs the tests on FreeBSD itself: the test programs are built for FreeBSD in the Go
 # container and run as root in a virtual machine of every FreeBSD release in
-# packaging/freebsd/releases, with the same 100% coverage gate as make check. FreeBSD cannot
+# freebsd-test/releases, with the same 100% coverage gate as make check. FreeBSD cannot
 # run in a container, so the machine runs under QEMU in the image of the release
 # (FREEBSD_IMAGE). This needs Docker and KVM (Linux on amd64); a computer without /dev/kvm
 # stops at once, because an emulated machine takes many times as long. FREEBSD=15.1 limits the run to
@@ -247,7 +247,7 @@ lint: lint-shell
 # The shell part of lint by itself, for the CI job that has no Go tools.
 .PHONY: lint-shell
 lint-shell:
-	shellcheck scripts/*.sh scripts/cluster-scenarios/*.sh packaging/freebsd/user-data.in
+	shellcheck scripts/*.sh scripts/cluster-scenarios/*.sh freebsd-test/user-data.in
 
 # Where the version comes from: the file VERSION, also in a checkout of one commit without
 # tags, which is what CI has. It needs no Docker, so it is part of check.

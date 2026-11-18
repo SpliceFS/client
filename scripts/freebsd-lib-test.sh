@@ -49,8 +49,8 @@ expect 1 "$work/a-file is not a device" require_kvm_with "$work/a-file"
 expect 0 "" require_kvm_with /dev/null
 
 out="$work/out"
-mkdir -p "$work/packaging/freebsd" "$out"
-printf '# The releases.\n\n14.5\n15.1\n' >"$work/packaging/freebsd/releases"
+mkdir -p "$work/freebsd-test" "$out"
+printf '# The releases.\n\n14.5\n15.1\n' >"$work/freebsd-test/releases"
 cd "$work"
 
 calls=""
@@ -77,7 +77,7 @@ FREEBSD=15.1
 freebsd_each_release step
 [ "$calls" = " 15.1" ] || fail "the steps ran for [$calls], want [ 15.1]"
 FREEBSD=99.9
-expect 1 "no release in packaging/freebsd/releases matches 99.9" freebsd_each_release step
+expect 1 "no release in freebsd-test/releases matches 99.9" freebsd_each_release step
 unset FREEBSD
 
 # The machine is started in the image of its release, with the device passed on and the folders

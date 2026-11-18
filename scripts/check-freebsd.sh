@@ -3,8 +3,8 @@
 # The code that exists only for FreeBSD cannot be tested anywhere else, and the code shared
 # with Linux has to be proven on FreeBSD's own FUSE. The test programs are built for FreeBSD
 # by scripts/freebsd-tests.sh; this script runs them in a virtual machine of every FreeBSD
-# release in packaging/freebsd/releases (its prepared image, scripts/freebsd-lib.sh), as
-# root, with the kernel modules listed in packaging/freebsd/test-modules loaded
+# release in freebsd-test/releases (its prepared image, scripts/freebsd-lib.sh), as
+# root, with the kernel modules listed in freebsd-test/test-modules loaded
 # (scripts/freebsd-check-job.sh). It runs on the host (make check-freebsd) and needs Docker
 # and hardware virtualization (KVM).
 #
@@ -44,7 +44,7 @@ run_tests() {
     rm -rf "$results" 2>/dev/null || true
     mkdir -p "$results"
     freebsd_job_folder "$job" freebsd-check-job.sh "${FREEBSD_ONLY:-}"
-    if [ -f packaging/freebsd/test-modules ]; then cp packaging/freebsd/test-modules "$job/"; fi
+    if [ -f freebsd-test/test-modules ]; then cp freebsd-test/test-modules "$job/"; fi
     echo "FreeBSD $release: running the tests"
     timed "FreeBSD $release: machine run" freebsd_run "$release" "$job" "$results" "$archive"
     [ "$run_status" -eq 0 ] || fail "the tests failed on FreeBSD $release"
