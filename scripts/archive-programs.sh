@@ -4,26 +4,26 @@
 # system, LICENSE and README.txt (from archive/), and nothing that installs or runs them:
 # no service file, no mount helper, no install script. They are for people who run SpliceFS by
 # hand on a system the packages do not cover. Runs on the host after make build-all (make
-# archives) and needs only tar and gzip. Variables: VERSION and PACKAGE_DATE as for the build;
+# archives) and needs only tar and gzip. Variables: VERSION and BUILD_DATE as for the build;
 # DIST_DIR (default dist).
 #
 # The same programs give the same bytes, so a rebuild can be compared with a release: the
 # members are sorted, owner and group are 0, modes are fixed, every time is the date
-# PACKAGE_DATE at 00:00 UTC, and gzip stores neither a name nor a time.
+# BUILD_DATE at 00:00 UTC, and gzip stores neither a name nor a time.
 set -eu
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-# archive-lib.sh reads VERSION and PACKAGE_DATE and says what the archives are called.
+# archive-lib.sh reads VERSION and BUILD_DATE and says what the archives are called.
 # shellcheck source=archive-lib.sh
 . scripts/archive-lib.sh
 
 dist="${DIST_DIR:-$root/dist}"
 bin="$dist/bin"
 
-case "$PACKAGE_DATE" in
+case "$BUILD_DATE" in
     [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-    *) fail "PACKAGE_DATE $PACKAGE_DATE is not a date written YYYYMMDD" ;;
+    *) fail "BUILD_DATE $BUILD_DATE is not a date written YYYYMMDD" ;;
 esac
 # The names are ours and hold no spaces, so the list is split on purpose.
 systems="$(built_systems "$dist")"
@@ -59,7 +59,7 @@ stage_system() {
     cp LICENSE archive/README.txt "$2/"
     chmod 755 "$2" "$2"/*
     chmod 644 "$2/LICENSE" "$2/README.txt"
-    TZ=UTC touch -t "${PACKAGE_DATE}0000" "$2" "$2"/*
+    TZ=UTC touch -t "${BUILD_DATE}0000" "$2" "$2"/*
 }
 
 for system in $systems; do

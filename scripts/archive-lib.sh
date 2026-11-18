@@ -5,7 +5,7 @@
 # what is built and what a release file is called, and refuses a version that cannot be
 # released.
 : "${VERSION:?VERSION is not set}"
-: "${PACKAGE_DATE:?PACKAGE_DATE is not set}"
+: "${BUILD_DATE:?BUILD_DATE is not set}"
 
 # The name of the program set: the archives of a release are called after it.
 name=splicefs-client

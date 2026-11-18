@@ -40,7 +40,7 @@ done
 
 # Runs the script in the repository with the version and date of the arguments.
 archive() {
-    (cd "$tree" && VERSION="$1" PACKAGE_DATE="$2" sh scripts/archive-programs.sh)
+    (cd "$tree" && VERSION="$1" BUILD_DATE="$2" sh scripts/archive-programs.sh)
 }
 
 # Prints name, mode, owner, group and time (all octal, without leading zeros) of each member of
@@ -147,7 +147,7 @@ check "two runs give identical archives" "$first" "$second"
 rm "$dist"/*.tar.gz
 archive v1.2.3 20200101 >/dev/null
 got="$(headers "$dist/$top.tar.gz")"
-check "the time follows PACKAGE_DATE" "$top/ 755 0 0 13602760400" "${got%%
+check "the time follows BUILD_DATE" "$top/ 755 0 0 13602760400" "${got%%
 *}"
 
 # A pre-release or a build with changes names its version in full.
@@ -171,14 +171,14 @@ refuses() {
     fi
 }
 
-refuses "a PACKAGE_DATE that is not a date is refused" "PACKAGE_DATE" \
-    env VERSION=v1.2.3 PACKAGE_DATE=tomorrow sh scripts/archive-programs.sh
+refuses "a BUILD_DATE that is not a date is refused" "BUILD_DATE" \
+    env VERSION=v1.2.3 BUILD_DATE=tomorrow sh scripts/archive-programs.sh
 mkdir "$tree/dist/bin/linux-riscv64"
 refuses "a system without programs is refused" "linux-riscv64" \
-    env VERSION=v1.2.3 PACKAGE_DATE=20261112 sh scripts/archive-programs.sh
+    env VERSION=v1.2.3 BUILD_DATE=20261112 sh scripts/archive-programs.sh
 rm -r "$tree/dist/bin"
 refuses "a missing dist/bin is refused" "make build-all" \
-    env VERSION=v1.2.3 PACKAGE_DATE=20261112 sh scripts/archive-programs.sh
+    env VERSION=v1.2.3 BUILD_DATE=20261112 sh scripts/archive-programs.sh
 
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "archive-programs: names, members, owner, modes, times and bytes as expected"

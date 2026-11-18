@@ -12,12 +12,12 @@ LINUX_IMAGE ?= ghcr.io/splicefs/go:v1
 # that has been booted once and has pkg set up (amd64 only), with QEMU. @RELEASE@ is where the
 # release goes; the releases are listed in freebsd-test/releases.
 FREEBSD_IMAGE ?= ghcr.io/splicefs/freebsd-@RELEASE@:v2
-# The date of the commit: the time of every file in the program archives, so that a rebuild of
-# the same commit gives the same bytes.
-PACKAGE_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
+# The date of the commit, not of the build: the time of every file in the program archives, so
+# that a rebuild of the same commit gives the same bytes.
+BUILD_DATE ?= $(shell git log -1 --format=%cd --date=format:%Y%m%d 2>/dev/null || date +%Y%m%d)
 # What the scripts that name their files need. They read these as environment variables; env
 # sets them in an image that has no make.
-PACKAGE_VARS = VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE)
+BUILD_VARS = VERSION=$(VERSION) BUILD_DATE=$(BUILD_DATE)
 
 # One runner per image: docker run with the source at /src, as the caller's own user, so that
 # every file a part writes belongs to the caller and not to root. The Go caches are folders
@@ -116,7 +116,7 @@ race-here:
 # Every program, for every system and CPU type, into ./dist/bin. The packages, the release and
 # the other parts read from there; nothing is compiled twice.
 build-all: | $(CACHE_DIRS)
-	scripts/part.sh build-all $(LINUX_RUN) make $(PACKAGE_VARS) build-all-here
+	scripts/part.sh build-all $(LINUX_RUN) make $(BUILD_VARS) build-all-here
 
 build-all-here:
 	LDFLAGS='$(LDFLAGS)' scripts/build-all.sh dist/bin
@@ -125,7 +125,7 @@ build-all-here:
 # build-all): the programs, LICENSE and README.txt, for people who run SpliceFS by hand. They
 # are the files of the GitHub release (make release-assets). Needs only tar and gzip.
 archives:
-	$(PACKAGE_VARS) scripts/archive-programs.sh
+	$(BUILD_VARS) scripts/archive-programs.sh
 
 # This client against the released servers, in a container that may mount (FUSE) as root;
 # SERVER_WORKS, SERVER_REFUSED, CLUSTER_ONLY, CLUSTER_SEED and INTEGRATION_PART reach the
@@ -300,7 +300,7 @@ server-lib-test:
 # scripts/release-assets.sh. The packages are not released here: the package repository makes
 # them from these archives.
 release-assets:
-	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) scripts/release-assets.sh
+	VERSION=$(VERSION) BUILD_DATE=$(BUILD_DATE) scripts/release-assets.sh
 
 # Proves release-assets.sh against a private dist and a throwaway key made by the test. Needs
 # gpg.

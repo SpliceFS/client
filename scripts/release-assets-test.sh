@@ -27,7 +27,7 @@ GNUPGHOME="$tmp/gnupg" gpg --armor --export > "$tmp/keys/splicefs.asc"
 
 # Release files for a pre-release version, from a private dist that holds one plain program
 # archive for each system of its dist/bin, under the names archive-lib.sh gives this version.
-export VERSION=v1.2.3-rc.1 PACKAGE_DATE=20261112
+export VERSION=v1.2.3-rc.1 BUILD_DATE=20261112
 name="$(sh -c '. scripts/archive-lib.sh; echo "$name"')"
 d="$tmp/dist"
 mkdir -p "$d/keys"

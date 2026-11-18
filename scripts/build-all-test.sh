@@ -39,7 +39,7 @@ export CALLS="$work/calls"
 
 (
     cd "$tree"
-    PATH="$work/bin:$PATH" VERSION=v1.2.3 PACKAGE_DATE=20261112 LDFLAGS="-s -w -X example.test/demo/v.v=v1.2.3" \
+    PATH="$work/bin:$PATH" VERSION=v1.2.3 BUILD_DATE=20261112 LDFLAGS="-s -w -X example.test/demo/v.v=v1.2.3" \
         sh scripts/build-all.sh "$work/out"
 )
 
@@ -91,7 +91,7 @@ lacks_call "only freebsd changes the default folders" "linux/amd64 cgo=0 build -
 
 # Without LDFLAGS the script must stop, not build programs that report no version.
 status=0
-message="$(cd "$tree" && PATH="$work/bin:$PATH" VERSION=v1.2.3 PACKAGE_DATE=20261112 \
+message="$(cd "$tree" && PATH="$work/bin:$PATH" VERSION=v1.2.3 BUILD_DATE=20261112 \
     sh scripts/build-all.sh "$work/out2" 2>&1)" || status=$?
 if [ "$status" -ne 0 ] && printf '%s' "$message" | grep -q 'LDFLAGS is not set'; then
     echo "ok   refuses to run without LDFLAGS"

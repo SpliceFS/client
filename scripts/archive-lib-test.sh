@@ -9,7 +9,7 @@ failed=0
 
 # $1 VERSION, $2 the archive name for linux-amd64 that it must give.
 accepts() {
-    got="$(VERSION="$1" PACKAGE_DATE=20261112 sh -c \
+    got="$(VERSION="$1" BUILD_DATE=20261112 sh -c \
         '. scripts/archive-lib.sh; archive_name linux-amd64' 2>&1)" || true
     if [ "$got" = "$2" ]; then
         printf 'ok   %-28s %s\n' "$1" "$2"
@@ -21,7 +21,7 @@ accepts() {
 
 # $1 VERSION that must be refused; the message must name it.
 refuses() {
-    if got="$(VERSION="$1" PACKAGE_DATE=20261112 sh -c '. scripts/archive-lib.sh' 2>&1)"; then
+    if got="$(VERSION="$1" BUILD_DATE=20261112 sh -c '. scripts/archive-lib.sh' 2>&1)"; then
         printf 'FAIL %-28s was accepted\n' "$1"
         failed=$((failed + 1))
     elif printf '%s' "$got" | grep -q -- "$1"; then
