@@ -8,7 +8,8 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 ## [0.5.38] - 2026-11-18
 
-- Internal: the client's FUSE tests run as an ordinary user.
+- Internal: the client's packages are built and published by the packages repository; a client
+  release publishes the programs.
 
 ## [0.5.37] - 2026-11-18
 

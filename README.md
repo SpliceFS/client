@@ -209,7 +209,7 @@ make publish        # uploads ./dist/repo to packages.splicefs.org/client, never
 make publish-check  # lists the remote root, changes nothing
 make publish-test   # checks publishing and release-assets against local folders, no server
 make archives     # the plain program archives in ./dist, from the programs in ./dist/bin
-make release-assets # packages, program archives, SHA256SUMS and its signature for the GitHub release in ./dist/release
+make release-assets # program archives, SHA256SUMS and its signature for the GitHub release in ./dist/release
 ```
 
 `make package-test` covers every system listed in `packaging/test-systems`, and so do

@@ -188,13 +188,13 @@ tags. A build with uncommitted changes to tracked files adds `-dirty`.
 The HTTP API has its own version in the URL (`/v1/`). A server keeps serving an API version
 for as long as a supported client release uses it.
 
-The Release workflow builds the deb, rpm and apk packages for both CPU types, signs the apt, rpm
-and Alpine repositories, installs every package and every repository in booted servers of each
-supported system, and only when all of that passes publishes the repositories to
-`packages.splicefs.org/client` (older versions stay in them). It then creates the GitHub release
-for the tag, with the packages, one plain program archive for each system and CPU type,
-`SHA256SUMS` (which lists every file) and its signature `SHA256SUMS.asc`, and the merged pull
-request as the notes.
+The Release workflow builds the programs for every system, makes one plain program archive for
+each system and CPU type, and creates the GitHub release for the tag with the archives,
+`SHA256SUMS` (which lists every archive) and its signature `SHA256SUMS.asc`, and the merged pull
+request as the notes. It then tells the package repository (`SpliceFS/packages`) about the
+release. That repository builds the deb, rpm and apk packages from the archives, tests
+them, and publishes the repositories to `packages.splicefs.org/client` (older versions stay in
+them).
 
 ## License
 
