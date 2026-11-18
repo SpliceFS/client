@@ -6,15 +6,9 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
-## [0.5.38] - 2026-11-18
-
-- Internal: the client's packages are built and published by the packages repository; a client
-  release publishes the programs.
-
 ## [0.5.37] - 2026-11-18
 
-- Internal: the client's packages are built and published by the packages repository; a client
-  release publishes the programs.
+- Internal: a dependency is updated. Nothing changes for users.
 
 ## [0.5.36] - 2026-11-18
 
