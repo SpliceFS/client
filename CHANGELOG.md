@@ -8,7 +8,7 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 ## [0.5.39] - 2026-11-18
 
-- Internal: the client's FUSE tests run as an ordinary user.
+- `splicefsctl` run as root (also through sudo) always reaches the system-wide client.
 
 ## [0.5.38] - 2026-11-18
 

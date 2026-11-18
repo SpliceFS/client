@@ -93,10 +93,10 @@ func folderOf(built string) folder {
 	}
 }
 
-// cacheFolder describes a folder like the cache folder, with the build setting given.
-func cacheFolder(built string) folder {
+// cacheFolder describes a folder like the cache folder, with no build setting.
+func cacheFolder() folder {
 	return folder{
-		built: built, system: "/var/cache/splicefs",
+		system: "/var/cache/splicefs",
 		xdgEnv: "XDG_CACHE_HOME", xdgBase: ".cache", name: "splicefs",
 	}
 }
@@ -139,9 +139,10 @@ func TestDefaultDir(t *testing.T) {
 			systemOf(false, 1000, config), folderOf(""), "/etc/splicefs/client",
 		},
 		{"system without the convention, the build setting", systemOf(false, 1000, nil), folderOf("~/b"), "/home/u/b"},
-		{"cache folder of an ordinary user", systemOf(true, 1000, cache), cacheFolder(""), "/x/cache/splicefs"},
-		{"cache folder without the variable", systemOf(true, 1000, nil), cacheFolder(""), "/home/u/.cache/splicefs"},
-		{"cache folder of root", systemOf(true, 0, nil), cacheFolder(""), "/var/cache/splicefs"},
+		{"cache folder of an ordinary user", systemOf(true, 1000, cache), cacheFolder(), "/x/cache/splicefs"},
+		{"cache folder without the variable", systemOf(true, 1000, nil), cacheFolder(), "/home/u/.cache/splicefs"},
+		{"cache folder of root", systemOf(true, 0, nil), cacheFolder(), "/var/cache/splicefs"},
+		{"cache folder of root ignores XDG", systemOf(true, 0, cache), cacheFolder(), "/var/cache/splicefs"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
