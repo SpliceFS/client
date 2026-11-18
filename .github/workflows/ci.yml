@@ -1,9 +1,12 @@
 name: CI
 
-# Only pull requests are tested. main gets nothing but branches that passed here while they
-# sat on its tip, so a run on main would test the same files a second time.
+# Only pull requests and the merge queue are tested. main gets nothing but what passed here on
+# its tip, so a run on main would test the same files a second time. The queue runs this on a
+# pull request merged on top of main and the pull requests ahead of it.
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
 
 permissions:
   contents: read
@@ -16,12 +19,18 @@ jobs:
   # A pull request is tested only when its branch sits on the tip of main. Then the merge adds
   # nothing that was not tested, and nothing is tested again after it: not on main, not in the
   # release. A branch that is behind fails here at once, before any long job starts. The bot
-  # rebuilds every open branch when main moves, which starts the checks again.
+  # rebuilds every open branch when main moves, which starts the checks again. A merge group
+  # is made by the queue on the tip of main and the pull requests ahead of it, so it is that
+  # test already; the job exists in the queue because branch protection requires it.
   tip:
     name: On the tip of main
     runs-on: ubuntu-latest
     steps:
+      - name: The merge group is built on the tip of main
+        if: github.event_name == 'merge_group'
+        run: echo "The queue built this merge group on the tip of the target branch."
       - name: The branch contains the tip of main
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}

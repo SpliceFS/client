@@ -153,10 +153,11 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
 
 | Workflow | What it does |
 |---|---|
-| CI | every part of a build as a job of its own, all at once: static checks (format, vet, module files, ShellCheck, and `golangci-lint` with the `gosec` security rules for each system), unit tests with the 100% coverage gate, tests with the race detector, the build for every system, the real client against the released servers, macOS, fuzzing, FreeBSD, and the packages with their install, service, repository and publish tests. The job "All checks" needs all of them and is the one check a pull request must pass. |
+| CI | every part of a build as a job of its own, all at once: static checks (format, vet, module files, ShellCheck, and `golangci-lint` with the `gosec` security rules for each system), unit tests with the 100% coverage gate, tests with the race detector, the build for every system, the real client against the released servers, macOS, fuzzing, FreeBSD, and the packages with their install, service, repository and publish tests. The job "All checks" needs all of them and is the one check a pull request must pass. It runs for GitHub's merge queue too, on the pull request merged on top of `main` and the pull requests ahead of it. |
 | Rules | on pull requests: checks the `change_scope` line and the `VERSION` file the bot sets |
+| Merge queue | the required checks that need the pull request itself (Rules) or SonarQube Cloud pass without running again in the queue, because they ran when the pull request entered it |
 | Main | on every push to `main`: tags the new version and rebuilds the open pull requests |
-| Security | `govulncheck` for known vulnerabilities in dependencies and the standard library, CodeQL static analysis, and a dependency review on pull requests. Also runs weekly. |
+| Security | `govulncheck` for known vulnerabilities in dependencies and the standard library, CodeQL static analysis, and a dependency review on pull requests and in the merge queue. Also runs weekly. |
 | SonarQube | quality and security rating on SonarQube Cloud. Skipped until a maintainer has set it up. |
 
 One-time SonarQube setup, by a maintainer: import the repository on

@@ -1,0 +1,42 @@
+name: Merge queue
+
+# GitHub's merge queue tests each pull request merged on top of main and the pull requests
+# ahead of it, once, and merges in order. CI and Security run for the queue as they do for a
+# pull request. Branch protection also requires the checks below, which need the pull request
+# itself (its description, its branch) or a service that only analyzes pull requests and main.
+# Each was checked when the pull request entered the queue, and the queue builds on exactly
+# that pull request, so they pass here without running again. The job names are the names
+# branch protection requires; nothing else runs these names for the queue.
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+jobs:
+  change-scope:
+    name: rules / Change scope
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "The change_scope in the description was checked when the pull request entered the queue."
+
+  version:
+    name: rules / Version
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "The version commit of the release bot was checked when the pull request entered the queue."
+
+  # The SonarQube workflow has a job of this name for pull requests and main. SonarQube Cloud
+  # analyzes those two, and a queue branch is neither, so the queue gets this one instead.
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "SonarQube analyzed the pull request; it analyzes main after the merge."
+
+  sonar-status:
+    name: SonarCloud Code Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "SonarQube Cloud reports on pull requests, not on queue branches; it reported on the pull request."
