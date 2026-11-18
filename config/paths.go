@@ -10,6 +10,8 @@ import (
 // A build may set these (-ldflags -X github.com/SpliceFS/client/config.defaultConfigDir=...)
 // for a system whose packages keep their files elsewhere. Empty means the default of the
 // operating system, which is chosen at compile time in paths_default.go and paths_darwin.go.
+// They name the folders of the installation, so an ordinary user of a system that follows the
+// XDG convention (paths_xdg.go) does not get them.
 var (
 	defaultConfigDir string //nolint:gochecknoglobals // set by the build with -ldflags -X
 	defaultCacheDir  string //nolint:gochecknoglobals // set by the build with -ldflags -X
@@ -19,16 +21,68 @@ var (
 // the program, which a build cannot know.
 const homePrefix = "~/"
 
-// DefaultConfigDir returns the configuration directory used when none is given. It fails
-// when the directory is under the home directory and that cannot be found.
-func DefaultConfigDir() (string, error) {
-	return resolveDir(defaultConfigDir, osConfigDir, os.UserHomeDir)
+// host is what the default folders depend on, so that a test need not run as a particular
+// user or on a particular system.
+type host struct {
+	getenv  func(string) string
+	geteuid func() int
+	home    func() (string, error)
+	// xdg tells that an ordinary user of this system follows the XDG Base Directory convention.
+	xdg bool
 }
 
-// DefaultCacheDir returns the cache directory used when the configuration sets none. It
-// fails when the directory is under the home directory and that cannot be found.
+func systemHost() host {
+	return host{getenv: os.Getenv, geteuid: os.Geteuid, home: os.UserHomeDir, xdg: ordinaryUserFollowsXDG}
+}
+
+// ordinaryUser reports whether the program runs as a user who keeps files in the home
+// directory by the XDG convention. Root, and every user of a system without the convention,
+// get the folders of the installation.
+func (h host) ordinaryUser() bool {
+	return h.xdg && h.geteuid() != 0
+}
+
+// folder describes one default folder: the setting of the build and the default of the
+// operating system, which a system-wide installation uses, and where an ordinary user keeps
+// the folder by the XDG convention: $xdgEnv/name, or ~/xdgBase/name when the variable is not
+// an absolute path.
+type folder struct {
+	built, system   string
+	xdgEnv, xdgBase string
+	name            string
+}
+
+// defaultDir finds the folder for the user the program runs as.
+func defaultDir(h host, f folder) (string, error) {
+	if !h.ordinaryUser() {
+		return resolveDir(f.built, f.system, h.home)
+	}
+	if base := h.getenv(f.xdgEnv); filepath.IsAbs(base) {
+		return filepath.Join(base, f.name), nil
+	}
+	return resolveDir("", homePrefix+f.xdgBase+"/"+f.name, h.home)
+}
+
+// DefaultConfigDir returns the configuration directory used when none is given: for root,
+// the folder of the installation; for an ordinary user on Linux and FreeBSD,
+// $XDG_CONFIG_HOME/splicefs/client, else ~/.config/splicefs/client. It fails when the
+// directory is under the home directory and that cannot be found.
+func DefaultConfigDir() (string, error) {
+	return defaultDir(systemHost(), folder{
+		built: defaultConfigDir, system: osConfigDir,
+		xdgEnv: "XDG_CONFIG_HOME", xdgBase: ".config", name: "splicefs/client",
+	})
+}
+
+// DefaultCacheDir returns the cache directory used when the configuration sets none: for
+// root, the folder of the installation; for an ordinary user on Linux and FreeBSD,
+// $XDG_CACHE_HOME/splicefs, else ~/.cache/splicefs. It fails when the directory is under the
+// home directory and that cannot be found.
 func DefaultCacheDir() (string, error) {
-	return resolveDir(defaultCacheDir, osCacheDir, os.UserHomeDir)
+	return defaultDir(systemHost(), folder{
+		built: defaultCacheDir, system: osCacheDir,
+		xdgEnv: "XDG_CACHE_HOME", xdgBase: ".cache", name: "splicefs",
+	})
 }
 
 // resolveDir returns built, or fallback when the build set nothing, with a leading "~/"
