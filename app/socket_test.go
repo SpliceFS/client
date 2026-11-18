@@ -48,10 +48,18 @@ func TestSocketPath(t *testing.T) {
 		want string
 	}{
 		{
-			name: "runtime directory",
+			name: "ordinary user with runtime directory",
 			sys:  fakeSystem(runtimeEnv, 1000),
 			dir:  configDir,
 			want: socketUnder("/run/user/1000", configDir),
+		},
+		{
+			// A root command that inherits the runtime directory of a user (sudo that keeps the
+			// environment) must still find the service, which runs without that variable.
+			name: "root ignores the runtime directory",
+			sys:  fakeSystem(runtimeEnv, 0),
+			dir:  configDir,
+			want: socketUnder(rootRuntimeDir, configDir),
 		},
 		{
 			name: "root without runtime directory",
@@ -104,7 +112,8 @@ func TestSocketPathUsesTheEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := fakeSystem(map[string]string{"XDG_RUNTIME_DIR": "/run/user/4242"}, 1).socketPath(abs)
+	// The real user id, so that the test also holds when it runs as root.
+	want := fakeSystem(map[string]string{"XDG_RUNTIME_DIR": "/run/user/4242"}, os.Geteuid()).socketPath(abs)
 	if got := SocketPath("conf"); got != want {
 		t.Errorf("SocketPath = %q, want %q", got, want)
 	}
