@@ -485,7 +485,7 @@ is up.
 
 ## Starting at boot
 
-The ready-made unit is `splicefs.service` in [`packaging/systemd`](../packaging/systemd). The unit:
+The packages install a ready-made unit; they are built in [SpliceFS/packages](https://github.com/SpliceFS/packages). A unit looks like this:
 
 ```ini
 # /etc/systemd/system/splicefs.service
