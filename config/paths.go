@@ -21,9 +21,9 @@ var (
 // the program, which a build cannot know.
 const homePrefix = "~/"
 
-// host is what the default folders depend on, so that a test need not run as a particular
+// system is what the default folders depend on, so that a test need not run as a particular
 // user or on a particular system.
-type host struct {
+type system struct {
 	getenv  func(string) string
 	geteuid func() int
 	home    func() (string, error)
@@ -31,15 +31,15 @@ type host struct {
 	xdg bool
 }
 
-func systemHost() host {
-	return host{getenv: os.Getenv, geteuid: os.Geteuid, home: os.UserHomeDir, xdg: ordinaryUserFollowsXDG}
+func systemHost() system {
+	return system{getenv: os.Getenv, geteuid: os.Geteuid, home: os.UserHomeDir, xdg: ordinaryUserFollowsXDG}
 }
 
 // ordinaryUser reports whether the program runs as a user who keeps files in the home
 // directory by the XDG convention. Root, and every user of a system without the convention,
 // get the folders of the installation.
-func (h host) ordinaryUser() bool {
-	return h.xdg && h.geteuid() != 0
+func (sys system) ordinaryUser() bool {
+	return sys.xdg && sys.geteuid() != 0
 }
 
 // folder describes one default folder: the setting of the build and the default of the
@@ -53,14 +53,14 @@ type folder struct {
 }
 
 // defaultDir finds the folder for the user the program runs as.
-func defaultDir(h host, f folder) (string, error) {
-	if !h.ordinaryUser() {
-		return resolveDir(f.built, f.system, h.home)
+func defaultDir(sys system, dir folder) (string, error) {
+	if !sys.ordinaryUser() {
+		return resolveDir(dir.built, dir.system, sys.home)
 	}
-	if base := h.getenv(f.xdgEnv); filepath.IsAbs(base) {
-		return filepath.Join(base, f.name), nil
+	if base := sys.getenv(dir.xdgEnv); filepath.IsAbs(base) {
+		return filepath.Join(base, dir.name), nil
 	}
-	return resolveDir("", homePrefix+f.xdgBase+"/"+f.name, h.home)
+	return resolveDir("", homePrefix+dir.xdgBase+"/"+dir.name, sys.home)
 }
 
 // DefaultConfigDir returns the configuration directory used when none is given: for root,
