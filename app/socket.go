@@ -43,6 +43,9 @@ const (
 	privateFileMode = 0o600
 	// privateDirMode lets only the owner use a directory.
 	privateDirMode = 0o700
+	// socketDirName is the name of the directory of the control socket. In the temporary
+	// directory the user id follows it.
+	socketDirName = "splicefs"
 	// groupOtherWrite is the write permission of the group and of everybody else.
 	groupOtherWrite = 0o022
 )
@@ -83,11 +86,11 @@ func systemHost() system {
 }
 
 // SocketPath returns the path of the control socket of the client that uses the
-// configuration directory configDir: <dir>/splicefs/<16 hex digits>.sock, where <dir> is
-// $XDG_RUNTIME_DIR, else /run for root (/var/run on FreeBSD), else the temporary
-// directory, and the digits are the start of the SHA-256 of the absolute configuration
-// directory. Two configurations therefore never share a socket, and every command that
-// names the same directory finds the same one.
+// configuration directory configDir: <dir>/<16 hex digits>.sock, where the digits are the
+// start of the SHA-256 of the absolute configuration directory, and <dir> is
+// $XDG_RUNTIME_DIR/splicefs, else /run/splicefs for root (/var/run/splicefs on FreeBSD),
+// else splicefs-<uid> in the temporary directory. Two configurations therefore never share a
+// socket, and every command that names the same directory finds the same one.
 func SocketPath(configDir string) string {
 	return systemHost().socketPath(configDir)
 }
@@ -98,7 +101,7 @@ func (s system) socketPath(configDir string) string {
 		abs = filepath.Clean(configDir)
 	}
 	sum := sha256.Sum256([]byte(abs))
-	return filepath.Join(s.runtimeDir(), "splicefs", hex.EncodeToString(sum[:8])+".sock")
+	return filepath.Join(s.socketDir(), hex.EncodeToString(sum[:8])+".sock")
 }
 
 // nfsRecordExt replaces the extension of the control socket to name the record of the NFS
@@ -112,14 +115,17 @@ func nfsRecordPath(socketPath string) string {
 	return socketPath[:len(socketPath)-len(filepath.Ext(socketPath))] + nfsRecordExt
 }
 
-func (s system) runtimeDir() string {
+// socketDir is the directory that holds the control socket and the files next to it. The
+// temporary directory is shared by every user, so there the name has the user id, which keeps
+// users out of each other's way; prepareDir refuses a folder that another user made.
+func (s system) socketDir() string {
 	if dir := s.getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return dir
+		return filepath.Join(dir, socketDirName)
 	}
 	if s.geteuid() == 0 {
-		return rootRuntimeDir
+		return filepath.Join(rootRuntimeDir, socketDirName)
 	}
-	return s.tempDir()
+	return filepath.Join(s.tempDir(), fmt.Sprintf("%s-%d", socketDirName, s.geteuid()))
 }
 
 // absPath makes p absolute and clean. Mount targets are compared in this form, so that

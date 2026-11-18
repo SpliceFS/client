@@ -5,10 +5,16 @@ and mounts only when you need them.
 
 The client uses two folders:
 
-| Folder        | Linux packages          | macOS build                 | Holds                         |
-|---------------|-------------------------|-----------------------------|-------------------------------|
-| Configuration | `/etc/splicefs/client`  | `~/.splicefs/client`        | what you write: settings, clusters, mounts |
-| Cache         | `/var/cache/splicefs`   | `~/Library/Caches/splicefs` | cached file contents          |
+| Folder        | Linux packages, run as root | Linux and FreeBSD, run as an ordinary user                  | macOS build                 | Holds                         |
+|---------------|-----------------------------|-------------------------------------------------------------|-----------------------------|-------------------------------|
+| Configuration | `/etc/splicefs/client`      | `$XDG_CONFIG_HOME/splicefs/client`, else `~/.config/splicefs/client` | `~/.splicefs/client`        | what you write: settings, clusters, mounts |
+| Cache         | `/var/cache/splicefs`       | `$XDG_CACHE_HOME/splicefs`, else `~/.cache/splicefs`        | `~/Library/Caches/splicefs` | cached file contents          |
+
+An ordinary user on Linux or FreeBSD gets the folders of the XDG Base Directory convention, so
+that `splicefs`, `splicefsctl` and the mount helper find the same configuration with no
+`--config` and no `cache.dir`. A variable that is not an absolute path is ignored. Root always
+gets the folders of the installation (on a FreeBSD package, the configuration is in
+`/usr/local/etc/splicefs/client`).
 
 `--config DIR` overrides the configuration folder. The cache folder is set by `cache.dir`,
 see "Settings".
@@ -51,7 +57,7 @@ This file sets every key to its default. You do not need to write any of it.
 # Where and how file contents are cached. The folder must not be a mount target, lie inside
 # one, or contain one.
 cache:
-  dir: /var/cache/splicefs  # on macOS: ~/Library/Caches/splicefs
+  dir: /var/cache/splicefs  # ordinary user: ~/.cache/splicefs, macOS: ~/Library/Caches/splicefs
   max_size: 10GiB           # evict least recently read files beyond this; "unlimited" never evicts for size
   max_age: unlimited        # evict files not read for this long; "unlimited" never evicts for age
   min_free: 1GiB            # always leave this much free on the cache disk; blocks are not stored below it
@@ -62,7 +68,7 @@ cache:
 
 | Key                | Meaning                                              | Default            | Limits |
 |--------------------|------------------------------------------------------|--------------------|--------|
-| `cache.dir`        | Folder for cached file contents                      | `/var/cache/splicefs`, on macOS `~/Library/Caches/splicefs` | absolute path (a relative one is read relative to the configuration folder); must not be, lie inside or contain a mount target |
+| `cache.dir`        | Folder for cached file contents                      | `/var/cache/splicefs`; for an ordinary user on Linux and FreeBSD `$XDG_CACHE_HOME/splicefs`, else `~/.cache/splicefs`; on macOS `~/Library/Caches/splicefs` | absolute path (a relative one is read relative to the configuration folder); must not be, lie inside or contain a mount target |
 | `cache.max_size`   | Total size beyond which the least recently read files are evicted | `10GiB` | at least one block of the largest cluster, or `unlimited` |
 | `cache.max_age`    | Files not read for this long are evicted             | `unlimited`        | above `0`, or `unlimited` |
 | `cache.min_free`   | Free space always left on the cache disk             | `1GiB`             | a finite size |
@@ -273,8 +279,15 @@ A mount made this way is a requested mount. The client keeps a list of them:
 
 The control socket is readable only by the user the client runs as. So the service must run
 as root, which the packages do, and `mount` must be run by root, or by that user. By default
-the helper finds the client of `/etc/splicefs/client`. To use another configuration folder,
-set `SPLICEFS_CONFIG` to it in the environment of `mount`.
+the helper finds the client of the default configuration folder of its user (see the folders
+above). To use another configuration folder, set `SPLICEFS_CONFIG` to it in the environment of
+`mount`.
+
+The socket is in `splicefs/` under `$XDG_RUNTIME_DIR`. Without that variable it is in
+`/run/splicefs` for root (`/var/run/splicefs` on FreeBSD) and in `splicefs-<uid>` in the
+temporary directory, for example `/tmp/splicefs-1000`, for an ordinary user. That folder is
+created for its user alone (mode 700); the client refuses to start if it exists and belongs to
+another user or can be written by others.
 
 Only one client can run for a configuration folder. It holds a lock on a file with the ending
 `.lock`, next to the control socket, until it ends, and a second client that starts on the same

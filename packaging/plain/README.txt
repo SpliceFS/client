@@ -14,9 +14,10 @@ Put the programs where you want them, for example in a folder on your PATH. Then
   splicefsctl [--config DIR] umount      unmount, and keep the client running
 
 DIR after --config holds what you write: settings in conf.d/, clusters in clusters.d/ and
-mounts in mounts.d/. Without the option the program uses the default folder of its system
-(/etc/splicefs/client, and ~/.splicefs/client on macOS). With no cluster and no mount it runs
-and mounts nothing.
+mounts in mounts.d/. Without the option the program uses the default folder of its system:
+/etc/splicefs/client for root, ~/.config/splicefs/client for an ordinary user on Linux and
+FreeBSD ($XDG_CONFIG_HOME/splicefs/client when that variable is set), and ~/.splicefs/client
+on macOS. With no cluster and no mount it runs and mounts nothing.
 
 Send the running client SIGHUP (kill -HUP PID) to apply a changed configuration without a
 restart. Run it from the init system of your choice, as a user that may mount.

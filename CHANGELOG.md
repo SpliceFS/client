@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.36] - 2026-11-18
+
+- Running the client as yourself on Linux or FreeBSD uses your own folders:
+  ~/.config/splicefs/client for the configuration and ~/.cache/splicefs for the cache.
+
 ## [0.5.35] - 2026-11-17
 
 - Releases include the plain programs for every system and CPU type, listed in the signed checksums.
