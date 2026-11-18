@@ -116,6 +116,13 @@ jobs:
       - name: Tests with the race detector
         timeout-minutes: 10
         run: make race
+      # TEMPORARY DIAGNOSTIC, to be removed.
+      - name: Kernel security messages
+        if: always()
+        run: |
+          sudo dmesg | grep -i -E 'apparmor|audit' | tail -40 || true
+          sudo aa-status 2>/dev/null | head -20 || true
+          sysctl net.unix.max_dgram_qlen || true
 
   # Every program for every system, compiled once. The package jobs wrap these files and
   # compile nothing, so every package format ships the same binary.
