@@ -62,7 +62,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/go-cache
+      # A backstop, so that a hang fails the job in minutes and not in hours.
       - name: Tests with the 100% coverage gate, and the tests of the scripts
+        timeout-minutes: 10
         run: make unit
       # The upload must never fail the build, for example before the organization is enabled
       # on Codecov. Forks cannot get an OIDC token for this repository.
@@ -92,6 +94,7 @@ jobs:
       - uses: ./.github/actions/fuse
       - uses: ./.github/actions/go-cache
       - name: Tests that mount, with the 100% coverage gate and the race detector
+        timeout-minutes: 10
         run: make fuse
       # The same upload as in the unit job: Codecov adds the two reports of one commit together.
       - name: Upload coverage to Codecov
@@ -111,6 +114,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/go-cache
       - name: Tests with the race detector
+        timeout-minutes: 10
         run: make race
 
   # Every program for every system, compiled once. The package jobs wrap these files and

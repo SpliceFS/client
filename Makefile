@@ -113,7 +113,9 @@ lint-go:
 # Only integration needs root: scripts/compat-test.sh and scripts/cluster-test.sh refuse any
 # other user.
 FUSE_PACKAGE := ./mount/fuse
-OTHER_PACKAGES = $$(go list ./... | grep -vxF "$$(go list $(FUSE_PACKAGE))")
+# One go list: a pipe with one on each side runs two go processes that fill an empty module
+# cache at the same time.
+OTHER_PACKAGES = $$(go list -f '{{if ne .ImportPath (print .Module.Path "/$(FUSE_PACKAGE:./%=%)")}}{{.ImportPath}}{{end}}' ./...)
 FUSE_ETC := $(CACHE)/fuse-etc
 FUSE_DEVICE := --privileged --device /dev/fuse
 fuse: RUN_OPTS = $(FUSE_DEVICE) -v "$(FUSE_ETC)/passwd":/etc/passwd:ro -v "$(FUSE_ETC)/fuse.conf":/etc/fuse.conf:ro
