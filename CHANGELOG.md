@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.41] - 2026-11-18
+
+- Internal: the workflows run for the merge queue.
+
 ## [0.5.40] - 2026-11-18
 
 - Internal: a passing failure of the container registry no longer fails a build.
