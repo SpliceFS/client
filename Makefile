@@ -57,7 +57,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint package-lib-test \
 	freebsd-lib-test freebsd-repo-files-test version-test timing-test server-lib-test part-test build-all-test \
 	cluster-groups-test fuzz-test package package-order-test package-test service-test repo repo-test \
-	publish-fetch publish publish-check publish-test release-assets clean archives \
+	release-assets release-assets-test clean archives \
 	archive-programs-test
 
 all: check build
@@ -387,27 +387,6 @@ repo: keys | $(CACHE_DIRS)
 repo-test:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) PLATFORM=$(PLATFORM) scripts/package-test.sh repo
 
-# Publishing to packages.splicefs.org/client. UPLOAD_KEY_FILE and UPLOAD_KNOWN_HOSTS_FILE
-# (see scripts/publish.sh) come from the environment, so no secret is ever in this file.
-# Downloads what is published into dist/repo first, so the repositories built next keep every
-# older version.
-publish-fetch:
-	scripts/publish.sh fetch
-
-# Uploads dist/repo. It refuses an incomplete repository and any upload that would delete a
-# published package.
-publish:
-	scripts/publish.sh send
-
-# Lists the remote root and changes nothing: proves that the key and host key work.
-publish-check:
-	scripts/publish.sh check
-
-# Proves publish.sh and release-assets.sh against local folders and throwaway keys, with no
-# server. Needs dist/repo and dist/keys from make package repo, and changes neither.
-publish-test:
-	scripts/publish-test.sh
-
 # The files of this version for the GitHub release, in dist/release: the program archives
 # (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE is the OpenPGP signing key; the
 # default is the key signing-keys.sh put in dist/keys. The packages are not released here: the
@@ -416,6 +395,11 @@ SIGNING_KEY_FILE ?= $(CURDIR)/dist/keys/splicefs-openpgp-signing-subkey.asc
 release-assets:
 	VERSION=$(VERSION) PACKAGE_DATE=$(PACKAGE_DATE) SIGNING_KEY_FILE=$(SIGNING_KEY_FILE) \
 		scripts/release-assets.sh
+
+# Proves release-assets.sh against a private dist and a throwaway key made by the test. Needs
+# gpg; it is not part of check, which runs where gpg may be missing.
+release-assets-test:
+	scripts/release-assets-test.sh
 
 clean:
 	rm -rf bin dist coverage.out coverage.html
