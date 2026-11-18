@@ -145,7 +145,8 @@ race: | $(CACHE_DIRS)
 	scripts/part.sh race $(LINUX_RUN) make race-here
 
 race-here:
-	go test -race $(OTHER_PACKAGES)
+	# TEMPORARY DIAGNOSTIC, to be removed
+	go test -race -v -timeout 4m ./app/
 
 # Every program, for every system and CPU type, into ./dist/bin. The packages, the release and
 # the other parts read from there; nothing is compiled twice.

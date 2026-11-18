@@ -115,13 +115,7 @@ jobs:
       - uses: ./.github/actions/go-cache
       - name: Tests with the race detector
         timeout-minutes: 10
-        run: |
-          # TEMPORARY DIAGNOSTIC, to be removed: show where a hang is stuck.
-          (sleep 360
-           echo "=== DIAG processes"; ps -eo pid,ppid,user,etimes,stat,wchan:32,args --forest | cut -c1-260
-           for p in $(pgrep -f '/b[0-9]+/[A-Za-z0-9_.-]+\.test'); do echo "=== DIAG stack of $p"; sudo cat "/proc/$p/stack" 2>&1 | head -20; done
-           echo "=== DIAG SIGQUIT"; sudo pkill -QUIT -f '/b[0-9]+/[A-Za-z0-9_.-]+\.test'; sleep 20; sudo pkill -QUIT -x go; sudo pkill -QUIT -x compile; sudo pkill -QUIT -x link) &
-          make race
+        run: make race
 
   # Every program for every system, compiled once. The package jobs wrap these files and
   # compile nothing, so every package format ships the same binary.
