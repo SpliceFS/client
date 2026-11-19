@@ -77,7 +77,7 @@ expect "untracked file" "$clean" "$release"
 echo changed >"$clean/tracked.txt"
 expect "tracked file changed" "$clean" "$release-dirty"
 
-# The caller can still name the version, as the package scripts do inside their containers.
+# The caller can still name the version, as make build-all does for the container it runs in.
 got="$(VERSION=v7.7.7 version_of "$clean")"
 if [ "$got" = v7.7.7 ]; then
     printf 'ok   %-34s %s\n' "version given by the caller" "$got"

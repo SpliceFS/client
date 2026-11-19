@@ -1,7 +1,7 @@
 #!/bin/sh
 # Stops at once, and says why, on a computer that cannot give a FreeBSD machine hardware
-# virtualization. make check-freebsd and make package-freebsd run it before they build
-# anything, so that nobody waits for a build to learn that the machine cannot start.
+# virtualization. make check-freebsd runs it before it builds anything, so that nobody waits
+# for a build to learn that the machine cannot start.
 set -eu
 
 fail() {

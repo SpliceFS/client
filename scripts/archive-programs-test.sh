@@ -24,13 +24,9 @@ check() {
 # alpha for every system, beta for Linux only, so that each archive holds what its own
 # system has.
 tree="$work/tree"
-mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/packaging/deb" "$tree/packaging/plain" \
-    "$tree/packaging/systemd"
-: > "$tree/packaging/systemd/alpha.service"
-cp "$root/scripts/archive-programs.sh" "$root/scripts/package-lib.sh" "$tree/scripts/"
-printf 'Package: splicefs-demo\n' > "$tree/packaging/deb/control"
-printf 'conf.d\n' > "$tree/packaging/config-folders"
-printf 'how to run the programs\n' > "$tree/packaging/plain/README.txt"
+mkdir -p "$tree/scripts" "$tree/cmd/alpha" "$tree/archive"
+cp "$root/scripts/archive-programs.sh" "$root/scripts/archive-lib.sh" "$tree/scripts/"
+printf 'how to run the programs\n' > "$tree/archive/README.txt"
 printf 'the license\n' > "$tree/LICENSE"
 for system in linux-amd64 linux-arm64 freebsd-amd64 freebsd-arm64 darwin-amd64 darwin-arm64; do
     mkdir -p "$tree/dist/bin/$system"
@@ -44,7 +40,7 @@ done
 
 # Runs the script in the repository with the version and date of the arguments.
 archive() {
-    (cd "$tree" && VERSION="$1" PACKAGE_DATE="$2" sh scripts/archive-programs.sh)
+    (cd "$tree" && VERSION="$1" BUILD_DATE="$2" sh scripts/archive-programs.sh)
 }
 
 # Prints name, mode, owner, group and time (all octal, without leading zeros) of each member of
@@ -90,12 +86,12 @@ dist="$tree/dist"
 systems="darwin-amd64 darwin-arm64 freebsd-amd64 freebsd-arm64 linux-amd64 linux-arm64"
 expected=""
 for system in $systems; do expected="$expected
-splicefs-demo-1.2.3-$system.tar.gz"; done
+splicefs-client-1.2.3-$system.tar.gz"; done
 got="$(cd "$dist" && LC_ALL=C ls)"
 check "one archive for each system and CPU type, named with the version without the v" \
     "bin$expected" "$got"
 
-top=splicefs-demo-1.2.3-linux-amd64
+top=splicefs-client-1.2.3-linux-amd64
 got="$(tar -tzf "$dist/$top.tar.gz")"
 check "linux holds both programs, the license and the README, sorted" \
     "$top/
@@ -104,7 +100,7 @@ $top/README.txt
 $top/alpha
 $top/beta" "$got"
 
-top=splicefs-demo-1.2.3-darwin-arm64
+top=splicefs-client-1.2.3-darwin-arm64
 got="$(tar -tzf "$dist/$top.tar.gz")"
 check "darwin holds only the programs it was built with" \
     "$top/
@@ -113,7 +109,7 @@ $top/README.txt
 $top/alpha" "$got"
 
 # 15275200600 is 2026-11-12 00:00:00 UTC, the date given, in octal.
-top=splicefs-demo-1.2.3-linux-amd64
+top=splicefs-client-1.2.3-linux-amd64
 got="$(headers "$dist/$top.tar.gz")"
 check "owner and group 0, programs 755, other files 644, time is the date of the build" \
     "$top/ 755 0 0 15275200600
@@ -140,7 +136,7 @@ rm "$dist"/*.tar.gz
 archive v1.2.3 20261112 >/dev/null
 (cd "$dist" && cksum -- *.tar.gz) > "$work/first"
 rm "$dist"/*.tar.gz
-find "$tree/dist/bin" "$tree/LICENSE" "$tree/packaging/plain" -type f -exec touch -t 202001010101 {} +
+find "$tree/dist/bin" "$tree/LICENSE" "$tree/archive" -type f -exec touch -t 202001010101 {} +
 archive v1.2.3 20261112 >/dev/null
 (cd "$dist" && cksum -- *.tar.gz) > "$work/second"
 first="$(cat "$work/first")"
@@ -151,13 +147,13 @@ check "two runs give identical archives" "$first" "$second"
 rm "$dist"/*.tar.gz
 archive v1.2.3 20200101 >/dev/null
 got="$(headers "$dist/$top.tar.gz")"
-check "the time follows PACKAGE_DATE" "$top/ 755 0 0 13602760400" "${got%%
+check "the time follows BUILD_DATE" "$top/ 755 0 0 13602760400" "${got%%
 *}"
 
 # A pre-release or a build with changes names its version in full.
 archive v1.2.4-rc.1-dirty 20261112 >/dev/null
 got="no archive"
-if [ -f "$dist/splicefs-demo-1.2.4-rc.1-dirty-darwin-arm64.tar.gz" ]; then got=present; fi
+if [ -f "$dist/splicefs-client-1.2.4-rc.1-dirty-darwin-arm64.tar.gz" ]; then got=present; fi
 check "the pre-release version is kept in the name" present "$got"
 
 # $1 case name, $2 text the message must hold, the rest: the command to run in the repository.
@@ -175,14 +171,14 @@ refuses() {
     fi
 }
 
-refuses "a PACKAGE_DATE that is not a date is refused" "PACKAGE_DATE" \
-    env VERSION=v1.2.3 PACKAGE_DATE=tomorrow sh scripts/archive-programs.sh
+refuses "a BUILD_DATE that is not a date is refused" "BUILD_DATE" \
+    env VERSION=v1.2.3 BUILD_DATE=tomorrow sh scripts/archive-programs.sh
 mkdir "$tree/dist/bin/linux-riscv64"
 refuses "a system without programs is refused" "linux-riscv64" \
-    env VERSION=v1.2.3 PACKAGE_DATE=20261112 sh scripts/archive-programs.sh
+    env VERSION=v1.2.3 BUILD_DATE=20261112 sh scripts/archive-programs.sh
 rm -r "$tree/dist/bin"
 refuses "a missing dist/bin is refused" "make build-all" \
-    env VERSION=v1.2.3 PACKAGE_DATE=20261112 sh scripts/archive-programs.sh
+    env VERSION=v1.2.3 BUILD_DATE=20261112 sh scripts/archive-programs.sh
 
 [ "$failed" -eq 0 ] || { echo "$failed failed"; exit 1; }
 echo "archive-programs: names, members, owner, modes, times and bytes as expected"

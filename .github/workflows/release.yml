@@ -55,6 +55,7 @@ jobs:
     name: Build every program
     needs: verify
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build for linux, freebsd and darwin on amd64 and arm64
@@ -72,6 +73,7 @@ jobs:
     name: Create the release
     needs: [verify, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: publish
     permissions:
       # Needed to create the release.
@@ -129,8 +131,9 @@ jobs:
           PROGRAM: client
           TAG: ${{ github.ref_name }}
         run: |
-          # The event type and the two values are what the Publish program workflow of the
-          # package repository reads. A failed call fails the step.
+          # The event type tells the package repository to tag and publish now. It reads the
+          # releases themselves, not these two values, which name the release in its run.
+          # A failed call fails the step.
           jq -n --arg program "$PROGRAM" --arg tag "$TAG" \
             '{event_type: "program-released", client_payload: {program: $program, tag: $tag}}' \
             > "$RUNNER_TEMP/dispatch.json"

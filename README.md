@@ -199,25 +199,15 @@ make check      # with the tools installed: format check, vet, module files tidy
 make check-in-images  # the same in our images, with real FUSE mounts (needs Docker)
 make build-all  # every program for linux, freebsd and darwin on amd64 and arm64 in ./dist/bin (needs Docker)
 make lint         # golangci-lint, then ShellCheck on every shell script with every optional check on
-make package      # deb, rpm and apk packages for amd64 and arm64 in ./dist (needs Docker)
-make package-test # installs and removes each package in a booted server of every system
-make repo         # signed apt, rpm and Alpine repositories in ./dist/repo from the packages in ./dist
-make package-freebsd  # FreeBSD packages in ./dist/freebsd and their signed repository in ./dist/repo/freebsd, built and tested in a FreeBSD virtual machine (needs Docker and KVM, so Linux on amd64)
-make repo-test    # installs from the repositories with signature checks on, in every system
-make publish-fetch  # downloads the published repositories into ./dist/repo
-make publish        # uploads ./dist/repo to packages.splicefs.org/client, never deleting a package
-make publish-check  # lists the remote root, changes nothing
-make publish-test   # checks publishing and release-assets against local folders, no server
 make archives     # the plain program archives in ./dist, from the programs in ./dist/bin
 make release-assets # program archives, SHA256SUMS and its signature for the GitHub release in ./dist/release
 ```
 
-`make package-test` covers every system listed in `packaging/test-systems`, and so do
-`make service-test` and `make repo-test`. Each system is a server image of ghcr.io/splicefs
-(`server-debian-12` and the others): the vendor's own minimal server install, started with its
-service manager as process 1, with nothing of ours in it. `ONLY=deb` or `ONLY=<image>` limits
-a run to one format or one image. From an arm64 machine,
-`make package-test PLATFORM=linux/amd64` tests the other CPU type by emulation.
+`make release-assets-test` checks the signing of the release files and needs gpg; `make check` runs
+it where gpg is installed and says so when it skips it.
+
+The deb, rpm, Alpine and FreeBSD packages and their repositories are built, tested and published by
+[SpliceFS/packages](https://github.com/SpliceFS/packages).
 
 ## Repository layout
 
@@ -234,7 +224,9 @@ mount/         the contract every mount layer offers; mount/fuse is Linux and Fr
 internal/      node HTTP client, cluster session, merged tree, block cache, block reader, and
                the version number set at build time
 docs/          design and configuration reference
-packaging/     systemd unit, OpenRC script, package files
+archive/       the README.txt that goes into the program archives
+freebsd-test/  the files of the FreeBSD test machine: the releases it runs, the kernel modules it
+               loads and its first-boot configuration
 scripts/       development helpers used by make and CI
 ```
 

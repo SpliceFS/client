@@ -49,8 +49,8 @@ expect 1 "$work/a-file is not a device" require_kvm_with "$work/a-file"
 expect 0 "" require_kvm_with /dev/null
 
 out="$work/out"
-mkdir -p "$work/packaging/freebsd" "$out"
-printf '# The releases.\n\n14.5\n15.1\n' >"$work/packaging/freebsd/releases"
+mkdir -p "$work/freebsd-test" "$out"
+printf '# The releases.\n\n14.5\n15.1\n' >"$work/freebsd-test/releases"
 cd "$work"
 
 calls=""
@@ -77,7 +77,7 @@ FREEBSD=15.1
 freebsd_each_release step
 [ "$calls" = " 15.1" ] || fail "the steps ran for [$calls], want [ 15.1]"
 FREEBSD=99.9
-expect 1 "no release in packaging/freebsd/releases matches 99.9" freebsd_each_release step
+expect 1 "no release in freebsd-test/releases matches 99.9" freebsd_each_release step
 unset FREEBSD
 
 # The machine is started in the image of its release, with the device passed on and the folders
@@ -141,45 +141,3 @@ expect 1 "FAIL: $work/a-file" sh "$with_kvm" "$work/a-file" echo ran
 ! grep -q '^ran$' "$work/output" || fail "the command ran without the device"
 expect 0 "ran with --one -two" sh "$with_kvm" /dev/null echo ran with --one -two
 echo "freebsd-with-kvm: the machine is not started without the device"
-
-# --- freebsd-package-check.sh -------------------------------------------------------------
-
-# The check proves that a package is for the CPU type it is named for: its
-# manifest names that ABI and its program is a program of that CPU type. The packages here are
-# archives of the same shape as the real ones (the manifest, then the files), and the programs
-# are no more than an ELF header, which is all the check reads.
-check_package="$root/scripts/freebsd-package-check.sh"
-# make_package <file> <abi> <machine type of the program> [manifest layout]
-# The machine type is the two bytes after the file type in an ELF header, as octal escapes.
-make_package() {
-    stage="$work/stage"
-    rm -rf "$stage"
-    mkdir -p "$stage/usr/local/bin"
-    if [ "${4:-}" = spaced ]; then
-        printf '{\n  "name": "splicefs-server",\n  "abi": "%s",\n}\n' "$2" >"$stage/+MANIFEST"
-    else
-        printf '{"name":"splicefs-server","abi":"%s"}' "$2" >"$stage/+MANIFEST"
-    fi
-    printf '\177ELF\002\001\001\011\000\000\000\000\000\000\000\000\002\000%b' "$3" \
-        >"$stage/usr/local/bin/splicefsd"
-    tar -czf "$1" -C "$stage" +MANIFEST usr
-}
-amd64_type='\0076\0000'
-arm64_type='\0267\0000'
-make_package "$work/amd64.pkg" FreeBSD:15:amd64 "$amd64_type"
-make_package "$work/arm64.pkg" FreeBSD:15:aarch64 "$arm64_type"
-make_package "$work/spaced.pkg" FreeBSD:15:aarch64 "$arm64_type" spaced
-make_package "$work/arm64-with-amd64-program.pkg" FreeBSD:15:aarch64 "$amd64_type"
-make_package "$work/amd64-manifest.pkg" FreeBSD:15:amd64 "$arm64_type"
-expect 0 "FreeBSD:15:amd64" sh "$check_package" "$work/amd64.pkg" 15 amd64 splicefsd
-expect 0 "FreeBSD:15:aarch64" sh "$check_package" "$work/arm64.pkg" 15 aarch64 splicefsd
-expect 0 "FreeBSD:15:aarch64" sh "$check_package" "$work/spaced.pkg" 15 aarch64 splicefsd
-# The manifest and the program must each be right on their own.
-expect 1 "does not say FreeBSD:15:aarch64" sh "$check_package" "$work/amd64.pkg" 15 aarch64 splicefsd
-expect 1 "does not say FreeBSD:14:aarch64" sh "$check_package" "$work/arm64.pkg" 14 aarch64 splicefsd
-expect 1 "machine type 3e00, not b700" sh "$check_package" "$work/arm64-with-amd64-program.pkg" 15 aarch64 splicefsd
-expect 1 "machine type b700, not 3e00" sh "$check_package" "$work/amd64-manifest.pkg" 15 amd64 splicefsd
-expect 1 "holds no usr/local/bin/other" sh "$check_package" "$work/arm64.pkg" 15 aarch64 other
-expect 1 "cannot unpack $work/missing.pkg" sh "$check_package" "$work/missing.pkg" 15 aarch64 splicefsd
-expect 2 "usage" sh "$check_package" "$work/arm64.pkg" 15 sparc64 splicefsd
-echo "freebsd-package-check: a package is for the CPU type it says"

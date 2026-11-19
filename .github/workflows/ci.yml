@@ -43,6 +43,7 @@ jobs:
     needs: tip
     name: Static checks
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/go-cache
@@ -55,6 +56,7 @@ jobs:
     needs: tip
     name: Unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       # Codecov upload signs in with the OIDC token instead of a stored secret.
@@ -182,6 +184,7 @@ jobs:
     needs: tip
     name: macOS
     runs-on: macos-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -250,6 +253,7 @@ jobs:
     needs: tip
     name: FreeBSD tests (${{ matrix.release }})
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

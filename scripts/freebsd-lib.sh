@@ -1,10 +1,10 @@
 # shellcheck shell=sh
-# Sourced by the scripts that need a FreeBSD machine (check-freebsd.sh, package-freebsd.sh).
-# FreeBSD cannot run in a container, so each FreeBSD release in packaging/freebsd/releases runs
+# Sourced by the script that needs a FreeBSD machine (check-freebsd.sh).
+# FreeBSD cannot run in a container, so each FreeBSD release in freebsd-test/releases runs
 # as a virtual machine under QEMU inside the prepared image of that release (ghcr.io/splicefs,
-# named by FREEBSD_IMAGE in the Makefile). The disk in the image has been booted once and has
-# pkg set up, so a run downloads, unpacks and installs nothing. The images are for amd64, and
-# the machine needs hardware virtualization (KVM). The caller sets out (the absolute output
+# named by FREEBSD_IMAGE in the Makefile). The disk in the image has been booted once, so a run
+# downloads, unpacks and installs nothing. The images are for amd64, and the machine needs
+# hardware virtualization (KVM). The caller sets out (the absolute output
 # folder) and defines fail.
 
 # The device of hardware virtualization, on this computer and inside the container.
@@ -43,8 +43,8 @@ freebsd_each_release() {
         ran=$((ran + 1))
         # The loop reads the list on standard input, which the callback must not consume.
         "$freebsd_step" "$release" </dev/null
-    done < packaging/freebsd/releases
-    [ "$ran" -gt 0 ] || fail "no release in packaging/freebsd/releases matches ${FREEBSD:-any release}"
+    done < freebsd-test/releases
+    [ "$ran" -gt 0 ] || fail "no release in freebsd-test/releases matches ${FREEBSD:-any release}"
 }
 
 # freebsd_job_folder <folder> <job script> [argument ...]
@@ -57,7 +57,7 @@ freebsd_job_folder() {
     rm -rf "$folder"
     mkdir -p "$folder"
     cp "scripts/$script" "$folder/"
-    sed -e "s|@JOB@|$script|" -e "s|@ARGS@|$*|" packaging/freebsd/user-data.in > "$folder/user-data"
+    sed -e "s|@JOB@|$script|" -e "s|@ARGS@|$*|" freebsd-test/user-data.in > "$folder/user-data"
     printf 'instance-id: %s\nlocal-hostname: build\n' "$(basename "$folder")" > "$folder/meta-data"
 }
 

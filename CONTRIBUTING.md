@@ -32,9 +32,10 @@ make fmt          # rewrite files with gofmt
 ```
 
 The parts of a build are make targets: `make static`, `make unit`, `make fuse`, `make race`,
-`make build-all`, `make integration` and `make packages` (or `make package-deb`, `make package-rpm`,
-`make package-apk`). Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when it
-ends; `make build-all` leaves the programs in `./dist/bin`, which the package targets read.
+`make build-all` and `make integration`. Each runs in an image of ghcr.io/splicefs and prints
+`part NAME: Ns` when it ends; `make build-all` leaves the programs in `./dist/bin`, which
+`make archives` and the package repository read. The packages are built, tested and published by
+the package repository, [SpliceFS/packages](https://github.com/SpliceFS/packages).
 
 ## Branches and pull requests
 

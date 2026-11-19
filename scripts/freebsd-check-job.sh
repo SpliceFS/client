@@ -27,7 +27,7 @@ phase_done() {
 boot_sec="$(sysctl -n kern.boottime | sed -n 's/.*sec = \([0-9]*\).*/\1/p')"
 if [ -n "$boot_sec" ]; then echo "[time] machine boot and first-boot setup: $((phase_start - boot_sec))s"; fi
 
-# Kernel modules the tests need, one per line in packaging/freebsd/test-modules, which the
+# Kernel modules the tests need, one per line in freebsd-test/test-modules, which the
 # job folder holds when the program has such a file. A module may be loaded already.
 if [ -f "$in/test-modules" ]; then
     grep -v -e '^#' -e '^$' "$in/test-modules" | while read -r module; do

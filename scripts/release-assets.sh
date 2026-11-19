@@ -3,7 +3,7 @@
 # archive of each system and CPU type, SHA256SUMS and its detached OpenPGP signature
 # SHA256SUMS.asc. The packages are not part of it: the package repository makes them from these
 # archives. Runs on the host after make archives (make release-assets). Variables: VERSION and
-# PACKAGE_DATE as for the build; SIGNING_KEY_FILE (required, armored secret signing key, no
+# BUILD_DATE as for the build; SIGNING_KEY_FILE (required, armored secret signing key, no
 # passphrase); DIST_DIR (default dist); KEYS_DIR (default DIST_DIR/keys, must hold the public key
 # splicefs.asc); RELEASE_DIR (default DIST_DIR/release). The key is never printed.
 set -eu
@@ -11,9 +11,9 @@ set -eu
 : "${SIGNING_KEY_FILE:?SIGNING_KEY_FILE is not set}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
-# package-lib.sh reads VERSION and PACKAGE_DATE and says what the files are called.
-# shellcheck source=package-lib.sh
-. scripts/package-lib.sh
+# archive-lib.sh reads VERSION and BUILD_DATE and says what the files are called.
+# shellcheck source=archive-lib.sh
+. scripts/archive-lib.sh
 
 dist="${DIST_DIR:-$root/dist}"
 keys="${KEYS_DIR:-$dist/keys}"
