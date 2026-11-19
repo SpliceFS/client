@@ -49,10 +49,8 @@ jobs:
       - name: Format, vet, module files, ShellCheck and golangci-lint for every system
         run: make static
 
-  # The tests of mount/fuse mount for real, so this part, the race detector and the
-  # integration part run as root with the FUSE device (see MOUNT_PARTS in the Makefile), and
-  # keep caches of their own (ROOT_CACHE). The container mounts through the /dev/fuse of the
-  # runner itself, and that device appears when the fuse kernel module is loaded.
+  # Every package but mount/fuse (see FUSE_PACKAGE in the Makefile), without FUSE, as the
+  # caller.
   unit:
     needs: tip
     name: Unit tests
@@ -63,11 +61,10 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/fuse
       - uses: ./.github/actions/go-cache
-        with:
-          folder: .cache/root
+      # A backstop, so that a hang fails the job in minutes and not in hours.
       - name: Tests with the 100% coverage gate, and the tests of the scripts
+        timeout-minutes: 10
         run: make unit
       # The upload must never fail the build, for example before the organization is enabled
       # on Codecov. Forks cannot get an OIDC token for this repository.
@@ -80,17 +77,44 @@ jobs:
           disable_search: true
           fail_ci_if_error: false
 
+  # The tests of mount/fuse mount for real, as the ordinary user of the runner, through the
+  # setuid fusermount3 of the image: the way a person runs the client. Only the integration
+  # job below needs root. The container mounts through the /dev/fuse of the runner itself,
+  # and that device appears when the fuse kernel module is loaded.
+  fuse:
+    needs: tip
+    name: FUSE tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Codecov upload signs in with the OIDC token instead of a stored secret.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/fuse
+      - uses: ./.github/actions/go-cache
+      - name: Tests that mount, with the 100% coverage gate and the race detector
+        timeout-minutes: 10
+        run: make fuse
+      # The same upload as in the unit job: Codecov adds the two reports of one commit together.
+      - name: Upload coverage to Codecov
+        if: github.repository == 'SpliceFS/client' && github.event.pull_request.head.repo.fork != true
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: coverage-fuse.out
+          disable_search: true
+          fail_ci_if_error: false
+
   race:
     needs: tip
     name: Tests with the race detector
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/fuse
       - uses: ./.github/actions/go-cache
-        with:
-          folder: .cache/root
       - name: Tests with the race detector
+        timeout-minutes: 10
         run: make race
 
   # Every program for every system, compiled once. The packages job wraps these files and
@@ -99,6 +123,7 @@ jobs:
     needs: tip
     name: Build every program
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/go-cache
@@ -162,8 +187,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: stable
+      # The fuse part runs here too: macOS has no mounts to make for mount/fuse, so it tests
+      # only the files that system shares with Linux.
       - name: Tests with the 100% coverage gate, then with the race detector
-        run: make unit-here race-here
+        run: make unit-here fuse-here race-here
 
   # One job for each package that has fuzz targets, each fuzzing its targets one after another,
   # so the fuzzing takes as long as the package with the most targets and not the sum of all of
@@ -238,7 +265,8 @@ jobs:
   # installed, started under the real service manager, installed from the repository, mounted
   # from fstab and run as an ordinary user, and upgraded from the newest published package. The
   # license and documents that go into the packages, and the version, are the ones of this
-  # commit. It makes its own throwaway keys and gets no secret.
+  # commit. It makes its own throwaway keys and gets no secret. A job that calls a workflow
+  # cannot have a time limit; every job of the called workflow has its own.
   packages:
     needs: build
     name: Packages
@@ -256,6 +284,7 @@ jobs:
       - tip
       - static
       - unit
+      - fuse
       - race
       - build
       - integration-parts
@@ -267,6 +296,7 @@ jobs:
       - packages
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Every job succeeded
         env:

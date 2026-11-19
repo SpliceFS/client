@@ -32,10 +32,19 @@ ROOT_CACHE_DIRS := $(ROOT_CACHE)/gomod $(ROOT_CACHE)/gobuild
 RUN_OPTS :=
 RUN_USER = $(shell id -u):$(shell id -g)
 GO_CACHE = $(CACHE)
-DOCKER_RUN = docker run --rm --user "$(RUN_USER)" $(RUN_OPTS) -v "$(CURDIR)":/src -w /src
+# The containers run without an AppArmor profile, as privileged ones do anyway. Under Docker's
+# docker-default profile the kernel of the Ubuntu CI runners stalls a datagram sent to an
+# abstract Unix socket (TestNotifyAbstractSocket hung for hours, the kernel log shows a trace in
+# apparmor_file_permission), and the tests check the client, not the profile. A machine without
+# AppArmor ignores the option.
+DOCKER_RUN = docker run --rm --user "$(RUN_USER)" --security-opt apparmor=unconfined $(RUN_OPTS) \
+	-v "$(CURDIR)":/src -w /src
 # The cache paths are named here as well as in the go image, so that the run works with any
 # Go image and any uid: HOME, GOPATH and GOCACHE all point at the mounted host folders.
-LINUX_RUN = $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod -v "$(GO_CACHE)/gobuild":/tmp/go-cache \
+# Every run pulls its image first, with retries (scripts/docker-run.sh), so that one failed
+# download from the registry does not fail the part.
+LINUX_RUN = scripts/docker-run.sh $(LINUX_IMAGE) $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod \
+	-v "$(GO_CACHE)/gobuild":/tmp/go-cache \
 	-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
 	-e GOLANGCI_LINT_CACHE=/tmp/go-cache/golangci-lint $(LINUX_IMAGE)
 
@@ -44,10 +53,10 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	mkdir -p $@
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint \
-	freebsd-lib-test version-test timing-test server-lib-test part-test build-all-test \
+	freebsd-lib-test version-test timing-test server-lib-test part-test fuse-user-test build-all-test \
 	cluster-groups-test fuzz-test \
 	release-assets release-assets-test release-assets-check clean archives \
-	archive-programs-test archive-lib-test
+	archive-programs-test archive-lib-test docker-run-test
 
 all: check build
 
@@ -60,8 +69,8 @@ build:
 # runs alone on any machine that has Docker, and in CI, with the same command; parts that do
 # not need each other can run at the same time. A -here target also runs on a machine that
 # has the tools.
-.PHONY: static static-checks static-here lint-go unit unit-here race race-here build-all build-all-here \
-	integration fuzz fuzz-here fuzz-targets fuzz-packages
+.PHONY: static static-checks static-here lint-go unit unit-here fuse fuse-here race race-here build-all \
+	build-all-here integration fuzz fuzz-here fuzz-targets fuzz-packages
 
 # gofmt, go vet, golangci-lint and ShellCheck, and the two checks that read the git index.
 # Those run on the host and not in the image: a git worktree keeps its index outside the
@@ -87,31 +96,51 @@ lint-go:
 		echo "golangci-lint GOOS=$$os"; GOOS=$$os golangci-lint run; \
 	done
 
-# The tests of mount/fuse mount for real, and nothing else of the client needs more than an
-# ordinary user. As root the client mounts with mount(2); any other user needs a fusermount3
-# that finds the user in the passwd file and may mount, which an image does not give an
-# arbitrary uid. So the parts that run those tests (unit, race, integration) run as root, with
-# the FUSE device, privileged as the CI runners are (/sys is writable, which the abort of a FUSE
-# connection needs), and keep their own caches under CACHE/root.
-MOUNT_PARTS := unit race integration
-$(MOUNT_PARTS): RUN_USER = 0
-$(MOUNT_PARTS): GO_CACHE = $(ROOT_CACHE)
-$(MOUNT_PARTS): RUN_OPTS = --privileged --device /dev/fuse
+# The tests of mount/fuse mount for real, and no other package of the client needs a mount. They
+# are the part fuse, and they run the way a person runs the client: as the caller, an ordinary
+# user, through the setuid fusermount3 of the image. The container has the FUSE device and is
+# privileged, as the CI runners are (/sys is writable, which the abort of a FUSE connection
+# needs); the process in it has no privilege of its own. fusermount3 needs the passwd file to
+# know the user, which an image does not have for an arbitrary uid, so the part mounts the two
+# files that scripts/fuse-user.sh writes. Every other part of the Go tests runs without FUSE, on
+# every package but this one (OTHER_PACKAGES), so that each package is tested by one of them.
+# Only integration needs root: scripts/compat-test.sh and scripts/cluster-test.sh refuse any
+# other user.
+FUSE_PACKAGE := ./mount/fuse
+# One go list: a pipe with one on each side runs two go processes that fill an empty module
+# cache at the same time.
+OTHER_PACKAGES = $$(go list -f '{{if ne .ImportPath (print .Module.Path "/$(FUSE_PACKAGE:./%=%)")}}{{.ImportPath}}{{end}}' ./...)
+FUSE_ETC := $(CACHE)/fuse-etc
+FUSE_DEVICE := --privileged --device /dev/fuse
+fuse: RUN_OPTS = $(FUSE_DEVICE) -v "$(FUSE_ETC)/passwd":/etc/passwd:ro -v "$(FUSE_ETC)/fuse.conf":/etc/fuse.conf:ro
+integration: RUN_USER = 0
+integration: GO_CACHE = $(ROOT_CACHE)
+integration: RUN_OPTS = $(FUSE_DEVICE)
 
 # The tests with the 100% coverage gate, and the tests of the scripts that need no Docker.
-unit: | $(ROOT_CACHE_DIRS)
+unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
 unit-here: cover freebsd-lib-test version-test timing-test server-lib-test part-test \
-	build-all-test archive-programs-test archive-lib-test cluster-groups-test fuzz-test \
-	release-assets-check
+	fuse-user-test build-all-test archive-programs-test archive-lib-test cluster-groups-test fuzz-test \
+	docker-run-test release-assets-check
+
+# The tests of mount/fuse, with the 100% coverage gate and the race detector in one run: they
+# take seconds, and the mounts are the slow part of either run. The coverage of every other
+# package is the unit part's.
+fuse: | $(CACHE_DIRS)
+	scripts/fuse-user.sh "$(FUSE_ETC)"
+	scripts/part.sh fuse $(LINUX_RUN) make fuse-here
+
+fuse-here:
+	scripts/coverage.sh coverage-fuse.out -race $(FUSE_PACKAGE)
 
 # The same tests with the race detector, which makes them several times slower.
-race: | $(ROOT_CACHE_DIRS)
+race: | $(CACHE_DIRS)
 	scripts/part.sh race $(LINUX_RUN) make race-here
 
 race-here:
-	go test -race ./...
+	go test -race $(OTHER_PACKAGES)
 
 # Every program, for every system and CPU type, into ./dist/bin. The packages, the release and
 # the other parts read from there; nothing is compiled twice.
@@ -143,11 +172,11 @@ integration: | $(ROOT_CACHE_DIRS)
 go-image:
 	@echo $(LINUX_IMAGE)
 
-# What a machine that has every tool runs: the three parts, natively.
-check: script-modes tracked-files static-here unit-here race-here
+# What a machine that has every tool runs: the four parts, natively.
+check: script-modes tracked-files static-here unit-here fuse-here race-here
 
 # The same on any system that has Docker, in the images.
-check-in-images: static unit race
+check-in-images: static unit fuse race
 
 # A script that lost its executable bit fails only where it is run directly, which is often a
 # CI job. This finds it in every check. Libraries (-lib.sh, and
@@ -178,9 +207,9 @@ vet:
 	go vet ./...
 
 # Tests with coverage; fails below 100% statement coverage. The race detector has a part of
-# its own (race).
+# its own (race). The tests of mount/fuse are the fuse part's.
 cover:
-	scripts/coverage.sh coverage.out
+	scripts/coverage.sh coverage.out $(OTHER_PACKAGES)
 
 # Every fuzz target, each for FUZZTIME one after another. FUZZ_PACKAGE=package limits the run
 # to the targets of one package, FUZZ_TARGET=package:Target to one target; both can be given.
@@ -254,6 +283,10 @@ lint-shell:
 version-test:
 	scripts/version-test.sh
 
+# The pull with retries in front of every container run. It needs no Docker: a stand-in docker.
+docker-run-test:
+	scripts/docker-run-test.sh
+
 freebsd-lib-test:
 	scripts/freebsd-lib-test.sh
 
@@ -261,6 +294,10 @@ freebsd-lib-test:
 # Neither needs Docker nor a compiler, so both are part of check.
 part-test:
 	scripts/part-test.sh
+
+# The files that give a container a user that fusermount3 knows (scripts/fuse-user.sh).
+fuse-user-test:
+	scripts/fuse-user-test.sh
 
 build-all-test:
 	scripts/build-all-test.sh
@@ -315,4 +352,4 @@ release-assets-check:
 	else echo "release-assets-test skipped: gpg is not installed"; fi
 
 clean:
-	rm -rf bin dist coverage.out coverage.html
+	rm -rf bin dist coverage.out coverage-fuse.out coverage.html

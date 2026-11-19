@@ -17,9 +17,10 @@ held to. Participation is covered by the [code of conduct](CODE_OF_CONDUCT.md).
 You need Go 1.27 or newer and `make`. Linting uses
 [golangci-lint](https://golangci-lint.run) version 2 and [ShellCheck](https://www.shellcheck.net).
 With Docker you need none of the tools: `make check-in-images` runs the same checks in the images
-of ghcr.io/splicefs and keeps the Go caches in `./.cache`. The parts that mount for real (`unit`,
-`race`, `integration`) run as root in their container, because the tests of `mount/fuse` mount
-with `mount(2)`; every other part runs as your own user.
+of ghcr.io/splicefs and keeps the Go caches in `./.cache`. Every part runs as your own user except
+`integration`, which runs as root because its scripts make a mount as root. `fuse`, the tests of
+`mount/fuse`, runs as you and mounts through the `fusermount3` of the image, the way a person runs
+the client. `unit` and `race` test every other package and need no FUSE.
 
 ```
 make build        # build splicefs into ./bin
@@ -30,11 +31,11 @@ make lint         # golangci-lint (the configuration CI uses), then ShellCheck w
 make fmt          # rewrite files with gofmt
 ```
 
-The parts of a build are make targets: `make static`, `make unit`, `make race`, `make build-all`
-and `make integration`. Each runs in an image of ghcr.io/splicefs and prints `part NAME: Ns` when
-it ends; `make build-all` leaves the programs in `./dist/bin`, which `make archives` and the
-package repository read. The packages are built, tested and published by the package repository,
-[SpliceFS/packages](https://github.com/SpliceFS/packages).
+The parts of a build are make targets: `make static`, `make unit`, `make fuse`, `make race`,
+`make build-all` and `make integration`. Each runs in an image of ghcr.io/splicefs and prints
+`part NAME: Ns` when it ends; `make build-all` leaves the programs in `./dist/bin`, which
+`make archives` and the package repository read. The packages are built, tested and published by
+the package repository, [SpliceFS/packages](https://github.com/SpliceFS/packages).
 
 ## Branches and pull requests
 
@@ -154,7 +155,7 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
 
 | Workflow | What it does |
 |---|---|
-| CI | every part of a build as a job of its own, all at once: static checks (format, vet, module files, ShellCheck, and `golangci-lint` with the `gosec` security rules for each system), unit tests with the 100% coverage gate, tests with the race detector, the build for every system, the real client against the released servers, macOS, fuzzing, FreeBSD, and the packages with their install, service, repository and publish tests. The job "All checks" needs all of them and is the one check a pull request must pass. |
+| CI | every part of a build as a job of its own, all at once: static checks (format, vet, module files, ShellCheck, and `golangci-lint` with the `gosec` security rules for each system), unit tests with the 100% coverage gate, the tests that mount with FUSE as an ordinary user, tests with the race detector, the build for every system, the real client against the released servers, macOS, fuzzing, FreeBSD, and the packages with their install, service, repository and publish tests. The job "All checks" needs all of them and is the one check a pull request must pass. |
 | Rules | on pull requests: checks the `change_scope` line and the `VERSION` file the bot sets |
 | Main | on every push to `main`: tags the new version and rebuilds the open pull requests |
 | Security | `govulncheck` for known vulnerabilities in dependencies and the standard library, CodeQL static analysis, and a dependency review on pull requests. Also runs weekly. |

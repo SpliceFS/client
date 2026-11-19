@@ -6,6 +6,22 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.42] - 2026-11-19
+
+- Internal: the client's packages are built and tested by the packages repository.
+
+## [0.5.41] - 2026-11-18
+
+- Internal: the client's FUSE tests run as an ordinary user.
+
+## [0.5.40] - 2026-11-18
+
+- Internal: a passing failure of the container registry no longer fails a build.
+
+## [0.5.39] - 2026-11-18
+
+- `splicefsctl` run as root (also through sudo) always reaches the system-wide client.
+
 ## [0.5.38] - 2026-11-18
 
 - Internal: the client's packages are built and published by the packages repository; a client

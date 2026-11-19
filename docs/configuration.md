@@ -283,9 +283,10 @@ the helper finds the client of the default configuration folder of its user (see
 above). To use another configuration folder, set `SPLICEFS_CONFIG` to it in the environment of
 `mount`.
 
-The socket is in `splicefs/` under `$XDG_RUNTIME_DIR`. Without that variable it is in
-`/run/splicefs` for root (`/var/run/splicefs` on FreeBSD) and in `splicefs-<uid>` in the
-temporary directory, for example `/tmp/splicefs-1000`, for an ordinary user. That folder is
+For root, the socket is in `/run/splicefs` (`/var/run/splicefs` on FreeBSD), whatever
+`$XDG_RUNTIME_DIR` says, so a root command finds the boot service even when it inherits the
+variable of a user. For an ordinary user it is in `splicefs/` under `$XDG_RUNTIME_DIR`, else
+in `splicefs-<uid>` in the temporary directory, for example `/tmp/splicefs-1000`. That folder is
 created for its user alone (mode 700); the client refuses to start if it exists and belongs to
 another user or can be written by others.
 
