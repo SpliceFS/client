@@ -131,8 +131,9 @@ jobs:
           PROGRAM: client
           TAG: ${{ github.ref_name }}
         run: |
-          # The event type and the two values are what the Publish program workflow of the
-          # package repository reads. A failed call fails the step.
+          # The event type tells the package repository to tag and publish now. It reads the
+          # releases themselves, not these two values, which name the release in its run.
+          # A failed call fails the step.
           jq -n --arg program "$PROGRAM" --arg tag "$TAG" \
             '{event_type: "program-released", client_payload: {program: $program, tag: $tag}}' \
             > "$RUNNER_TEMP/dispatch.json"
