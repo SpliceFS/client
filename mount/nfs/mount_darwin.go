@@ -37,6 +37,10 @@ const (
 	// up to 30 seconds for the server (see retrycnt in mount_nfs(8)).
 	mountTimeout = 90 * time.Second
 
+	// forceUnmountLimit bounds the wait for a forced unmount. The kernel can keep the call
+	// waiting on a server that is gone, and nothing can interrupt it there.
+	forceUnmountLimit = 30 * time.Second
+
 	// pollInterval is how often the mount table is read to notice an unmount done
 	// outside the program, for example by Finder or umount.
 	pollInterval = 2 * time.Second
@@ -105,20 +109,23 @@ type environment struct {
 	run commandRunner
 	// unmountCall is unmount(2).
 	unmountCall func(target string, flags int) error
-	owner       owner
-	listen      func(context.Context) (net.Listener, error)
-	isMounted   func(target, from string) (bool, error)
-	serves      func(ctx context.Context, port int) (bool, error)
-	newTicker   func(time.Duration) (<-chan time.Time, func())
-	rootAfter   afterFunc // nil means timeAfterFunc
+	// unmountAfter sets the time limit of a forced unmount.
+	unmountAfter afterFunc
+	owner        owner
+	listen       func(context.Context) (net.Listener, error)
+	isMounted    func(target, from string) (bool, error)
+	serves       func(ctx context.Context, port int) (bool, error)
+	newTicker    func(time.Duration) (<-chan time.Time, func())
+	rootAfter    afterFunc // nil means timeAfterFunc
 }
 
 func systemEnvironment() environment {
 	return environment{
-		run:         execCommand,
-		unmountCall: unix.Unmount,
-		owner:       processOwner(),
-		listen:      listenLoopback,
+		run:          execCommand,
+		unmountCall:  unix.Unmount,
+		unmountAfter: timeAfterFunc,
+		owner:        processOwner(),
+		listen:       listenLoopback,
 		isMounted: func(target, from string) (bool, error) {
 			return mountTableHas(syscall.Getfsstat, target, from)
 		},
@@ -130,12 +137,27 @@ func systemEnvironment() environment {
 	}
 }
 
+// errUnmountTooLong is the end of a forced unmount that the system did not finish in time.
+var errUnmountTooLong = fmt.Errorf("did not finish in %d s", forceUnmountLimit/time.Second)
+
 // forceUnmount removes the mount on target. Read-only, nothing to sync; umount -f waits up to 10 s for a sync.
+//
+// A call the system does not finish within forceUnmountLimit is left to finish on its own.
 func (e environment) forceUnmount(target string) error {
-	if err := e.unmountCall(target, unix.MNT_FORCE); err != nil {
-		return fmt.Errorf("umount: %w", err)
+	done := make(chan error, 1)
+	go func() { done <- e.unmountCall(target, unix.MNT_FORCE) }()
+	expired := make(chan struct{})
+	stop := e.unmountAfter(forceUnmountLimit, func() { close(expired) })
+	defer stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("umount: %w", err)
+		}
+		return nil
+	case <-expired:
+		return fmt.Errorf("the forced unmount of %s %w", target, errUnmountTooLong)
 	}
-	return nil
 }
 
 // plainUnmount runs umount, which refuses a mount that is in use; a forced unmount does not.

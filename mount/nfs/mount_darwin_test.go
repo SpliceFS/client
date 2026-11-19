@@ -123,9 +123,10 @@ func (f *fakeSystem) environment() environment {
 			}
 			return unmount(call)
 		},
-		owner:     testOwner(),
-		rootAfter: neverEnds,
-		listen:    listenLoopback,
+		owner:        testOwner(),
+		rootAfter:    neverEnds,
+		unmountAfter: neverEnds,
+		listen:       listenLoopback,
 		isMounted: func(target, from string) (bool, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -547,6 +548,37 @@ func TestForcedUnmountReportsTheFailureAsUmountDid(t *testing.T) {
 	}
 }
 
+// TestForcedUnmountGivesUpWhenTheCallDoesNotReturn checks that a forced unmount that the system
+// never finishes ends with an error once its time limit has passed, instead of hanging.
+func TestForcedUnmountGivesUpWhenTheCallDoesNotReturn(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	defer close(release)
+	limits := make(chan time.Duration, 1)
+	expire := make(chan func(), 1)
+	env := newFakeSystem().environment()
+	env.unmountCall = func(string, int) error {
+		<-release
+		return nil
+	}
+	env.unmountAfter = func(d time.Duration, f func()) func() bool {
+		limits <- d
+		expire <- f
+		return func() bool { return true }
+	}
+
+	result := make(chan error, 1)
+	go func() { result <- env.forceUnmount("/mnt/stuck") }()
+	if d := <-limits; d != 30*time.Second {
+		t.Errorf("limit = %v, want 30s", d)
+	}
+	(<-expire)()
+	want := "the forced unmount of /mnt/stuck did not finish in 30 s"
+	if err := <-result; err == nil || err.Error() != want {
+		t.Errorf("forceUnmount = %v, want %q", err, want)
+	}
+}
+
 func TestUnmountNoticesThatTheMountWentAwayMeanwhile(t *testing.T) {
 	t.Parallel()
 	sys := newFakeSystem()
@@ -801,6 +833,9 @@ func TestSystemEnvironment(t *testing.T) {
 	}
 	if env.serves == nil {
 		t.Error("serves is not set")
+	}
+	if env.unmountAfter == nil {
+		t.Error("unmountAfter is not set")
 	}
 	ticks, stop := env.newTicker(time.Hour)
 	stop()
