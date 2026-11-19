@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.46] - 2026-11-19
+
+- Internal: the client uses the protocol code of the common library.
+
 ## [0.5.45] - 2026-11-19
 
 - Internal: a pull request tests the program itself, without packaging or fuzzing.
