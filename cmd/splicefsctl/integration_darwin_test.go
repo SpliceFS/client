@@ -179,7 +179,9 @@ const clientEnv = "SPLICEFS_TEST_CLIENT_DIR"
 func TestMain(m *testing.M) {
 	if dir := os.Getenv(clientEnv); dir != "" {
 		if err := serve(context.Background(), dir, func() {}); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+			// A failed write has nowhere to be reported, stderr is where it would go; the status
+			// below tells the parent that the client failed.
+			_, _ = fmt.Fprintln(os.Stderr, err)
 			os.Exit(cli.ExitError)
 		}
 		os.Exit(cli.ExitOK)

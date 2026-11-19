@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.48] - 2026-11-19
+
+- Internal: the client passes the type-aware linter.
+
 ## [0.5.47] - 2026-11-19
 
 - Faster: reading a file that is already in the cache no longer waits for the disk on every open and
