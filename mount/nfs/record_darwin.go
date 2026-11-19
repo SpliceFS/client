@@ -26,9 +26,6 @@ const (
 	// probeTimeout bounds the check whether a client still serves a recorded port. A port on
 	// this machine either answers or refuses at once, so a longer wait only hides a problem.
 	probeTimeout = time.Second
-
-	// umountTimeout bounds the removal of one stale mount.
-	umountTimeout = 30 * time.Second
 )
 
 // ErrLeftBehind completes a sentence that starts with a target: a client that is gone left a
@@ -242,10 +239,8 @@ func clearOne(ctx context.Context, env environment, entry recordEntry) Cleared {
 	if live {
 		return Cleared{Target: entry.Target, Outcome: OutcomeServed}
 	}
-	ctx, cancel := context.WithTimeout(ctx, umountTimeout)
-	defer cancel()
-	if out, err := env.run(ctx, umountPath, "-f", entry.Target); err != nil {
-		return failed(unmountError(err, out))
+	if err := env.forceUnmount(entry.Target); err != nil {
+		return failed(err)
 	}
 	return Cleared{Target: entry.Target, Outcome: OutcomeCleared}
 }

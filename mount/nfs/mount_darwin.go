@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/SpliceFS/client/core"
 	"github.com/SpliceFS/client/mount"
 )
@@ -34,6 +36,10 @@ const (
 	// mountTimeout bounds one mount_nfs run. mount_nfs tries twice and each try waits
 	// up to 30 seconds for the server (see retrycnt in mount_nfs(8)).
 	mountTimeout = 90 * time.Second
+
+	// forceUnmountLimit bounds the wait for a forced unmount. The kernel can keep the call
+	// waiting on a server that is gone, and nothing can interrupt it there.
+	forceUnmountLimit = 30 * time.Second
 
 	// pollInterval is how often the mount table is read to notice an unmount done
 	// outside the program, for example by Finder or umount.
@@ -100,20 +106,26 @@ func execCommand(ctx context.Context, name string, args ...string) ([]byte, erro
 
 // environment is everything Mount takes from the system, so tests can replace it.
 type environment struct {
-	run       commandRunner
-	owner     owner
-	listen    func(context.Context) (net.Listener, error)
-	isMounted func(target, from string) (bool, error)
-	serves    func(ctx context.Context, port int) (bool, error)
-	newTicker func(time.Duration) (<-chan time.Time, func())
-	rootAfter afterFunc // nil means timeAfterFunc
+	run commandRunner
+	// unmountCall is unmount(2).
+	unmountCall func(target string, flags int) error
+	// unmountAfter sets the time limit of a forced unmount.
+	unmountAfter afterFunc
+	owner        owner
+	listen       func(context.Context) (net.Listener, error)
+	isMounted    func(target, from string) (bool, error)
+	serves       func(ctx context.Context, port int) (bool, error)
+	newTicker    func(time.Duration) (<-chan time.Time, func())
+	rootAfter    afterFunc // nil means timeAfterFunc
 }
 
 func systemEnvironment() environment {
 	return environment{
-		run:    execCommand,
-		owner:  processOwner(),
-		listen: listenLoopback,
+		run:          execCommand,
+		unmountCall:  unix.Unmount,
+		unmountAfter: timeAfterFunc,
+		owner:        processOwner(),
+		listen:       listenLoopback,
 		isMounted: func(target, from string) (bool, error) {
 			return mountTableHas(syscall.Getfsstat, target, from)
 		},
@@ -123,6 +135,37 @@ func systemEnvironment() environment {
 			return t.C, t.Stop
 		},
 	}
+}
+
+// errUnmountTooLong is the end of a forced unmount that the system did not finish in time.
+var errUnmountTooLong = fmt.Errorf("did not finish in %d s", forceUnmountLimit/time.Second)
+
+// forceUnmount removes the mount on target. Read-only, nothing to sync; umount -f waits up to 10 s for a sync.
+//
+// A call the system does not finish within forceUnmountLimit is left to finish on its own.
+func (e environment) forceUnmount(target string) error {
+	done := make(chan error, 1)
+	go func() { done <- e.unmountCall(target, unix.MNT_FORCE) }()
+	expired := make(chan struct{})
+	stop := e.unmountAfter(forceUnmountLimit, func() { close(expired) })
+	defer stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("umount: %w", err)
+		}
+		return nil
+	case <-expired:
+		return fmt.Errorf("the forced unmount of %s %w", target, errUnmountTooLong)
+	}
+}
+
+// plainUnmount runs umount, which refuses a mount that is in use; a forced unmount does not.
+func (e environment) plainUnmount(ctx context.Context, target string) error {
+	if out, err := e.run(ctx, umountPath, target); err != nil {
+		return unmountError(err, out)
+	}
+	return nil
 }
 
 // Mount serves fsys read-only over NFSv3 on a loopback port and mounts it on
@@ -252,8 +295,8 @@ func (m *mounted) Done() <-chan struct{} { return m.done }
 // Err is nil after a clean unmount and the reason otherwise. Call it after Done.
 func (m *mounted) Err() error { return m.err }
 
-// Unmount runs umount, with -f when force is set, and returns after the server has
-// stopped. Without force, umount refuses a mount that is in use.
+// Unmount returns after the server has stopped. Without force it runs umount, which refuses
+// a mount that is in use; with force it unmounts with MNT_FORCE.
 //
 //nolint:revive // The flag is part of the signature of mount.Mounted.
 func (m *mounted) Unmount(ctx context.Context, force bool) error {
@@ -262,17 +305,19 @@ func (m *mounted) Unmount(ctx context.Context, force bool) error {
 		return nil
 	default:
 	}
-	args := []string{m.target}
+	var err error
 	if force {
-		args = []string{"-f", m.target}
+		err = m.env.forceUnmount(m.target)
+	} else {
+		err = m.env.plainUnmount(ctx, m.target)
 	}
-	if out, err := m.env.run(ctx, umountPath, args...); err != nil {
+	if err != nil {
 		select {
 		case <-m.done: // it was unmounted from outside in the meantime
 			return nil
 		default:
 		}
-		return unmountError(err, out)
+		return err
 	}
 	m.record.remove(m.target)
 	m.unmountOnce.Do(func() { close(m.unmounted) })
@@ -332,12 +377,8 @@ func (m *mounted) wait(ticks <-chan time.Time) error {
 // server is gone only ever returns I/O errors, so it is forced off instead of left
 // behind.
 func (m *mounted) serverFailed() error {
-	ctx, cancel := context.WithTimeout(context.Background(), mountTimeout)
-	defer cancel()
-	var uerr error
-	if out, err := m.env.run(ctx, umountPath, "-f", m.target); err != nil {
-		uerr = commandError("umount", err, out)
-	} else {
+	uerr := m.env.forceUnmount(m.target)
+	if uerr == nil {
 		m.record.remove(m.target)
 	}
 	return errors.Join(m.srv.Err(), uerr)

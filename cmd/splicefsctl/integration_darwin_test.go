@@ -115,11 +115,16 @@ func awaitReady(t *testing.T, running realClient) {
 // when the reason is that this user may not mount, and fails it otherwise.
 func skipOrFailEnded(t *testing.T, reason string) {
 	t.Helper()
-	msg := strings.ToLower(reason)
-	if strings.Contains(msg, "not permitted") || strings.Contains(msg, "permission denied") {
+	if userMayNotMount(reason) {
 		t.Skipf("this user cannot mount without root: %s", reason)
 	}
 	t.Fatalf("the client ended before it was ready: %s", reason)
+}
+
+// userMayNotMount reports whether what a client said when it ended means that this user may not mount.
+func userMayNotMount(reason string) bool {
+	msg := strings.ToLower(reason)
+	return strings.Contains(msg, "not permitted") || strings.Contains(msg, "permission denied")
 }
 
 // command runs a splicefsctl command against the client of dir and returns what it produced.
@@ -173,12 +178,20 @@ func TestRealMount(t *testing.T) {
 // clientEnv marks the child process that TestMain runs as the client.
 const clientEnv = "SPLICEFS_TEST_CLIENT_DIR"
 
+// readyFD is the descriptor of the child on which it writes one byte when its mounts are up:
+// the first of cmd.ExtraFiles, after stdin, stdout and stderr.
+const readyFD = 3
+
 // TestMain doubles as the client for the test that must kill it: when the environment names a
-// configuration folder, the test binary runs the client of that folder and ends with an
-// error status when the client fails.
+// configuration folder, the test binary runs the client of that folder, writes one byte on
+// readyFD when its mounts are up, and ends with an error status when the client fails.
 func TestMain(m *testing.M) {
 	if dir := os.Getenv(clientEnv); dir != "" {
-		if err := serve(context.Background(), dir, func() {}); err != nil {
+		ready := os.NewFile(readyFD, "ready")
+		err := serve(context.Background(), dir, func() {
+			_, _ = ready.Write([]byte{1}) //nolint:errcheck // a parent that is gone has nothing to be told
+		})
+		if err != nil {
 			// A failed write has nowhere to be reported, stderr is where it would go; the status
 			// below tells the parent that the client failed.
 			_, _ = fmt.Fprintln(os.Stderr, err)
@@ -192,26 +205,49 @@ func TestMain(m *testing.M) {
 // childClient is the client running in a child process.
 type childClient struct {
 	process *os.Process
+	// ready is closed when the child said its mounts are up.
+	ready <-chan struct{}
 	// ended is closed when the process has ended.
 	ended <-chan struct{}
+	// stderr is what the child wrote to stderr; read it only after ended is closed.
+	stderr *bytes.Buffer
 }
 
 // startChildClient runs the client of dir in a child process. The process is killed when the
 // test ends.
 func startChildClient(t *testing.T, dir string) childClient {
 	t.Helper()
+	readyRead, readyWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
 	cmd := exec.CommandContext(context.Background(), os.Args[0])
 	cmd.Env = append(os.Environ(), clientEnv+"="+dir)
-	if err := cmd.Start(); err != nil {
+	cmd.ExtraFiles = []*os.File{readyWrite}
+	cmd.Stderr = &stderr
+	err = cmd.Start()
+	// The child has its own copy now; closing this one lets the read end see the end of the
+	// child as the end of the pipe.
+	_ = readyWrite.Close() //nolint:errcheck // closing a pipe end that was never written cannot lose data
+	if err != nil {
+		_ = readyRead.Close() //nolint:errcheck // see above
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() }) //nolint:errcheck // it fails when the process has ended, which is fine
+	ready := make(chan struct{})
+	go func() {
+		defer readyRead.Close() //nolint:errcheck // a read end has nothing to flush
+		if _, err := readyRead.Read(make([]byte, 1)); err == nil {
+			close(ready)
+		}
+	}()
 	ended := make(chan struct{})
 	go func() {
-		_ = cmd.Wait() //nolint:errcheck // only the end of the process matters here
+		_ = cmd.Wait() //nolint:errcheck // only the end of the process and its stderr matter here
 		close(ended)
 	}()
-	return childClient{process: cmd.Process, ended: ended}
+	return childClient{process: cmd.Process, ready: ready, ended: ended, stderr: &stderr}
 }
 
 // isListed reports whether the mount table lists a mount on target. It never touches target
@@ -221,21 +257,51 @@ func isListed(t *testing.T, target string) bool {
 	return strings.Contains(mountTable(t), " on "+target+" (")
 }
 
-// awaitListed waits until the mount table lists a mount on target, and skips the test when the
-// client ended because this user may not mount.
-func awaitListed(t *testing.T, target string, running childClient) {
+// awaitChildReady waits until the child says its mounts are up. It skips the test when the
+// child ended because this user may not mount, and fails it when it ended for another reason.
+func awaitChildReady(t *testing.T, running childClient) {
 	t.Helper()
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		select {
-		case <-running.ended:
-			skipOrFailEnded(t, "the child process ended before the mount was listed")
-		default:
-		}
-		if isListed(t, target) {
-			return
+	select {
+	case <-running.ready:
+	case <-running.ended:
+		skipOrFailEnded(t, running.stderr.String())
+	}
+}
+
+func TestUserMayNotMount(t *testing.T) {
+	t.Parallel()
+	tests := map[string]bool{
+		"mount_nfs: can't mount / on /Users/a/mnt: Operation not permitted":   true,
+		"mount_nfs: mount on /Users/a/mnt: Permission denied":                 true,
+		"mount_nfs: can't mount with remote locks when server is not running": false,
+		"": false,
+	}
+	for said, want := range tests {
+		if got := userMayNotMount(said); got != want {
+			t.Errorf("userMayNotMount(%q) = %v, want %v", said, got, want)
 		}
 	}
-	t.Fatalf("the mount table does not list %s:\n%s", target, mountTable(t))
+}
+
+// TestAwaitChildReadySkipsWhenTheChildSaidItMayNotMount checks that a child that ended before its
+// mounts were up is judged by what it wrote to stderr, which is where the reason is.
+//
+//nolint:paralleltest // the subtest is finished before its result is read, so it cannot run in parallel
+func TestAwaitChildReadySkipsWhenTheChildSaidItMayNotMount(t *testing.T) {
+	ended := make(chan struct{})
+	close(ended)
+	said := "mount_nfs: can't mount / on /Users/a/mnt: Operation not permitted\n"
+	running := childClient{ended: ended, stderr: bytes.NewBufferString(said)}
+
+	var inner *testing.T
+	t.Run("child that may not mount", func(t *testing.T) {
+		inner = t
+		awaitChildReady(t, running)
+		t.Error("awaitChildReady returned for a child that ended")
+	})
+	if !inner.Skipped() {
+		t.Error("the test was not skipped for a child that said it may not mount")
+	}
 }
 
 // requireOutput checks that a command ended with status and that its output has every part of want.
@@ -296,7 +362,7 @@ func TestRealMountLeftBehindByAKilledClientIsRemovedByUmount(t *testing.T) {
 	place := prepareTarget(t, dir)
 
 	running := startChildClient(t, dir)
-	awaitListed(t, place.listed, running)
+	awaitChildReady(t, running)
 	if err := running.process.Kill(); err != nil {
 		t.Fatal(err)
 	}
@@ -305,11 +371,9 @@ func TestRealMountLeftBehindByAKilledClientIsRemovedByUmount(t *testing.T) {
 		t.Fatal("the mount is gone after the client was killed, so there is no stale mount to test")
 	}
 
-	// The limit only catches a command that hangs. The system decides how long umount takes:
-	// removing a dead NFS mount took from milliseconds to 9 seconds while other mounts were
-	// being made, and the race detector sleeps one second more when a process ends. The command
-	// bounds its own wait for the system (umountTimeout in mount/nfs, 30 seconds), so the limit
-	// is longer than that bound and the command always ends first.
+	// The limit only catches a command that hangs. The system decides how long the removal of a
+	// dead NFS mount takes: about 2 seconds, more while other mounts are being made, and the race
+	// detector sleeps one second more when a process ends.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	refused := serve(ctx, dir, func() {})
