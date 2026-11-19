@@ -2,14 +2,10 @@ name: Go caches
 description: Restores and saves the module and build caches that the Go parts mount into their image.
 
 # Every job that runs Go in the image does the same three things here, so they are written
-# once. The folders are the ones the Makefile mounts (CACHE, and ROOT_CACHE for the part that
-# runs as root). Each job keeps its own entry: a race build, a test build and a lint run fill
-# the build cache with different objects, and one shared entry would hold only whichever job
-# finished first.
+# once. The folders are the ones the Makefile mounts (CACHE). Each job keeps its own entry: a
+# race build, a test build and a lint run fill the build cache with different objects, and one
+# shared entry would hold only whichever job finished first.
 inputs:
-  folder:
-    description: The folder that holds gomod and gobuild, relative to the repository.
-    default: .cache
   save:
     description: Whether the job saves the caches when it ends. "false" only restores them.
     default: "true"
@@ -28,8 +24,8 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
-          ${{ inputs.folder }}/gomod
-          ${{ inputs.folder }}/gobuild
+          .cache/gomod
+          .cache/gobuild
         key: ${{ steps.entry.outputs.prefix }}${{ hashFiles('go.sum') }}
         # A change of go.sum starts from the caches of the last one; Go adds what is missing.
         restore-keys: ${{ steps.entry.outputs.prefix }}
@@ -38,7 +34,7 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
-          ${{ inputs.folder }}/gomod
-          ${{ inputs.folder }}/gobuild
+          .cache/gomod
+          .cache/gobuild
         key: ${{ steps.entry.outputs.prefix }}${{ hashFiles('go.sum') }}
         restore-keys: ${{ steps.entry.outputs.prefix }}

@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.51] - 2026-11-19
+
+- Internal: the client's pull requests no longer run the cross-repo integration jobs.
+
 ## [0.5.50] - 2026-11-19
 
 - Internal: the cluster scenarios are fast core tests.
