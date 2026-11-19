@@ -14,7 +14,7 @@ import (
 
 	"github.com/SpliceFS/client/internal/cache"
 	"github.com/SpliceFS/client/internal/fetch"
-	"github.com/SpliceFS/client/internal/remote"
+	"github.com/SpliceFS/common/remote"
 	"github.com/SpliceFS/common/units"
 )
 
@@ -568,7 +568,7 @@ func newAnswerSet(t *testing.T) answerSet {
 	t.Helper()
 	nodes := make([]*remote.Node, 4)
 	for i := range nodes {
-		node, err := remote.New(string(rune('a'+i)), "http://192.0.2.1/api", &http.Client{})
+		node, err := remote.New(string(rune('a'+i)), "http://192.0.2.1/api", "dev", &http.Client{})
 		if err != nil {
 			t.Fatal(err)
 		}
