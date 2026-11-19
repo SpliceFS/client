@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	pathpkg "path"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -141,13 +143,16 @@ type fakeNode struct {
 	mu     sync.Mutex
 	files  map[string]fakeFile // by "share/dir/name"
 	shares map[string]*apitest.Share
-	space  map[string]wire.Space
-	gate   chan struct{} // when set, requests wait until it is closed
-	reject int           // this many authorized requests are answered 401
-	denied bool          // every share is refused (403)
-	counts map[string]int
-	logins int
-	waits  chan struct{} // receives a value whenever a request waits at the gate
+	// emptyDirs are folders without files, by "share/dir", which an apitest share cannot hold.
+	emptyDirs map[string]bool
+	space     map[string]wire.Space
+	gate      chan struct{} // when set, requests wait until it is closed
+	reject    int           // this many authorized requests are answered 401
+	denied    bool          // every share is refused (403)
+	counts    map[string]int
+	logins    int
+	waits     chan struct{} // receives a value whenever a request waits at the gate
+	failed    chan struct{} // receives a value whenever a request to the node fails
 }
 
 func (n *fakeNode) url() string { return n.node.URL() }
@@ -157,6 +162,25 @@ func (n *fakeNode) put(path string, data []byte, mtime time.Time) {
 	defer n.mu.Unlock()
 	n.files[path] = fakeFile{data: data, mtime: mtime}
 	n.rebuild(path)
+}
+
+// putAll stores files, by "share/dir/name", and builds each share they touch once.
+func (n *fakeNode) putAll(files map[string]fakeFile) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	touched := map[string]bool{}
+	for path, stored := range files {
+		n.files[path] = stored
+		touched[path] = true
+	}
+	built := map[string]bool{}
+	for path := range touched {
+		shareName, _, _ := strings.Cut(path, "/")
+		if !built[shareName] {
+			built[shareName] = true
+			n.rebuild(path)
+		}
+	}
 }
 
 func (n *fakeNode) remove(path string) {
@@ -180,6 +204,33 @@ func (n *fakeNode) rebuild(path string) {
 		}
 	}
 	n.shares[shareName] = fresh
+}
+
+// putEmptyDir makes path a folder without files.
+func (n *fakeNode) putEmptyDir(path string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.emptyDirs[path] = true
+}
+
+func (n *fakeNode) emptyDir(shareName, name string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.emptyDirs[shareName+"/"+name]
+}
+
+// emptyDirsIn lists the empty folders directly in the folder dir of a share.
+func (n *fakeNode) emptyDirsIn(shareName, dir string) []api.Info {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	var infos []api.Info
+	for full := range n.emptyDirs {
+		name, ok := strings.CutPrefix(full, shareName+"/")
+		if ok && pathpkg.Dir("/"+name) == pathpkg.Clean("/"+dir) {
+			infos = append(infos, api.Info{Name: pathpkg.Base(name), Dir: true, MTime: fileTime()})
+		}
+	}
+	return infos
 }
 
 func (n *fakeNode) setSpace(shareName string, total, free uint64) {
@@ -242,6 +293,13 @@ func (n *fakeNode) waitAtGate() {
 	<-gate
 }
 
+func (n *fakeNode) noteFailed() {
+	select {
+	case n.failed <- struct{}{}:
+	default:
+	}
+}
+
 func (n *fakeNode) count(kind string) int {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -296,11 +354,23 @@ type nodeShare struct {
 }
 
 func (s nodeShare) Stat(name string) (api.Info, error) {
+	if s.n.emptyDir(s.name, name) {
+		return api.Info{Name: pathpkg.Base(name), Dir: true, MTime: fileTime()}, nil
+	}
 	return s.n.current(s.name).Stat(name)
 }
 
 func (s nodeShare) List(name string) ([]api.Info, error) {
-	return s.n.current(s.name).List(name)
+	if s.n.emptyDir(s.name, name) {
+		return nil, nil
+	}
+	infos, err := s.n.current(s.name).List(name)
+	if err != nil {
+		return nil, err
+	}
+	infos = append(infos, s.n.emptyDirsIn(s.name, name)...)
+	slices.SortFunc(infos, func(a, b api.Info) int { return strings.Compare(a.Name, b.Name) })
+	return infos, nil
 }
 
 //nolint:ireturn // api.Share.Open returns the File interface.
@@ -365,13 +435,15 @@ func newFakeCluster(t *testing.T, clock *fakeClock, shareNames []string, names .
 	fakes.auth.AddUser(testUser, testPassword, "*")
 	for _, name := range names {
 		n := &fakeNode{
-			name:   name,
-			group:  fakes,
-			files:  make(map[string]fakeFile),
-			shares: make(map[string]*apitest.Share),
-			space:  make(map[string]wire.Space),
-			counts: make(map[string]int),
-			waits:  make(chan struct{}, 64),
+			name:      name,
+			group:     fakes,
+			files:     make(map[string]fakeFile),
+			shares:    make(map[string]*apitest.Share),
+			emptyDirs: make(map[string]bool),
+			space:     make(map[string]wire.Space),
+			counts:    make(map[string]int),
+			waits:     make(chan struct{}, 64),
+			failed:    make(chan struct{}, 64),
 		}
 		shares := make(map[string]api.Share)
 		for _, shareName := range shareNames {
@@ -410,7 +482,11 @@ func (fc *fakeCluster) RoundTrip(r *http.Request) (*http.Response, error) {
 	for _, n := range fc.nodes {
 		if strings.HasPrefix(n.url(), "https://"+r.URL.Host+"/") {
 			n.countRequest(r)
-			return n.client.Transport.RoundTrip(r)
+			resp, err := n.client.Transport.RoundTrip(r)
+			if err != nil {
+				n.noteFailed()
+			}
+			return resp, err
 		}
 	}
 	return http.DefaultTransport.RoundTrip(r)
@@ -524,6 +600,7 @@ func (h *harness) options() Options {
 		HTTPClient:   &http.Client{Transport: h.fc},
 		Now:          h.clock.Now,
 		ReadPassword: func(string) (string, error) { return testPassword, nil },
+		openCache:    cache.OpenUnsynced,
 	}
 }
 

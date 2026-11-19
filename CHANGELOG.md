@@ -10,6 +10,10 @@ The change log of all parts of SpliceFS, side by side: https://splicefs.org/chan
 
 - Internal: the client's pull requests no longer run the cross-repo integration jobs.
 
+## [0.5.50] - 2026-11-19
+
+- Internal: the cluster scenarios are fast core tests.
+
 ## [0.5.49] - 2026-11-19
 
 - Faster: on macOS, the first read of a file no longer waits for a full flush of the disk.
