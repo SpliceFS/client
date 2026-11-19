@@ -1,4 +1,5 @@
 name: Scorecard
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
 
 on:
   push:
@@ -17,6 +18,7 @@ jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       # Upload to code scanning.
       security-events: write

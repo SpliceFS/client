@@ -1,4 +1,5 @@
 name: Release
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
 
 # A version tag builds the programs of every system, makes the release archives, signs the list
 # of their checksums and creates the GitHub release. This repository then hands the release to
@@ -23,6 +24,7 @@ jobs:
   verify:
     name: The tag is a release of main
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       # The check below that the tagged commit is on main needs the history.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -114,6 +116,7 @@ jobs:
     name: Hand the release to the package repository
     needs: release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions: {}
     steps:
       - name: Bot token for the package repository
