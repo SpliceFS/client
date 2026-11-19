@@ -41,6 +41,7 @@ linters:
             - github.com/willscott/go-nfs/file
             - github.com/willscott/go-nfs-client
             - go.yaml.in/yaml/v3
+            - golang.org/x/sys/unix
             - golang.org/x/text
     errcheck:
       check-type-assertions: true

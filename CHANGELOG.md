@@ -6,9 +6,13 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
-## [0.5.49] - 2026-11-19
+## [0.5.50] - 2026-11-19
 
 - Internal: the cluster scenarios are fast core tests.
+
+## [0.5.49] - 2026-11-19
+
+- Faster: on macOS, the first read of a file no longer waits for a full flush of the disk.
 
 ## [0.5.48] - 2026-11-19
 

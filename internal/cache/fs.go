@@ -65,8 +65,14 @@ func (osFS) OpenFile(name string, flag int) (dataFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open file: %w", err)
 	}
-	return file, nil
+	return osFile{file}, nil
 }
+
+// osFile is a data file whose Sync gives the write order the cache needs, at the lowest
+// cost the system offers.
+type osFile struct{ *os.File }
+
+func (f osFile) Sync() error { return orderedSync(f.File) }
 
 // unsyncedFS is osFS with files whose Sync does nothing.
 type unsyncedFS struct{ osFS }
