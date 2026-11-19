@@ -21,6 +21,9 @@ type snapshot struct {
 	entry *entry
 	meta  metaFile
 	seq   uint64
+	// present is how many blocks meta names. Blocks are only ever added to an entry, so
+	// a count above the one on disk means the snapshot records new blocks.
+	present int64
 	// f is the data file handle at the time of the snapshot, or nil if the entry was
 	// not pinned. Everything the bitmap claims was written through it before the
 	// snapshot, so syncing it makes the claim true on disk.
@@ -31,9 +34,10 @@ func (e *entry) snapshotLocked() snapshot {
 	e.seq++
 	e.fresh = 0
 	return snapshot{
-		entry: e,
-		seq:   e.seq,
-		f:     e.f,
+		entry:   e,
+		seq:     e.seq,
+		f:       e.f,
+		present: e.present,
 		meta: metaFile{
 			Key:       e.key,
 			Version:   e.version,
@@ -44,9 +48,12 @@ func (e *entry) snapshotLocked() snapshot {
 	}
 }
 
-// write persists the snapshot: sync the data file, then replace the metadata file
-// atomically. The data is synced after the snapshot was taken and before the metadata
-// names its blocks, so the bitmap on disk never claims a block that is not on disk.
+// write persists the snapshot. A snapshot that records new blocks syncs the data file
+// first and then replaces the metadata file durably, so the bitmap on disk never claims a
+// block that is not on disk. A snapshot that changes only times replaces the metadata file
+// without syncing anything: a crash can lose it or leave it empty, which costs one
+// revalidation or an older eviction order, never wrong data, because an unreadable
+// metadata file drops the entry when the cache is opened.
 // A snapshot older than one already written, or of a removed entry, is skipped.
 func (s snapshot) write(fsys fileSystem) error {
 	cached := s.entry
@@ -55,31 +62,48 @@ func (s snapshot) write(fsys fileSystem) error {
 	if cached.removed || s.seq <= cached.persisted {
 		return nil
 	}
-	if s.f != nil {
-		if err := s.f.Sync(); err != nil {
-			return fmt.Errorf("sync data file: %w", err)
-		}
-	}
 	data, err := json.Marshal(s.meta)
 	if err != nil {
 		return fmt.Errorf("encode metadata: %w", err)
 	}
-	if err := writeAtomic(fsys, cached.base+metaExt, cached.base+tmpExt, data); err != nil {
+	finish := skipSync
+	if s.present > cached.persistedBlocks {
+		if err := s.syncData(); err != nil {
+			return err
+		}
+		finish = dataFile.Sync
+	}
+	if err := replaceFile(fsys, cached.base+metaExt, cached.base+tmpExt, data, finish); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 	cached.persisted = s.seq
+	cached.persistedBlocks = s.present
 	return nil
 }
 
-// writeAtomic replaces path with data. The temporary file is synced before the rename so
-// that a crash leaves either the old or the new content, never a torn file.
-func writeAtomic(fsys fileSystem, path, tmp string, data []byte) error {
+// syncData makes the blocks the snapshot names durable.
+func (s snapshot) syncData() error {
+	if s.f == nil {
+		return nil
+	}
+	if err := s.f.Sync(); err != nil {
+		return fmt.Errorf("sync data file: %w", err)
+	}
+	return nil
+}
+
+func skipSync(dataFile) error { return nil }
+
+// replaceFile replaces path with data through a temporary file and a rename, so readers
+// see the old or the new content. finish runs on the temporary file before the rename;
+// syncing there makes the replacement survive a crash whole.
+func replaceFile(fsys fileSystem, path, tmp string, data []byte, finish func(dataFile) error) error {
 	file, err := fsys.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 	if err != nil {
 		return fmt.Errorf("create temporary file: %w", err)
 	}
 	if _, err = file.WriteAt(data, 0); err == nil {
-		err = file.Sync()
+		err = finish(file)
 	}
 	if cerr := file.Close(); err == nil {
 		err = cerr
