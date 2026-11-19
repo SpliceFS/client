@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.42] - 2026-11-19
+
+- Internal: the client's packages are built and tested by the packages repository.
+
 ## [0.5.41] - 2026-11-18
 
 - Internal: the client's FUSE tests run as an ordinary user.
