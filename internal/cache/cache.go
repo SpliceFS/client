@@ -6,7 +6,10 @@
 // and a particular version of it by a Version, so a file that changes gets a fresh entry.
 //
 // The bitmap stored on disk never claims a block whose data has not been written: a crash
-// can lose recent blocks, which are then fetched again, but cannot invent them.
+// can lose recent blocks, which are then fetched again, but cannot invent them. Only a
+// metadata write that records new blocks is synced to disk; one that changes only the
+// validation or last-read time is not, because losing it costs one revalidation or an
+// older eviction order. A metadata file a crash left empty or torn drops its entry.
 //
 // One process at a time may use a cache folder: Open takes a lock on a file at the top of the
 // folder and Close gives it back.

@@ -154,5 +154,6 @@ func (c *Cache) load(base, hash string) (*entry, error) {
 	loaded.validated = meta.Validated
 	count := countBlocks(meta.Version, meta.Blocks)
 	loaded.present, loaded.bytes = count.present, count.bytes
+	loaded.persistedBlocks = count.present
 	return loaded, nil
 }
