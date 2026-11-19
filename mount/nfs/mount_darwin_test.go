@@ -18,6 +18,7 @@ import (
 
 	"github.com/willscott/go-nfs-client/nfs"
 	"github.com/willscott/go-nfs-client/nfs/rpc"
+	"golang.org/x/sys/unix"
 
 	"github.com/SpliceFS/client/core"
 	"github.com/SpliceFS/client/mount"
@@ -63,12 +64,21 @@ type command struct {
 	args []string
 }
 
+// unmountCall is one call of unmount(2).
+type unmountCall struct {
+	target string
+	flags  int
+}
+
 // fakeSystem replaces mount_nfs, umount, the mount table and the clock. It records the
 // commands, answers them through handle, and lets the test drive the polling.
 type fakeSystem struct {
 	mu       sync.Mutex
 	commands []command
 	handle   func(command) ([]byte, error)
+	// unmounts are the calls of unmount(2), in order; unmount answers them, and nil means success.
+	unmounts []unmountCall
+	unmount  func(unmountCall) error
 
 	presence []presence // answers of isMounted in order; the last one repeats
 	// table, when set, is the mount table: target to source. isMounted then answers from it.
@@ -101,6 +111,17 @@ func (f *fakeSystem) environment() environment {
 				return nil, nil
 			}
 			return handle(cmd)
+		},
+		unmountCall: func(target string, flags int) error {
+			call := unmountCall{target: target, flags: flags}
+			f.mu.Lock()
+			f.unmounts = append(f.unmounts, call)
+			unmount := f.unmount
+			f.mu.Unlock()
+			if unmount == nil {
+				return nil
+			}
+			return unmount(call)
 		},
 		owner:     testOwner(),
 		rootAfter: neverEnds,
@@ -139,6 +160,18 @@ func (f *fakeSystem) environment() environment {
 			}
 		},
 	}
+}
+
+// unmountCalls returns the calls of unmount(2) so far.
+func (f *fakeSystem) unmountCalls() []unmountCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.unmounts)
+}
+
+// removals counts the unmounts of any kind: runs of umount and calls of unmount(2).
+func (f *fakeSystem) removals() int {
+	return len(f.commandsNamed("/sbin/umount")) + len(f.unmountCalls())
 }
 
 func (f *fakeSystem) commandsNamed(name string) []command {
@@ -358,36 +391,47 @@ func TestMountFailsWithoutRunningMountNFSWhenTheTargetDoesNotExist(t *testing.T)
 	}
 }
 
-// unmountCase is one way of calling Unmount and the umount arguments it must produce.
+// unmountCase is one way of calling Unmount.
 type unmountCase struct {
 	name  string
 	force bool
-	args  func(target string) []string
 }
 
 func unmountCases() []unmountCase {
-	return []unmountCase{
-		{"without force", false, func(target string) []string { return []string{target} }},
-		{"with force", true, func(target string) []string { return []string{"-f", target} }},
+	return []unmountCase{{"without force", false}, {"with force", true}}
+}
+
+func TestUnmountWithoutForceRunsUmountOnTheTarget(t *testing.T) {
+	t.Parallel()
+	sys := newFakeSystem()
+	live := startMount(t, sys, mount.Options{})
+
+	if err := live.Unmount(t.Context(), false); err != nil {
+		t.Fatal(err)
+	}
+	calls := sys.commandsNamed("/sbin/umount")
+	if len(calls) != 1 || !slices.Equal(calls[0].args, []string{live.target}) {
+		t.Errorf("umount calls = %v, want one for %q", calls, live.target)
+	}
+	if calls := sys.unmountCalls(); len(calls) != 0 {
+		t.Errorf("unmount(2) calls = %v, want none", calls)
 	}
 }
 
-func TestUnmountRunsUmount(t *testing.T) {
+func TestUnmountWithForceCallsUnmountWithMNTForceOnTheTarget(t *testing.T) {
 	t.Parallel()
-	for _, tt := range unmountCases() {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			sys := newFakeSystem()
-			live := startMount(t, sys, mount.Options{})
+	sys := newFakeSystem()
+	live := startMount(t, sys, mount.Options{})
 
-			if err := live.Unmount(t.Context(), tt.force); err != nil {
-				t.Fatal(err)
-			}
-			calls := sys.commandsNamed("/sbin/umount")
-			if len(calls) != 1 || !slices.Equal(calls[0].args, tt.args(live.target)) {
-				t.Errorf("umount calls = %v, want one with %q", calls, tt.args(live.target))
-			}
-		})
+	if err := live.Unmount(t.Context(), true); err != nil {
+		t.Fatal(err)
+	}
+	want := []unmountCall{{target: live.target, flags: unix.MNT_FORCE}}
+	if got := sys.unmountCalls(); !slices.Equal(got, want) {
+		t.Errorf("unmount(2) calls = %v, want %v", got, want)
+	}
+	if calls := sys.commandsNamed("/sbin/umount"); len(calls) != 0 {
+		t.Errorf("umount ran: %v", calls)
 	}
 }
 
@@ -410,7 +454,7 @@ func TestUnmountEndsTheMountAndStopsTheServer(t *testing.T) {
 	}
 }
 
-func TestUnmountOfAMountThatIsGoneRunsUmountOnce(t *testing.T) {
+func TestUnmountOfAMountThatIsGoneUnmountsOnce(t *testing.T) {
 	t.Parallel()
 	for _, tt := range unmountCases() {
 		t.Run(tt.name, func(t *testing.T) {
@@ -424,8 +468,8 @@ func TestUnmountOfAMountThatIsGoneRunsUmountOnce(t *testing.T) {
 			if err := live.Unmount(t.Context(), tt.force); err != nil { // already gone
 				t.Errorf("second Unmount = %v", err)
 			}
-			if n := len(sys.commandsNamed("/sbin/umount")); n != 1 {
-				t.Errorf("umount ran %d times", n)
+			if n := sys.removals(); n != 1 {
+				t.Errorf("the mount was unmounted %d times", n)
 			}
 		})
 	}
@@ -470,6 +514,36 @@ func TestUnmountFailureThatIsNotBusyIsNotEBUSY(t *testing.T) {
 	err := live.Unmount(t.Context(), false)
 	if err == nil || errors.Is(err, syscall.EBUSY) || !strings.Contains(err.Error(), "Operation not permitted") {
 		t.Errorf("Unmount = %v, want the failure without EBUSY", err)
+	}
+}
+
+func TestForcedUnmountReportsTheFailureAsUmountDid(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		cause    error
+		wantBusy bool
+	}{
+		"mount in use":   {cause: syscall.EBUSY, wantBusy: true},
+		"not permitted":  {cause: syscall.EPERM, wantBusy: false},
+		"not a mount":    {cause: syscall.EINVAL, wantBusy: false},
+		"already ending": {cause: syscall.ENOENT, wantBusy: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sys := newFakeSystem()
+			live := startMount(t, sys, mount.Options{})
+			sys.unmount = func(unmountCall) error { return tt.cause }
+
+			err := live.Unmount(t.Context(), true)
+			if err == nil || !errors.Is(err, tt.cause) || errors.Is(err, syscall.EBUSY) != tt.wantBusy {
+				t.Fatalf("Unmount = %v, want an error that is %v", err, tt.cause)
+			}
+			if want := "umount: " + tt.cause.Error(); err.Error() != want {
+				t.Errorf("Unmount = %q, want %q", err, want)
+			}
+			wantOpen(t, live.Done(), "the mount ended although it could not be unmounted")
+		})
 	}
 }
 
@@ -525,8 +599,8 @@ func TestMountEndsWhenItDisappears(t *testing.T) {
 	if live.Err() != nil {
 		t.Errorf("Err() = %v after an unmount from outside", live.Err())
 	}
-	if n := len(sys.commandsNamed("/sbin/umount")); n != 0 {
-		t.Errorf("umount ran %d times for a mount that was already gone", n)
+	if n := sys.removals(); n != 0 {
+		t.Errorf("the mount was unmounted %d times although it was already gone", n)
 	}
 	wantClosed(t, live.srv.guard.Listener)
 	mu.Lock()
@@ -564,32 +638,30 @@ func TestMountThatIsNotInTheTableIsNotPolled(t *testing.T) {
 	}
 }
 
-// systemWhereUmountAnswers is a fake system whose umount fails with umountErr, or
-// works when umountErr is nil.
-func systemWhereUmountAnswers(umountErr error) *fakeSystem {
+// systemWhereUnmountAnswers is a fake system whose unmount(2) fails with unmountErr, or
+// works when unmountErr is nil.
+func systemWhereUnmountAnswers(unmountErr error) *fakeSystem {
 	sys := newFakeSystem()
-	sys.handle = func(cmd command) ([]byte, error) {
-		if cmd.name == "/sbin/umount" && umountErr != nil {
-			return []byte("umount: not mounted\n"), umountErr
-		}
-		return nil, nil
-	}
+	sys.unmount = func(unmountCall) error { return unmountErr }
 	return sys
 }
 
-// wantOneForcedUnmount fails the test unless the system ran exactly one forced umount of
-// the target of the mount.
+// wantOneForcedUnmount fails the test unless the system made exactly one forced unmount of
+// the target of the mount, and ran no umount.
 func wantOneForcedUnmount(t *testing.T, sys *fakeSystem, live *mounted) {
 	t.Helper()
-	calls := sys.commandsNamed("/sbin/umount")
-	if len(calls) != 1 || !slices.Equal(calls[0].args, []string{"-f", live.target}) {
-		t.Errorf("umount calls = %v, want one forced unmount of the dead mount", calls)
+	want := []unmountCall{{target: live.target, flags: unix.MNT_FORCE}}
+	if got := sys.unmountCalls(); !slices.Equal(got, want) {
+		t.Errorf("unmount(2) calls = %v, want %v: one forced unmount of the dead mount", got, want)
+	}
+	if calls := sys.commandsNamed("/sbin/umount"); len(calls) != 0 {
+		t.Errorf("umount ran: %v", calls)
 	}
 }
 
 func TestMountEndsWhenTheServerFails(t *testing.T) {
 	t.Parallel()
-	sys := systemWhereUmountAnswers(nil)
+	sys := systemWhereUnmountAnswers(nil)
 	live := startMount(t, sys, mount.Options{})
 
 	breakServer(t, live)
@@ -603,7 +675,7 @@ func TestMountEndsWhenTheServerFails(t *testing.T) {
 
 func TestMountEndsWithBothFailuresWhenTheServerFailsAndUmountFails(t *testing.T) {
 	t.Parallel()
-	sys := systemWhereUmountAnswers(errors.New("exit status 1"))
+	sys := systemWhereUnmountAnswers(syscall.EINVAL)
 	live := startMount(t, sys, mount.Options{})
 
 	breakServer(t, live)
@@ -613,7 +685,7 @@ func TestMountEndsWithBothFailuresWhenTheServerFailsAndUmountFails(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "serve nfs") {
 		t.Fatalf("Err() = %v, want the server failure", err)
 	}
-	if !strings.Contains(err.Error(), "not mounted") {
+	if !errors.Is(err, syscall.EINVAL) || !strings.Contains(err.Error(), "umount: ") {
 		t.Errorf("Err() = %v, want the umount failure as well", err)
 	}
 	wantOneForcedUnmount(t, sys, live)

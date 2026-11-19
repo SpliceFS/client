@@ -330,11 +330,9 @@ func TestRealMountLeftBehindByAKilledClientIsRemovedByUmount(t *testing.T) {
 		t.Fatal("the mount is gone after the client was killed, so there is no stale mount to test")
 	}
 
-	// The limit only catches a command that hangs. The system decides how long umount takes:
-	// removing a dead NFS mount took from milliseconds to 9 seconds while other mounts were
-	// being made, and the race detector sleeps one second more when a process ends. The command
-	// bounds its own wait for the system (umountTimeout in mount/nfs, 30 seconds), so the limit
-	// is longer than that bound and the command always ends first.
+	// The limit only catches a command that hangs. The system decides how long the removal of a
+	// dead NFS mount takes: about 2 seconds, more while other mounts are being made, and the race
+	// detector sleeps one second more when a process ends.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	refused := serve(ctx, dir, func() {})

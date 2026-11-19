@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/SpliceFS/client/core"
 	"github.com/SpliceFS/client/mount"
 )
@@ -100,20 +102,23 @@ func execCommand(ctx context.Context, name string, args ...string) ([]byte, erro
 
 // environment is everything Mount takes from the system, so tests can replace it.
 type environment struct {
-	run       commandRunner
-	owner     owner
-	listen    func(context.Context) (net.Listener, error)
-	isMounted func(target, from string) (bool, error)
-	serves    func(ctx context.Context, port int) (bool, error)
-	newTicker func(time.Duration) (<-chan time.Time, func())
-	rootAfter afterFunc // nil means timeAfterFunc
+	run commandRunner
+	// unmountCall is unmount(2).
+	unmountCall func(target string, flags int) error
+	owner       owner
+	listen      func(context.Context) (net.Listener, error)
+	isMounted   func(target, from string) (bool, error)
+	serves      func(ctx context.Context, port int) (bool, error)
+	newTicker   func(time.Duration) (<-chan time.Time, func())
+	rootAfter   afterFunc // nil means timeAfterFunc
 }
 
 func systemEnvironment() environment {
 	return environment{
-		run:    execCommand,
-		owner:  processOwner(),
-		listen: listenLoopback,
+		run:         execCommand,
+		unmountCall: unix.Unmount,
+		owner:       processOwner(),
+		listen:      listenLoopback,
 		isMounted: func(target, from string) (bool, error) {
 			return mountTableHas(syscall.Getfsstat, target, from)
 		},
@@ -123,6 +128,22 @@ func systemEnvironment() environment {
 			return t.C, t.Stop
 		},
 	}
+}
+
+// forceUnmount removes the mount on target. Read-only, nothing to sync; umount -f waits up to 10 s for a sync.
+func (e environment) forceUnmount(target string) error {
+	if err := e.unmountCall(target, unix.MNT_FORCE); err != nil {
+		return fmt.Errorf("umount: %w", err)
+	}
+	return nil
+}
+
+// plainUnmount runs umount, which refuses a mount that is in use; a forced unmount does not.
+func (e environment) plainUnmount(ctx context.Context, target string) error {
+	if out, err := e.run(ctx, umountPath, target); err != nil {
+		return unmountError(err, out)
+	}
+	return nil
 }
 
 // Mount serves fsys read-only over NFSv3 on a loopback port and mounts it on
@@ -252,8 +273,8 @@ func (m *mounted) Done() <-chan struct{} { return m.done }
 // Err is nil after a clean unmount and the reason otherwise. Call it after Done.
 func (m *mounted) Err() error { return m.err }
 
-// Unmount runs umount, with -f when force is set, and returns after the server has
-// stopped. Without force, umount refuses a mount that is in use.
+// Unmount returns after the server has stopped. Without force it runs umount, which refuses
+// a mount that is in use; with force it unmounts with MNT_FORCE.
 //
 //nolint:revive // The flag is part of the signature of mount.Mounted.
 func (m *mounted) Unmount(ctx context.Context, force bool) error {
@@ -262,17 +283,19 @@ func (m *mounted) Unmount(ctx context.Context, force bool) error {
 		return nil
 	default:
 	}
-	args := []string{m.target}
+	var err error
 	if force {
-		args = []string{"-f", m.target}
+		err = m.env.forceUnmount(m.target)
+	} else {
+		err = m.env.plainUnmount(ctx, m.target)
 	}
-	if out, err := m.env.run(ctx, umountPath, args...); err != nil {
+	if err != nil {
 		select {
 		case <-m.done: // it was unmounted from outside in the meantime
 			return nil
 		default:
 		}
-		return unmountError(err, out)
+		return err
 	}
 	m.record.remove(m.target)
 	m.unmountOnce.Do(func() { close(m.unmounted) })
@@ -332,12 +355,8 @@ func (m *mounted) wait(ticks <-chan time.Time) error {
 // server is gone only ever returns I/O errors, so it is forced off instead of left
 // behind.
 func (m *mounted) serverFailed() error {
-	ctx, cancel := context.WithTimeout(context.Background(), mountTimeout)
-	defer cancel()
-	var uerr error
-	if out, err := m.env.run(ctx, umountPath, "-f", m.target); err != nil {
-		uerr = commandError("umount", err, out)
-	} else {
+	uerr := m.env.forceUnmount(m.target)
+	if uerr == nil {
 		m.record.remove(m.target)
 	}
 	return errors.Join(m.srv.Err(), uerr)

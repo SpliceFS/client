@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/SpliceFS/client/mount"
 )
 
@@ -266,7 +268,7 @@ func TestEntryGoesWhenTheMountIsUnmountedFromOutside(t *testing.T) {
 func TestEntryGoesWhenTheServerFailsAndUmountWorks(t *testing.T) {
 	t.Parallel()
 	path := recordIn(t)
-	live := startRecorded(t, systemWhereUmountAnswers(nil), mount.Options{RecordPath: path})
+	live := startRecorded(t, systemWhereUnmountAnswers(nil), mount.Options{RecordPath: path})
 
 	breakServer(t, live)
 	<-live.Done()
@@ -276,7 +278,7 @@ func TestEntryGoesWhenTheServerFailsAndUmountWorks(t *testing.T) {
 func TestEntryStaysWhenTheServerFailsAndUmountFails(t *testing.T) {
 	t.Parallel()
 	path := recordIn(t)
-	live := startRecorded(t, systemWhereUmountAnswers(errors.New("exit status 1")), mount.Options{RecordPath: path})
+	live := startRecorded(t, systemWhereUnmountAnswers(syscall.EINVAL), mount.Options{RecordPath: path})
 
 	breakServer(t, live)
 	<-live.Done()
@@ -339,11 +341,11 @@ func staleSystem(entries []recordEntry) *fakeSystem {
 		}
 	}
 	sys.serving = func(port int) (bool, error) { return port == 1003, nil }
-	sys.handle = func(cmd command) ([]byte, error) {
-		if strings.HasSuffix(cmd.args[len(cmd.args)-1], "/stuck") {
-			return []byte("umount: Resource busy\n"), errors.New("exit status 1")
+	sys.unmount = func(call unmountCall) error {
+		if strings.HasSuffix(call.target, "/stuck") {
+			return syscall.EBUSY
 		}
-		return nil, nil
+		return nil
 	}
 	return sys
 }
@@ -376,16 +378,16 @@ func TestClearStaleHandlesEachOutcome(t *testing.T) {
 		{Target: entries[2].Target, Outcome: OutcomeServed},
 		{Target: entries[3].Target, Outcome: OutcomeFailed, Err: errors.New("umount")},
 	})
-	if !errors.Is(results[3].Err, syscall.EBUSY) || !strings.Contains(results[3].Err.Error(), "Resource busy") {
+	if !errors.Is(results[3].Err, syscall.EBUSY) || !strings.HasPrefix(results[3].Err.Error(), "umount: ") {
 		t.Errorf("the failure of the stuck mount = %v, want what umount said", results[3].Err)
 	}
 	// Only the stale and the stuck mount were forced off. The one a client serves was left alone.
 	forced := make([]string, 0, 2)
-	for _, cmd := range sys.commandsNamed(umountPath) {
-		if cmd.args[0] != "-f" {
-			t.Errorf("umount without -f: %q", cmd.args)
+	for _, call := range sys.unmountCalls() {
+		if call.flags != unix.MNT_FORCE {
+			t.Errorf("unmount(2) of %s with flags %#x, want MNT_FORCE", call.target, call.flags)
 		}
-		forced = append(forced, cmd.args[1])
+		forced = append(forced, call.target)
 	}
 	if want := []string{entries[0].Target, entries[3].Target}; !slices.Equal(forced, want) {
 		t.Errorf("forced unmounts = %q, want %q", forced, want)
@@ -412,8 +414,8 @@ func TestClearStaleLooksOnlyAtTheTargetsGiven(t *testing.T) {
 		{Target: entries[0].Target, Outcome: OutcomeCleared},
 		{Target: entries[2].Target, Outcome: OutcomeServed},
 	})
-	if n := len(sys.commandsNamed(umountPath)); n != 1 {
-		t.Errorf("umount ran %d times, want only for the stale mount asked for", n)
+	if n := sys.removals(); n != 1 {
+		t.Errorf("%d mounts were unmounted, want only the stale mount asked for", n)
 	}
 	wantTargets(t, path, entries[1].Target, entries[2].Target, entries[3].Target)
 }
@@ -519,16 +521,16 @@ func TestClearStaleReturnsTheResultsWhenTheRecordCannotBeSaved(t *testing.T) {
 	t.Parallel()
 	path, entries := staleRecord(t)
 	sys := staleSystem(entries)
-	umount := sys.handle
-	sys.handle = func(cmd command) ([]byte, error) {
-		// A folder takes the place of the record while umount runs, so the rename fails.
+	unmount := sys.unmount
+	sys.unmount = func(call unmountCall) error {
+		// A folder takes the place of the record while the unmount runs, so the rename fails.
 		if err := os.Remove(path); err != nil {
-			return nil, err
+			return err
 		}
 		if err := os.Mkdir(path, 0o700); err != nil {
-			return nil, err
+			return err
 		}
-		return umount(cmd)
+		return unmount(call)
 	}
 
 	results, err := clearWith(t.Context(), sys.environment(), path, []string{entries[0].Target})
