@@ -87,9 +87,9 @@ func systemHost() system {
 
 // SocketPath returns the path of the control socket of the client that uses the
 // configuration directory configDir: <dir>/<16 hex digits>.sock, where the digits are the
-// start of the SHA-256 of the absolute configuration directory, and <dir> is
-// $XDG_RUNTIME_DIR/splicefs, else /run/splicefs for root (/var/run/splicefs on FreeBSD),
-// else splicefs-<uid> in the temporary directory. Two configurations therefore never share a
+// start of the SHA-256 of the absolute configuration directory, and <dir> is /run/splicefs
+// for root (/var/run/splicefs on FreeBSD), else $XDG_RUNTIME_DIR/splicefs, else
+// splicefs-<uid> in the temporary directory. Two configurations therefore never share a
 // socket, and every command that names the same directory finds the same one.
 func SocketPath(configDir string) string {
 	return systemHost().socketPath(configDir)
@@ -117,13 +117,16 @@ func nfsRecordPath(socketPath string) string {
 
 // socketDir is the directory that holds the control socket and the files next to it. The
 // temporary directory is shared by every user, so there the name has the user id, which keeps
-// users out of each other's way; prepareDir refuses a folder that another user made.
+// users out of each other's way; prepareDir refuses a folder that another user made. Root
+// is always the system instance and ignores XDG_RUNTIME_DIR: the boot service has no such
+// variable, and a root command that inherited one from a user (sudo that keeps the
+// environment) would look in the wrong folder.
 func (s system) socketDir() string {
-	if dir := s.getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, socketDirName)
-	}
 	if s.geteuid() == 0 {
 		return filepath.Join(rootRuntimeDir, socketDirName)
+	}
+	if dir := s.getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, socketDirName)
 	}
 	return filepath.Join(s.tempDir(), fmt.Sprintf("%s-%d", socketDirName, s.geteuid()))
 }
