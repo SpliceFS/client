@@ -143,7 +143,7 @@ func TestConnectCancelled(t *testing.T) {
 	env := newHarness(t, "a")
 	env.start()
 	node := env.fc.nodes[0]
-	release := node.hold()
+	release := node.hold(t)
 	defer release()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

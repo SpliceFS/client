@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"hash/fnv"
-	"net/http"
 	"slices"
 	"testing"
 )
@@ -235,7 +234,7 @@ func TestCancelledLookupReturnsContextError(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := env.fc.nodes[0]
-	release := node.hold()
+	release := node.hold(t)
 	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -284,7 +283,7 @@ func TestForbiddenNodeAnswersNothing(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, "a", "b")
 	h.fc.put("media/file", pattern(1, 10), fileTime())
-	h.fc.nodes[1].setStatus(http.StatusForbidden)
+	h.fc.nodes[1].deny()
 	a, err := h.view(0).Stat(context.Background(), "media/file")
 	if err != nil || a.Size != 10 {
 		t.Errorf("Stat with one forbidden node = %+v, %v", a, err)

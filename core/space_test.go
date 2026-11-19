@@ -11,7 +11,7 @@ import (
 // as its second view.
 func spaceHarness(t *testing.T) *harness {
 	t.Helper()
-	env := newHarness(t, "a", "b", "c")
+	env := newHarnessOf(t, []string{"docs", "media"}, "a", "b", "c")
 	env.fc.put("media/file", pattern(1, 10), fileTime())
 	env.fc.put("docs/file", pattern(1, 10), fileTime())
 	sizes := map[string][3][2]uint64{ // share: per node {total, free}
@@ -72,12 +72,12 @@ func TestStatFSWithSilentNodes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env.fc.nodes[1].setDown(true)
+	env.fc.nodes[1].stop()
 	if got, err := fsys.StatFS(ctx); err != nil || got != (Space{Total: 100, Free: 50}) {
 		t.Errorf("StatFS with one node down = %+v, %v; want the answering node's", got, err)
 	}
 	env.clock.Advance(time.Minute)
-	env.fc.nodes[0].setDown(true)
+	env.fc.nodes[0].stop()
 	if _, err := fsys.StatFS(ctx); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("StatFS with every node down = %v, want ErrUnavailable", err)
 	}
@@ -111,7 +111,7 @@ func TestStatFSFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := held.fc.nodes[0]
-	release := node.hold()
+	release := node.hold(t)
 	defer release()
 	cancelled, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)

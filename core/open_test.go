@@ -403,7 +403,7 @@ func TestCancelledOpenReturnsContextError(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := env.fc.nodes[0]
-	release := node.hold()
+	release := node.hold(t)
 	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -526,14 +526,15 @@ func TestFileCloseReportsAFailedRelease(t *testing.T) {
 func TestSourceFetchErrors(t *testing.T) {
 	t.Parallel()
 	for _, testCase := range []struct {
-		status int
+		name   string
+		change func(*fakeNode) // nil leaves the node as it is
 		gone   bool
 	}{
-		{http.StatusPreconditionFailed, true},
-		{http.StatusNotFound, true},
-		{http.StatusForbidden, true},
-		{http.StatusServiceUnavailable, false},
-		{0, false},
+		{"changed (412)", func(n *fakeNode) { n.put("media/file", pattern(1, 100), fileTime().Add(time.Second)) }, true},
+		{"removed (404)", func(n *fakeNode) { n.remove("media/file") }, true},
+		{"forbidden (403)", (*fakeNode).deny, true},
+		{"stopped", (*fakeNode).stop, false},
+		{"served", nil, false},
 	} {
 		env := newHarness(t, "a")
 		env.fc.put("media/file", pattern(1, 100), fileTime())
@@ -542,19 +543,20 @@ func TestSourceFetchErrors(t *testing.T) {
 		if _, err := clus.nodes(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		node := env.fc.nodes[0]
-		node.setStatus(testCase.status)
+		if testCase.change != nil {
+			testCase.change(env.fc.nodes[0])
+		}
 		src := source{c: clus, node: clus.node("a"), file: "media/file", etag: (fakeFile{pattern(1, 100), fileTime()}).etag()}
 		buf := make([]byte, 50)
 		err := src.Fetch(context.Background(), 10, buf)
-		if testCase.status == 0 {
+		if testCase.change == nil {
 			if err != nil || !bytes.Equal(buf, pattern(1, 100)[10:60]) || src.ID() != "a" {
 				t.Errorf("Fetch = %v, data %v", err, buf)
 			}
 			continue
 		}
 		if errors.Is(err, fetch.ErrGone) != testCase.gone || err == nil {
-			t.Errorf("HTTP %d: Fetch = %v, gone %v", testCase.status, err, testCase.gone)
+			t.Errorf("%s: Fetch = %v, gone %v", testCase.name, err, testCase.gone)
 		}
 	}
 }
