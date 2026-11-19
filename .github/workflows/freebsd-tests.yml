@@ -1,0 +1,40 @@
+name: FreeBSD tests
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
+
+# Called by CI, for every pull request, and by Daily, on main. It is one workflow so that both
+# runs have the same job id, and so the same Go cache entry (see .github/actions/go-cache): the
+# run on main saves the entry, and a pull request restores it.
+on:
+  workflow_call:
+    inputs:
+      save:
+        description: >-
+          Whether the run saves its Go caches. The save took 48 s of a job that runs for minutes,
+          so a pull request only restores. A run on main saves, so that the entry is fresh and
+          does not expire.
+        type: boolean
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # FreeBSD cannot run in a container, so the tests run in a virtual machine under QEMU,
+  # inside the prepared image of the release (scripts/check-freebsd.sh). Only amd64: there the
+  # runner offers hardware virtualization, and an emulated machine would take too long for the
+  # whole test suite.
+  freebsd-tests:
+    name: FreeBSD ${{ matrix.release }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["14.5", "15.1"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
+        with:
+          save: ${{ inputs.save }}
+      - name: Tests on FreeBSD, as root with FUSE, 100% coverage
+        run: make check-freebsd FREEBSD=${{ matrix.release }}

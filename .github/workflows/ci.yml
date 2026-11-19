@@ -194,28 +194,14 @@ jobs:
       - name: Tests with the 100% coverage gate, then with the race detector
         run: make unit-here fuse-here race-here
 
-  # FreeBSD cannot run in a container, so the tests run in a virtual machine under QEMU,
-  # inside the prepared image of the release (scripts/check-freebsd.sh). Only amd64: there the
-  # runner offers hardware virtualization, and an emulated machine would take too long for the
-  # whole test suite.
+  # The FreeBSD tests are one workflow, because the Daily workflow runs them too and saves the
+  # Go caches that this run restores (see freebsd-tests.yml). A pull request never saves.
   freebsd-tests:
     needs: tip
-    name: FreeBSD tests (${{ matrix.release }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["14.5", "15.1"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Only a push to main saves the caches, never a pull request: GitHub evicts an entry that
-      # was not saved for 7 days, and an entry of main is the one every pull request can restore.
-      - uses: ./.github/actions/go-cache
-        with:
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - name: Tests on FreeBSD, as root with FUSE, 100% coverage
-        run: make check-freebsd FREEBSD=${{ matrix.release }}
+    name: FreeBSD tests
+    uses: ./.github/workflows/freebsd-tests.yml
+    with:
+      save: false
 
   # The one check a branch must pass. A job that did not run counts as failed: a job is
   # skipped only when one it needs failed. A new job is added to the list when it is added

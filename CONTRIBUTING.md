@@ -135,7 +135,7 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
   root. Run them with `make fuzz`, or longer with `FUZZTIME=1m make fuzz`. A package runs with
   `make fuzz FUZZ_PACKAGE=internal/tree` and one target with
   `make fuzz FUZZ_TARGET=internal/tree:FuzzListing`; `make -s fuzz-packages` and
-  `make -s fuzz-targets` list them. The Fuzz workflow runs each package as a job of its own, on
+  `make -s fuzz-targets` list them. The Daily workflow runs each package as a job of its own, on
   `main` every day, and on request; fuzzing finds bugs over time and is not part of the checks of
   a pull request. A failing input is written to `testdata/fuzz` in the package's folder, and the
   workflow keeps that folder as an artifact.
@@ -158,7 +158,7 @@ A pull request merges with one merge commit. Squash and fast-forward merges are 
 | Workflow | What it does |
 |---|---|
 | CI | every part of a build as a job of its own, all at once: static checks (format, vet, module files, ShellCheck, and `golangci-lint` with the `gosec` security rules for each system), unit tests with the 100% coverage gate, the tests that mount with FUSE as an ordinary user, tests with the race detector, the build for every system, the real client against the released servers, macOS and FreeBSD. The job "All checks" needs all of them and is the one check a pull request must pass. |
-| Fuzz | every day on `main`, and on request: each package with fuzz targets, briefly, as a job of its own. A failed run opens an issue. |
+| Daily | every day on `main`, and on request: each package with fuzz targets, briefly, as a job of its own, and the FreeBSD tests, which keep the Go cache warm for pull requests. A failed run opens an issue. |
 | Rules | on pull requests: checks the `change_scope` line and the `VERSION` file the bot sets |
 | Main | on every push to `main`: tags the new version and rebuilds the open pull requests |
 | Security | `govulncheck` for known vulnerabilities in dependencies and the standard library, CodeQL static analysis, and a dependency review on pull requests. Also runs weekly. |
