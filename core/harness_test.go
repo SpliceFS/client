@@ -146,12 +146,12 @@ type fakeNode struct {
 	// emptyDirs are folders without files, by "share/dir", which an apitest share cannot hold.
 	emptyDirs map[string]bool
 	space     map[string]wire.Space
-	gate   chan struct{} // when set, requests wait until it is closed
-	reject int           // this many authorized requests are answered 401
-	denied bool          // every share is refused (403)
-	counts map[string]int
-	logins int
-	waits  chan struct{} // receives a value whenever a request waits at the gate
+	gate      chan struct{} // when set, requests wait until it is closed
+	reject    int           // this many authorized requests are answered 401
+	denied    bool          // every share is refused (403)
+	counts    map[string]int
+	logins    int
+	waits     chan struct{} // receives a value whenever a request waits at the gate
 }
 
 func (n *fakeNode) url() string { return n.node.URL() }
@@ -427,9 +427,9 @@ func newFakeCluster(t *testing.T, clock *fakeClock, shareNames []string, names .
 	fakes.auth.AddUser(testUser, testPassword, "*")
 	for _, name := range names {
 		n := &fakeNode{
-			name:   name,
-			group:  fakes,
-			files:  make(map[string]fakeFile),
+			name:      name,
+			group:     fakes,
+			files:     make(map[string]fakeFile),
 			shares:    make(map[string]*apitest.Share),
 			emptyDirs: make(map[string]bool),
 			space:     make(map[string]wire.Space),
