@@ -10,21 +10,35 @@ inputs:
   folder:
     description: The folder that holds gomod and gobuild, relative to the repository.
     default: .cache
+  save:
+    description: Whether the job saves the caches when it ends. "false" only restores them.
+    default: "true"
 
 runs:
   using: composite
   steps:
     # The image is named in the Makefile and nowhere else; a new image starts with new caches.
-    - name: Name the Go image
-      id: image
+    # Both cache steps below take their keys from this one name, so they cannot differ.
+    - name: Name the cache entry of this job
+      id: entry
       shell: bash
-      run: echo "name=$(make -s go-image)" >> "$GITHUB_OUTPUT"
-    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      run: echo "prefix=go-$GITHUB_JOB-$RUNNER_OS-$RUNNER_ARCH-$(make -s go-image)-" >> "$GITHUB_OUTPUT"
+    - name: Restore the caches, and save them when the job ends
+      if: inputs.save == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ${{ inputs.folder }}/gomod
           ${{ inputs.folder }}/gobuild
-        key: go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.name }}-${{ hashFiles('go.sum') }}
+        key: ${{ steps.entry.outputs.prefix }}${{ hashFiles('go.sum') }}
         # A change of go.sum starts from the caches of the last one; Go adds what is missing.
-        restore-keys: |
-          go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.name }}-
+        restore-keys: ${{ steps.entry.outputs.prefix }}
+    - name: Restore the caches only
+      if: inputs.save != 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ inputs.folder }}/gomod
+          ${{ inputs.folder }}/gobuild
+        key: ${{ steps.entry.outputs.prefix }}${{ hashFiles('go.sum') }}
+        restore-keys: ${{ steps.entry.outputs.prefix }}

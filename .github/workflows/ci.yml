@@ -39,8 +39,7 @@ jobs:
 
   # Every part is a make target that runs in our images (see the Makefile), so each job is
   # the command a developer runs on any machine that has Docker. The parts need nothing from
-  # each other and start at once; only the packages wait, for the programs they wrap. The
-  # runners hold no Go and no packages of their own: the images do.
+  # each other and start at once. The runners hold no Go of their own: the images do.
   static:
     needs: tip
     name: Static checks
@@ -123,8 +122,7 @@ jobs:
         timeout-minutes: 10
         run: make race
 
-  # Every program for every system, compiled once. The packages job wraps these files and
-  # compiles nothing, so every package format ships the same binary.
+  # Every program compiles for every system. The release builds the files it ships.
   build:
     needs: tip
     name: Build every program
@@ -135,11 +133,6 @@ jobs:
       - uses: ./.github/actions/go-cache
       - name: Build for linux, freebsd and darwin on amd64 and arm64
         run: make build-all
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: bin
-          path: dist/bin
-          if-no-files-found: error
 
   # The parts of the integration test are listed by scripts/compat.sh: the runs of the rule
   # below, and each group of the cluster scenarios (scripts/cluster-groups). The jobs of the
@@ -201,91 +194,14 @@ jobs:
       - name: Tests with the 100% coverage gate, then with the race detector
         run: make unit-here fuse-here race-here
 
-  # One job for each package that has fuzz targets, each fuzzing its targets one after another,
-  # so the fuzzing takes as long as the package with the most targets and not the sum of all of
-  # them. A job for each target would be more jobs than the runners run at once. The packages
-  # are found in the code (make fuzz-packages), so a new Fuzz function, or a first one in a
-  # package, gets its job without an edit here.
-  fuzz-packages:
-    needs: tip
-    name: Fuzz packages
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      packages: ${{ steps.list.outputs.packages }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/go-cache
-      - name: List the packages with fuzz targets as JSON
-        id: list
-        run: |
-          lines="$(make -s fuzz-packages)"
-          printf 'packages=%s\n' "$(printf '%s\n' "$lines" | jq -R -n -c '[inputs | select(length > 0)]')" >> "$GITHUB_OUTPUT"
-
-  fuzz:
-    needs: fuzz-packages
-    name: Fuzz (${{ matrix.package }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        package: ${{ fromJSON(needs.fuzz-packages.outputs.packages) }}
-    env:
-      PACKAGE: ${{ matrix.package }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/go-cache
-      - name: Fuzz every target of the package briefly
-        run: make fuzz FUZZ_PACKAGE="$PACKAGE"
-      # Go writes an input that fails a target to testdata/fuzz in the package's folder. The
-      # log shows where; this keeps the folder, which is gone with the runner. An artifact name
-      # may not hold a /.
-      - name: Name the artifact of the failing input
-        id: input
-        if: failure()
-        run: printf 'name=fuzz-input-%s\n' "$(printf '%s' "$PACKAGE" | tr '/' '-')" >> "$GITHUB_OUTPUT"
-      - name: Keep the failing input
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: ${{ steps.input.outputs.name }}
-          path: ${{ matrix.package }}/testdata/fuzz
-          if-no-files-found: ignore
-
-  # FreeBSD cannot run in a container, so the tests run in a virtual machine under QEMU,
-  # inside the prepared image of the release (scripts/check-freebsd.sh). Only amd64: there the
-  # runner offers hardware virtualization, and an emulated machine would take too long for the
-  # whole test suite.
+  # The FreeBSD tests are one workflow, because the Daily workflow runs them too and saves the
+  # Go caches that this run restores (see freebsd-tests.yml). A pull request never saves.
   freebsd-tests:
     needs: tip
-    name: FreeBSD tests (${{ matrix.release }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ["14.5", "15.1"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: ./.github/actions/go-cache
-      - name: Tests on FreeBSD, as root with FUSE, 100% coverage
-        run: make check-freebsd FREEBSD=${{ matrix.release }}
-
-  # The packages of the programs of the build job, built and tested by the workflow of the
-  # packages repository: the deb, rpm, Alpine and FreeBSD packages and their signed repositories,
-  # installed, started under the real service manager, installed from the repository, mounted
-  # from fstab and run as an ordinary user, and upgraded from the newest published package. The
-  # license and documents that go into the packages, and the version, are the ones of this
-  # commit. It makes its own throwaway keys and gets no secret. A job that calls a workflow
-  # cannot have a time limit; every job of the called workflow has its own.
-  packages:
-    needs: build
-    name: Packages
-    uses: SpliceFS/packages/.github/workflows/package-and-test.yml@main
+    name: FreeBSD tests
+    uses: ./.github/workflows/freebsd-tests.yml
     with:
-      program: client
-      bin-artifact: bin
+      save: false
 
   # The one check a branch must pass. A job that did not run counts as failed: a job is
   # skipped only when one it needs failed. A new job is added to the list when it is added
@@ -302,10 +218,7 @@ jobs:
       - integration-parts
       - integration
       - macos
-      - fuzz-packages
-      - fuzz
       - freebsd-tests
-      - packages
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10

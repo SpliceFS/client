@@ -1,0 +1,91 @@
+name: Daily
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
+
+# What runs on main every day, and by hand (Actions, Daily, Run workflow). A scheduled run
+# always uses the tip of the default branch.
+# - Fuzzing finds bugs over time. It is not proof of a change, so it does not run on pull
+#   requests. make fuzz runs the same on any machine that has Docker.
+# - The FreeBSD tests keep the Go cache warm for pull requests. A pull request only restores its
+#   caches, so this run, on main, is the one that saves them: the entry that every pull request
+#   restores is then never older than a day.
+on:
+  schedule:
+    # Not on the hour, when scheduled runs are most likely to be delayed or dropped.
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # One job for each package that has fuzz targets, each fuzzing its targets one after another,
+  # so the fuzzing takes as long as the package with the most targets and not the sum of all of
+  # them. A job for each target would be more jobs than the runners run at once. The packages
+  # are found in the code (make fuzz-packages), so a new Fuzz function, or a first one in a
+  # package, gets its job without an edit here.
+  fuzz-packages:
+    name: Fuzz packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      packages: ${{ steps.list.outputs.packages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
+      - name: List the packages with fuzz targets as JSON
+        id: list
+        run: |
+          lines="$(make -s fuzz-packages)"
+          printf 'packages=%s\n' "$(printf '%s\n' "$lines" | jq -R -n -c '[inputs | select(length > 0)]')" >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: fuzz-packages
+    name: Fuzz (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.fuzz-packages.outputs.packages) }}
+    env:
+      PACKAGE: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/go-cache
+      - name: Fuzz every target of the package briefly
+        run: make fuzz FUZZ_PACKAGE="$PACKAGE"
+      # Go writes an input that fails a target to testdata/fuzz in the package's folder. The
+      # log shows where; this keeps the folder, which is gone with the runner. An artifact name
+      # may not hold a /.
+      - name: Name the artifact of the failing input
+        id: input
+        if: failure()
+        run: printf 'name=fuzz-input-%s\n' "$(printf '%s' "$PACKAGE" | tr '/' '-')" >> "$GITHUB_OUTPUT"
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.input.outputs.name }}
+          path: ${{ matrix.package }}/testdata/fuzz
+          if-no-files-found: ignore
+
+  # The same workflow as the one CI runs for a pull request, so both have the same Go cache
+  # entry. Here it saves.
+  freebsd-tests:
+    name: FreeBSD tests
+    uses: ./.github/workflows/freebsd-tests.yml
+    with:
+      save: true
+
+  # A failed run of this workflow opens an issue assigned to the account in the repository
+  # variable ALERT_ASSIGNEE, so that someone gets an email; nobody watches a scheduled run.
+  # An issue that is already open gets the new run added to it.
+  alert:
+    name: Report a failure
+    needs: [fuzz-packages, fuzz, freebsd-tests]
+    if: ${{ failure() }}
+    permissions:
+      issues: write
+    uses: SpliceFS/.github/.github/workflows/report-failure-v1.yml@main
+    with:
+      assignee: ${{ vars.ALERT_ASSIGNEE }}

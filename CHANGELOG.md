@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.45] - 2026-11-19
+
+- Internal: a pull request tests the program itself, without packaging or fuzzing.
+
 ## [0.5.44] - 2026-11-19
 
 - Internal: every workflow job has a time limit.
