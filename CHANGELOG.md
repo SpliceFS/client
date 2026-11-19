@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.43] - 2026-11-19
+
+- Internal: packaging lives only in the packages repository.
+
 ## [0.5.42] - 2026-11-19
 
 - Internal: the client's packages are built and tested by the packages repository.
