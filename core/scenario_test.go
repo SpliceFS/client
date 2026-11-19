@@ -380,17 +380,19 @@ func unusualNames() phase {
 	return phase{files: onEvery(names, 0, 1), down: []int{2}, wantFiles: wantAll(names)}
 }
 
-// manyFiles is a folder of 300 names; 100 are on both nodes as the same copy.
+// manyFiles is a folder whose names are on the first node only, on both as the same copy,
+// or on the second only, three of each: the merged listing must hold each name once. A
+// listing comes whole in one reply, so more names would prove nothing more.
 func manyFiles() phase {
 	first, second, all := map[string]fakeFile{}, map[string]fakeFile{}, map[string]fakeFile{}
-	for number := 1; number <= 300; number++ {
+	for number := 1; number <= 9; number++ {
 		name := fmt.Sprintf("f%03d", number)
 		stored := copyOf(byte(number), 1024, timeMid())
 		all[name] = stored
-		if number <= 200 {
+		if number <= 6 {
 			first[name] = stored
 		}
-		if number >= 101 {
+		if number >= 4 {
 			second[name] = stored
 		}
 	}
@@ -488,9 +490,11 @@ func TestFailureScenarios(t *testing.T) {
 // TestGeneratedScenarios checks a generated mix of paths, held by different sets of nodes in
 // up to three versions, against the merge rules computed here on their own: the version most
 // running nodes hold wins, on a tie the newest time. Then the same plan with one node stopped.
+// Ten paths of this seed are the fewest that hold every mix three nodes allow: one, two or
+// three holders with every possible number of distinct versions among them.
 func TestGeneratedScenarios(t *testing.T) {
 	t.Parallel()
-	plan := generatePlan(20261114, 60)
+	plan := generatePlan(20261114, 10)
 	runScenario(t, scenario{name: "a generated mix of files on three servers", nodes: 3, phases: []phase{
 		{files: plan.placed(), wantFiles: plan.want(0, 1, 2), wantDirs: plan.dirs(0, 1, 2)},
 		{down: []int{2}, wantFiles: plan.want(0, 1), wantDirs: plan.dirs(0, 1)},
