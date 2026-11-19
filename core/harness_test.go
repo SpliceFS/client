@@ -5,15 +5,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"net/http"
-	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +17,9 @@ import (
 	"github.com/SpliceFS/client/config"
 	"github.com/SpliceFS/client/internal/cache"
 	"github.com/SpliceFS/client/internal/fetch"
+	"github.com/SpliceFS/client/internal/version"
+	"github.com/SpliceFS/common/api"
+	"github.com/SpliceFS/common/apitest"
 	"github.com/SpliceFS/common/units"
 	"github.com/SpliceFS/common/wire"
 )
@@ -117,7 +115,7 @@ type fakeFile struct {
 }
 
 func (f fakeFile) etag() string {
-	return fmt.Sprintf("\"%x-%x\"", len(f.data), f.mtime.Unix())
+	return api.ETag(int64(len(f.data)), f.mtime)
 }
 
 func (f fakeFile) digest() string {
@@ -131,121 +129,76 @@ func (f fakeFile) tailDigest() string {
 	return hex.EncodeToString(sum[:])
 }
 
-// fakeNode serves the API from an in-memory file tree. Its switches let a test make
-// it fail in the ways a real node can.
+// fakeNode is a real API handler (apitest) over in-memory shares. Its switches let a
+// test make it fail in the ways a real node can.
 type fakeNode struct {
-	name  string
-	srv   *httptest.Server
-	group *fakeCluster
+	name string
+	node *apitest.Node
+	// client trusts this node's certificate; it is kept so its connections are reused.
+	client *http.Client
+	group  *fakeCluster
 
 	mu     sync.Mutex
 	files  map[string]fakeFile // by "share/dir/name"
+	shares map[string]*apitest.Share
 	space  map[string]wire.Space
-	down   bool          // every request is answered 503
-	status int           // when set, every authorized request is answered with it
 	gate   chan struct{} // when set, requests wait until it is closed
 	reject int           // this many authorized requests are answered 401
+	denied bool          // every share is refused (403)
 	counts map[string]int
 	logins int
 	waits  chan struct{} // receives a value whenever a request waits at the gate
 }
 
-// ServeHTTP answers one request as the switches of the node say: the request waits at
-// the gate, then the node fails it, or it is served.
-func (n *fakeNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	endpoint := route(r)
-	kind := endpoint.kind
-	state := n.admit(kind)
-	if !n.waitAtGate(r.Context(), state.gate) {
-		return
-	}
-	switch {
-	case state.down:
-		writeError(w, http.StatusServiceUnavailable)
-	case kind == "login":
-		n.login(w, r)
-	case state.rejected || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer tok-"):
-		writeError(w, http.StatusUnauthorized)
-	case state.status != 0:
-		writeError(w, state.status)
-	default:
-		n.serve(w, r, endpoint)
-	}
-}
-
-// requestState is what the switches of a node say about one request.
-type requestState struct {
-	gate     chan struct{}
-	down     bool
-	status   int
-	rejected bool
-}
-
-// admit counts the request and reads the switches that apply to it.
-func (n *fakeNode) admit(kind string) requestState {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.counts[kind]++
-	state := requestState{
-		gate:     n.gate,
-		down:     n.down,
-		status:   n.status,
-		rejected: kind != "login" && n.reject > 0,
-	}
-	if state.rejected {
-		n.reject--
-	}
-	return state
-}
-
-// waitAtGate holds the request while a test holds the node. It reports false when the
-// request ended first.
-func (n *fakeNode) waitAtGate(ctx context.Context, gate chan struct{}) bool {
-	if gate == nil {
-		return true
-	}
-	select {
-	case n.waits <- struct{}{}:
-	default:
-	}
-	select {
-	case <-gate:
-		return true
-	case <-ctx.Done():
-		return false
-	}
-}
-
-func (n *fakeNode) url() string { return n.srv.URL + "/api" }
+func (n *fakeNode) url() string { return n.node.URL() }
 
 func (n *fakeNode) put(path string, data []byte, mtime time.Time) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.files[path] = fakeFile{data: data, mtime: mtime}
+	n.rebuild(path)
 }
 
 func (n *fakeNode) remove(path string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	delete(n.files, path)
+	n.rebuild(path)
 }
 
-func (n *fakeNode) setSpace(share string, total, free uint64) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.space[share] = wire.Space{Total: total, Free: free}
+// rebuild makes the share that holds path anew from the files, because an apitest share
+// only ever gains files.
+func (n *fakeNode) rebuild(path string) {
+	shareName, _, _ := strings.Cut(path, "/")
+	fresh := apitest.NewShare(fileTime())
+	fresh.SetSpace(n.space[shareName])
+	for filePath, stored := range n.files {
+		if rest, ok := strings.CutPrefix(filePath, shareName+"/"); ok {
+			if err := fresh.Replace(rest, stored.data, stored.mtime); err != nil {
+				panic(err)
+			}
+		}
+	}
+	n.shares[shareName] = fresh
 }
 
-func (n *fakeNode) setDown(down bool) {
+func (n *fakeNode) setSpace(shareName string, total, free uint64) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.down = down
+	n.space[shareName] = wire.Space{Total: total, Free: free}
+	n.shares[shareName].SetSpace(n.space[shareName])
 }
 
-func (n *fakeNode) setStatus(status int) {
+// stop makes the node go away: it drops every connection and refuses new ones.
+func (n *fakeNode) stop() {
+	n.node.Stop()
+}
+
+// deny makes the node refuse every share to every token.
+func (n *fakeNode) deny() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.status = status
+	n.denied = true
 }
 
 func (n *fakeNode) rejectNext(count int) {
@@ -254,14 +207,15 @@ func (n *fakeNode) rejectNext(count int) {
 	n.reject = count
 }
 
-// hold makes requests wait until the returned function is called.
-func (n *fakeNode) hold() func() {
+// hold makes requests wait until the returned function is called, or the test ends.
+func (n *fakeNode) hold(t *testing.T) func() {
+	t.Helper()
 	gate := make(chan struct{})
 	n.mu.Lock()
 	n.gate = gate
 	n.mu.Unlock()
 	var once sync.Once
-	return func() {
+	release := func() {
 		once.Do(func() {
 			n.mu.Lock()
 			n.gate = nil
@@ -269,6 +223,23 @@ func (n *fakeNode) hold() func() {
 			close(gate)
 		})
 	}
+	t.Cleanup(release)
+	return release
+}
+
+// waitAtGate holds a request while the test holds the node.
+func (n *fakeNode) waitAtGate() {
+	n.mu.Lock()
+	gate := n.gate
+	n.mu.Unlock()
+	if gate == nil {
+		return
+	}
+	select {
+	case n.waits <- struct{}{}:
+	default:
+	}
+	<-gate
 }
 
 func (n *fakeNode) count(kind string) int {
@@ -283,162 +254,166 @@ func (n *fakeNode) loginCount() int {
 	return n.logins
 }
 
-// endpoint is the API endpoint a request addresses, with the request's path argument.
-type endpoint struct {
-	kind string
-	arg  string
+// current returns the latest build of the share shareName.
+func (n *fakeNode) current(shareName string) *apitest.Share {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.shares[shareName]
 }
 
-// route names the endpoint of a request.
-func route(r *http.Request) endpoint {
+// countRequest counts a request the node is sent, by its endpoint.
+func (n *fakeNode) countRequest(r *http.Request) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.counts[requestKind(r)]++
+}
+
+// requestKind names the endpoint of a request.
+func requestKind(r *http.Request) string {
 	apiPath := strings.TrimPrefix(r.URL.Path, "/api/v1/")
 	switch {
 	case apiPath == "login":
-		return endpoint{kind: "login"}
+		return "login"
 	case apiPath == "nodes":
-		return endpoint{kind: "nodes"}
+		return "nodes"
 	case strings.HasPrefix(apiPath, "tree/"):
-		return endpoint{kind: "list", arg: strings.TrimSuffix(strings.TrimPrefix(apiPath, "tree/"), "/")}
+		return "list"
 	case strings.HasPrefix(apiPath, "space/"):
-		return endpoint{kind: "space", arg: strings.TrimPrefix(apiPath, "space/")}
+		return "space"
 	case strings.HasPrefix(apiPath, "file/") && r.Method == http.MethodHead:
-		return endpoint{kind: "head", arg: strings.TrimPrefix(apiPath, "file/")}
+		return "head"
 	case strings.HasPrefix(apiPath, "file/"):
-		return endpoint{kind: "range", arg: strings.TrimPrefix(apiPath, "file/")}
+		return "range"
 	}
-	return endpoint{kind: "other", arg: apiPath}
+	return "other"
 }
 
-func (n *fakeNode) serve(w http.ResponseWriter, r *http.Request, target endpoint) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	arg := target.arg
-	switch target.kind {
-	case "nodes":
-		writeJSON(w, n.group.nodeList())
-	case "list":
-		n.list(w, arg)
-	case "space":
-		s, ok := n.space[arg]
-		if !ok {
-			writeError(w, http.StatusNotFound)
-			return
-		}
-		writeJSON(w, s)
-	case "head", "range":
-		stored, ok := n.files[arg]
-		if !ok {
-			writeError(w, http.StatusNotFound)
-			return
-		}
-		w.Header().Set("ETag", stored.etag())
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set(wire.HeaderHeadDigest, stored.digest())
-		w.Header().Set(wire.HeaderTailDigest, stored.tailDigest())
-		http.ServeContent(w, r, "", stored.mtime, bytes.NewReader(stored.data))
-	default:
-		writeError(w, http.StatusNotFound)
-	}
+// nodeShare is one share of a node as the handler sees it: always the latest build of
+// the share.
+type nodeShare struct {
+	n    *fakeNode
+	name string
 }
 
-// list answers with the entries of dir, derived from the paths of the files.
-func (n *fakeNode) list(w http.ResponseWriter, dir string) {
-	prefix := dir + "/"
-	if dir == "" {
-		prefix = ""
-	}
-	entries := make(map[string]wire.Entry)
-	for filePath, stored := range n.files {
-		rest, ok := strings.CutPrefix(filePath, prefix)
-		if !ok {
-			continue
-		}
-		name, _, isDir := strings.Cut(rest, "/")
-		if isDir {
-			entries[name] = wire.Entry{Name: name, Dir: true, MTime: fileTime()}
-		} else {
-			entries[name] = wire.Entry{Name: name, Size: int64(len(stored.data)), MTime: stored.mtime, ETag: stored.etag()}
-		}
-	}
-	if len(entries) == 0 && dir != "" {
-		writeError(w, http.StatusNotFound)
-		return
-	}
-	listing := wire.Listing{Entries: []wire.Entry{}}
-	for _, name := range slices.Sorted(maps.Keys(entries)) {
-		listing.Entries = append(listing.Entries, entries[name])
-	}
-	writeJSON(w, listing)
+func (s nodeShare) Stat(name string) (api.Info, error) {
+	return s.n.current(s.name).Stat(name)
 }
 
-func (n *fakeNode) login(w http.ResponseWriter, r *http.Request) {
-	var req wire.LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.User != testUser || req.Password != testPassword {
-		writeError(w, http.StatusUnauthorized)
-		return
+func (s nodeShare) List(name string) ([]api.Info, error) {
+	return s.n.current(s.name).List(name)
+}
+
+//nolint:ireturn // api.Share.Open returns the File interface.
+func (s nodeShare) Open(name string) (api.File, error) {
+	return s.n.current(s.name).Open(name)
+}
+
+func (s nodeShare) Digests(name string) (api.FileDigests, api.Info, error) {
+	return s.n.current(s.name).Digests(name)
+}
+
+func (s nodeShare) Space() (wire.Space, error) {
+	return s.n.current(s.name).Space()
+}
+
+// nodeAuth is the cluster's users as one node sees them, with the node's switches.
+type nodeAuth struct {
+	n *fakeNode
+}
+
+func (a nodeAuth) Login(ctx context.Context, addr, user, password string) (string, time.Time, error) {
+	a.n.waitAtGate()
+	token, expires, err := a.n.group.auth.Login(ctx, addr, user, password)
+	if err == nil {
+		a.n.mu.Lock()
+		a.n.logins++
+		a.n.mu.Unlock()
 	}
-	n.mu.Lock()
-	n.logins++
-	token := fmt.Sprintf("tok-%s-%d", n.name, n.logins)
-	n.mu.Unlock()
-	writeJSON(w, wire.LoginResponse{Token: token, Expires: n.group.clock.Now().Add(time.Hour)})
+	return token, expires, err
 }
 
-func writeJSON(w http.ResponseWriter, value any) {
-	writeJSONStatus(w, http.StatusOK, value)
-}
-
-func writeError(w http.ResponseWriter, status int) {
-	writeJSONStatus(w, status, wire.Error{Error: http.StatusText(status)})
-}
-
-func writeJSONStatus(w http.ResponseWriter, status int, value any) {
-	body, err := json.Marshal(value)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+func (a nodeAuth) Verify(token string) (api.Claims, error) {
+	a.n.waitAtGate()
+	a.n.mu.Lock()
+	rejected, denied := a.n.reject > 0, a.n.denied
+	if rejected {
+		a.n.reject--
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if _, err := w.Write(body); err != nil {
-		// The client is gone. Aborting the handler is the way net/http ends it without a log line.
-		panic(http.ErrAbortHandler)
+	a.n.mu.Unlock()
+	if rejected {
+		return api.Claims{}, api.ErrInvalidToken
 	}
+	claims, err := a.n.group.auth.Verify(token)
+	if denied {
+		claims.Shares = nil
+	}
+	return claims, err
 }
 
-// fakeCluster is a set of fake nodes that share one node list.
+// fakeCluster is a set of nodes that share one node list and one set of users.
 type fakeCluster struct {
 	clock *fakeClock
+	auth  *apitest.Auth
 	nodes []*fakeNode
-	extra []wire.Node // listed besides the fake nodes
+	extra []wire.Node // listed besides the nodes
 }
 
-func newFakeCluster(t *testing.T, clock *fakeClock, names ...string) *fakeCluster {
+// newFakeCluster starts the named nodes, each serving the shares named in shareNames.
+func newFakeCluster(t *testing.T, clock *fakeClock, shareNames []string, names ...string) *fakeCluster {
 	t.Helper()
-	fakes := &fakeCluster{clock: clock}
+	fakes := &fakeCluster{clock: clock, auth: apitest.NewAuth(clock.Now, time.Hour)}
+	fakes.auth.AddUser(testUser, testPassword, "*")
 	for _, name := range names {
 		n := &fakeNode{
 			name:   name,
 			group:  fakes,
 			files:  make(map[string]fakeFile),
+			shares: make(map[string]*apitest.Share),
 			space:  make(map[string]wire.Space),
 			counts: make(map[string]int),
 			waits:  make(chan struct{}, 64),
 		}
-		n.srv = httptest.NewServer(n)
-		t.Cleanup(n.srv.Close)
+		shares := make(map[string]api.Share)
+		for _, shareName := range shareNames {
+			n.shares[shareName] = apitest.NewShare(fileTime())
+			shares[shareName] = nodeShare{n: n, name: shareName}
+		}
+		n.node = apitest.Start(t, api.Options{
+			BasePath: "/api",
+			Node:     name,
+			Version:  version.String(),
+			Shares:   shares,
+			Auth:     nodeAuth{n: n},
+			Nodes:    fakes,
+			Logger:   slog.New(slog.DiscardHandler),
+			Now:      clock.Now,
+		})
+		n.client = n.node.Client()
 		fakes.nodes = append(fakes.nodes, n)
 	}
 	return fakes
 }
 
-func (fc *fakeCluster) nodeList() wire.Nodes {
+// Nodes lists the nodes and the extra entries, read when each request comes.
+func (fc *fakeCluster) Nodes() (wire.Nodes, error) {
 	list := wire.Nodes{Cluster: testCluster}
 	for _, n := range fc.nodes {
 		list.Nodes = append(list.Nodes, wire.Node{Name: n.name, URL: n.url()})
 	}
 	list.Nodes = append(list.Nodes, fc.extra...)
-	return list
+	return list, nil
+}
+
+// RoundTrip sends each request with the client of the node it goes to, which trusts
+// that node's certificate; a request to any other address goes out as usual.
+func (fc *fakeCluster) RoundTrip(r *http.Request) (*http.Response, error) {
+	for _, n := range fc.nodes {
+		if strings.HasPrefix(n.url(), "https://"+r.URL.Host+"/") {
+			n.countRequest(r)
+			return n.client.Transport.RoundTrip(r)
+		}
+	}
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 // put stores a file on every node.
@@ -450,7 +425,7 @@ func (fc *fakeCluster) put(path string, data []byte, mtime time.Time) {
 
 func (fc *fakeCluster) setAllDown() {
 	for _, n := range fc.nodes {
-		n.setDown(true)
+		n.stop()
 	}
 }
 
@@ -507,13 +482,19 @@ func testCache(dir string) config.Cache {
 	}
 }
 
-// newHarness makes a fake cluster with the named nodes and a configuration with one
-// mount of the cluster root; edit may change the configuration before the Client is
-// built by start.
+// newHarness makes a fake cluster with the named nodes, which serve the share media, and
+// a configuration with one mount of the cluster root; a test may change the
+// configuration before the Client is built by start.
 func newHarness(t *testing.T, names ...string) *harness {
 	t.Helper()
+	return newHarnessOf(t, []string{"media"}, names...)
+}
+
+// newHarnessOf is newHarness with nodes that serve the shares named in shareNames.
+func newHarnessOf(t *testing.T, shareNames []string, names ...string) *harness {
+	t.Helper()
 	clock := newFakeClock()
-	fakes := newFakeCluster(t, clock, names...)
+	fakes := newFakeCluster(t, clock, shareNames, names...)
 	cacheCfg := testCache(t.TempDir())
 	cfg := &config.Config{
 		Cache: cacheCfg,
@@ -540,7 +521,7 @@ func (h *harness) addMount(path, target string) {
 func (h *harness) options() Options {
 	return Options{
 		Logger:       slog.New(slog.NewTextHandler(h.logs, nil)),
-		HTTPClient:   &http.Client{},
+		HTTPClient:   &http.Client{Transport: h.fc},
 		Now:          h.clock.Now,
 		ReadPassword: func(string) (string, error) { return testPassword, nil },
 	}

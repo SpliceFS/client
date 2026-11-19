@@ -12,9 +12,10 @@ import (
 
 	"github.com/SpliceFS/client/config"
 	"github.com/SpliceFS/client/internal/fetch"
-	"github.com/SpliceFS/client/internal/remote"
 	"github.com/SpliceFS/client/internal/session"
 	"github.com/SpliceFS/client/internal/tree"
+	"github.com/SpliceFS/client/internal/version"
+	"github.com/SpliceFS/common/remote"
 	"github.com/SpliceFS/common/wire"
 )
 
@@ -116,7 +117,7 @@ func isError(target error) func(error) bool {
 //
 //nolint:ireturn // session.Options.Dial fixes this signature.
 func (c *cluster) dial(name, baseURL string) (session.Node, error) {
-	node, err := remote.New(name, baseURL, c.opts.HTTPClient)
+	node, err := remote.New(name, baseURL, version.String(), c.opts.HTTPClient)
 	if err != nil {
 		return nil, err //nolint:wrapcheck // remote.New names the node and says what is wrong with its URL.
 	}

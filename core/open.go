@@ -15,8 +15,8 @@ import (
 
 	"github.com/SpliceFS/client/internal/cache"
 	"github.com/SpliceFS/client/internal/fetch"
-	"github.com/SpliceFS/client/internal/remote"
 	"github.com/SpliceFS/client/internal/tree"
+	"github.com/SpliceFS/common/remote"
 )
 
 // Outcomes of a HEAD round that has no version to offer.

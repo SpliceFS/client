@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -33,12 +34,13 @@ func TestNewWithDefaultOptions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeFile(t, created)
+	trustNode(t, created, env.fc.nodes[0])
 	fsys, err := created.View(env.cfg.Mounts[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The fake node accepts the password only without the newline of the file, and is
-	// reached through the client's own transport and dialer.
+	// The node accepts the password only without the newline of the file, and is reached
+	// through the client's own transport and dialer.
 	if a, err := fsys.Stat(context.Background(), "media/file"); err != nil || a.Size != 10 {
 		t.Errorf("Stat = %+v, %v", a, err)
 	}
@@ -205,4 +207,16 @@ func TestReadPasswordFileErrorNamesTheFile(t *testing.T) {
 	if want := "open " + missing + ": no such file or directory"; err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
+}
+
+// trustNode makes the client's own transport trust the certificate of node, the way a
+// system that trusts the node's authority would.
+func trustNode(t *testing.T, created *Client, node *fakeNode) {
+	t.Helper()
+	own, ok := created.clusters[testCluster].opts.HTTPClient.Transport.(*http.Transport)
+	nodeTransport, nodeOK := node.client.Transport.(*http.Transport)
+	if !ok || !nodeOK {
+		t.Fatal("the client or the node has no *http.Transport")
+	}
+	own.TLSClientConfig = nodeTransport.TLSClientConfig.Clone()
 }

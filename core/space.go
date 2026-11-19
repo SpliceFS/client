@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/SpliceFS/client/internal/remote"
+	"github.com/SpliceFS/common/remote"
 	"github.com/SpliceFS/common/wire"
 )
 
