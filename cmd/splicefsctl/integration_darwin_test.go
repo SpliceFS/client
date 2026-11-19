@@ -285,8 +285,9 @@ func TestUserMayNotMount(t *testing.T) {
 
 // TestAwaitChildReadySkipsWhenTheChildSaidItMayNotMount checks that a child that ended before its
 // mounts were up is judged by what it wrote to stderr, which is where the reason is.
+//
+//nolint:paralleltest // the subtest is finished before its result is read, so it cannot run in parallel
 func TestAwaitChildReadySkipsWhenTheChildSaidItMayNotMount(t *testing.T) {
-	t.Parallel()
 	ended := make(chan struct{})
 	close(ended)
 	said := "mount_nfs: can't mount / on /Users/a/mnt: Operation not permitted\n"
