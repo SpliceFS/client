@@ -38,6 +38,8 @@ type entry struct {
 	// cannot resurrect the metadata of a removed entry.
 	pmu       sync.Mutex
 	persisted uint64
+	// persistedBlocks is how many blocks the metadata file on disk names.
+	persistedBlocks int64
 	// removed is written holding both Cache.mu and pmu and read holding either.
 	removed bool
 }
