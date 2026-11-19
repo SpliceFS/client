@@ -115,11 +115,16 @@ func awaitReady(t *testing.T, running realClient) {
 // when the reason is that this user may not mount, and fails it otherwise.
 func skipOrFailEnded(t *testing.T, reason string) {
 	t.Helper()
-	msg := strings.ToLower(reason)
-	if strings.Contains(msg, "not permitted") || strings.Contains(msg, "permission denied") {
+	if userMayNotMount(reason) {
 		t.Skipf("this user cannot mount without root: %s", reason)
 	}
 	t.Fatalf("the client ended before it was ready: %s", reason)
+}
+
+// userMayNotMount reports whether what a client said when it ended means that this user may not mount.
+func userMayNotMount(reason string) bool {
+	msg := strings.ToLower(reason)
+	return strings.Contains(msg, "not permitted") || strings.Contains(msg, "permission denied")
 }
 
 // command runs a splicefsctl command against the client of dir and returns what it produced.
@@ -260,6 +265,41 @@ func awaitChildReady(t *testing.T, running childClient) {
 	case <-running.ready:
 	case <-running.ended:
 		skipOrFailEnded(t, running.stderr.String())
+	}
+}
+
+func TestUserMayNotMount(t *testing.T) {
+	t.Parallel()
+	tests := map[string]bool{
+		"mount_nfs: can't mount / on /Users/a/mnt: Operation not permitted":   true,
+		"mount_nfs: mount on /Users/a/mnt: Permission denied":                 true,
+		"mount_nfs: can't mount with remote locks when server is not running": false,
+		"": false,
+	}
+	for said, want := range tests {
+		if got := userMayNotMount(said); got != want {
+			t.Errorf("userMayNotMount(%q) = %v, want %v", said, got, want)
+		}
+	}
+}
+
+// TestAwaitChildReadySkipsWhenTheChildSaidItMayNotMount checks that a child that ended before its
+// mounts were up is judged by what it wrote to stderr, which is where the reason is.
+func TestAwaitChildReadySkipsWhenTheChildSaidItMayNotMount(t *testing.T) {
+	t.Parallel()
+	ended := make(chan struct{})
+	close(ended)
+	said := "mount_nfs: can't mount / on /Users/a/mnt: Operation not permitted\n"
+	running := childClient{ended: ended, stderr: bytes.NewBufferString(said)}
+
+	var inner *testing.T
+	t.Run("child that may not mount", func(t *testing.T) {
+		inner = t
+		awaitChildReady(t, running)
+		t.Error("awaitChildReady returned for a child that ended")
+	})
+	if !inner.Skipped() {
+		t.Error("the test was not skipped for a child that said it may not mount")
 	}
 }
 
