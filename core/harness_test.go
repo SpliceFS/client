@@ -152,6 +152,7 @@ type fakeNode struct {
 	counts    map[string]int
 	logins    int
 	waits     chan struct{} // receives a value whenever a request waits at the gate
+	failed    chan struct{} // receives a value whenever a request to the node fails
 }
 
 func (n *fakeNode) url() string { return n.node.URL() }
@@ -290,6 +291,13 @@ func (n *fakeNode) waitAtGate() {
 	default:
 	}
 	<-gate
+}
+
+func (n *fakeNode) noteFailed() {
+	select {
+	case n.failed <- struct{}{}:
+	default:
+	}
 }
 
 func (n *fakeNode) count(kind string) int {
@@ -435,6 +443,7 @@ func newFakeCluster(t *testing.T, clock *fakeClock, shareNames []string, names .
 			space:     make(map[string]wire.Space),
 			counts:    make(map[string]int),
 			waits:     make(chan struct{}, 64),
+			failed:    make(chan struct{}, 64),
 		}
 		shares := make(map[string]api.Share)
 		for _, shareName := range shareNames {
@@ -473,7 +482,11 @@ func (fc *fakeCluster) RoundTrip(r *http.Request) (*http.Response, error) {
 	for _, n := range fc.nodes {
 		if strings.HasPrefix(n.url(), "https://"+r.URL.Host+"/") {
 			n.countRequest(r)
-			return n.client.Transport.RoundTrip(r)
+			resp, err := n.client.Transport.RoundTrip(r)
+			if err != nil {
+				n.noteFailed()
+			}
+			return resp, err
 		}
 	}
 	return http.DefaultTransport.RoundTrip(r)
