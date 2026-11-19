@@ -46,55 +46,54 @@ type scenario struct {
 	phases  []phase
 }
 
-var nodeNames = []string{"a", "b", "c", "d", "e"}
-
-func runScenario(t *testing.T, sc scenario) {
+func runScenario(t *testing.T, scene scenario) {
 	t.Helper()
-	env := newHarness(t, nodeNames[:sc.nodes]...)
-	for _, i := range sc.noShare {
+	env := newHarness(t, []string{"a", "b", "c", "d", "e"}[:scene.nodes]...)
+	for _, i := range scene.noShare {
 		env.fc.nodes[i].deny()
 	}
-	for number, ph := range sc.phases {
-		env.applyPhase(ph)
+	for number, state := range scene.phases {
+		env.applyPhase(state)
 		if number > 0 {
-			env.restartClient(true)
+			env.restartClient()
+			env.emptyCache()
 		}
 		picked := map[string]fakeFile{}
-		env.checkPhase(ph, picked)
-		env.restartClient(false)
-		env.checkPhase(ph, picked)
-		env.restartClient(true)
-		env.checkPhase(ph, picked)
+		env.checkPhase(state, picked)
+		env.restartClient()
+		env.checkPhase(state, picked)
+		env.restartClient()
+		env.emptyCache()
+		env.checkPhase(state, picked)
 	}
 }
 
-func (h *harness) applyPhase(ph phase) {
+func (h *harness) applyPhase(state phase) {
 	h.t.Helper()
-	for i, files := range ph.files {
+	for i, files := range state.files {
 		inShare := map[string]fakeFile{}
 		for name, stored := range files {
 			inShare[scenarioShare+"/"+name] = stored
 		}
 		h.fc.nodes[i].putAll(inShare)
 	}
-	for i, dirs := range ph.emptyDirs {
+	for i, dirs := range state.emptyDirs {
 		for _, dir := range dirs {
 			h.fc.nodes[i].putEmptyDir(scenarioShare + "/" + dir)
 		}
 	}
-	for _, i := range ph.down {
+	for _, i := range state.down {
 		h.fc.nodes[i].stop()
 	}
-	for _, i := range ph.up {
+	for _, i := range state.up {
 		if err := h.fc.nodes[i].node.Restart(); err != nil {
 			h.t.Fatal(err)
 		}
 	}
 }
 
-// restartClient closes the client, as a restart of the program does; with emptyCache the
-// next one starts on an empty cache folder.
-func (h *harness) restartClient(emptyCache bool) {
+// restartClient closes the client, as a restart of the program does.
+func (h *harness) restartClient() {
 	h.t.Helper()
 	if h.client != nil {
 		if err := h.client.Close(); err != nil {
@@ -102,24 +101,26 @@ func (h *harness) restartClient(emptyCache bool) {
 		}
 		h.client = nil
 	}
-	if emptyCache {
-		dir := h.t.TempDir()
-		h.cfg.Cache.Dir = dir
-		h.cfg.Mounts[0].Cache.Dir = dir
-	}
 }
 
-func (h *harness) checkPhase(ph phase, picked map[string]fakeFile) {
+// emptyCache makes the next client start on an empty cache folder.
+func (h *harness) emptyCache() {
+	dir := h.t.TempDir()
+	h.cfg.Cache.Dir = dir
+	h.cfg.Mounts[0].Cache.Dir = dir
+}
+
+func (h *harness) checkPhase(state phase, picked map[string]fakeFile) {
 	h.t.Helper()
 	fsys := h.view(0)
-	files, dirs := walkShare(h.t, fsys)
-	if want := slices.Sorted(maps.Keys(ph.wantFiles)); !slices.Equal(files, want) {
-		h.t.Errorf("files listed = %q, want %q", files, want)
+	tree := walkShare(h.t, fsys)
+	if want := slices.Sorted(maps.Keys(state.wantFiles)); !slices.Equal(tree.files, want) {
+		h.t.Errorf("files listed = %q, want %q", tree.files, want)
 	}
-	if want := slices.Sorted(slices.Values(ph.wantDirs)); !slices.Equal(dirs, want) {
-		h.t.Errorf("folders listed = %q, want %q", dirs, want)
+	if want := slices.Sorted(slices.Values(state.wantDirs)); !slices.Equal(tree.dirs, want) {
+		h.t.Errorf("folders listed = %q, want %q", tree.dirs, want)
 	}
-	for name, copies := range ph.wantFiles {
+	for name, copies := range state.wantFiles {
 		got := readFile(h.t, fsys, scenarioShare+"/"+name)
 		match := slices.IndexFunc(copies, func(c fakeFile) bool { return bytes.Equal(c.data, got) })
 		if match < 0 {
@@ -137,10 +138,15 @@ func (h *harness) checkPhase(ph phase, picked map[string]fakeFile) {
 	}
 }
 
-// walkShare lists the share completely, with an explicit stack, and returns the paths of
-// its files and of its folders, sorted.
-func walkShare(t *testing.T, fsys FS) (files, dirs []string) {
+// shareTree is the paths of the files and of the folders in a share, sorted.
+type shareTree struct {
+	files, dirs []string
+}
+
+// walkShare lists the share completely, with an explicit stack.
+func walkShare(t *testing.T, fsys FS) shareTree {
 	t.Helper()
+	var files, dirs []string
 	stack := []string{""}
 	for len(stack) > 0 {
 		dir := stack[len(stack)-1]
@@ -161,7 +167,7 @@ func walkShare(t *testing.T, fsys FS) (files, dirs []string) {
 	}
 	slices.Sort(files)
 	slices.Sort(dirs)
-	return files, dirs
+	return shareTree{files: files, dirs: dirs}
 }
 
 func one(stored fakeFile) []fakeFile { return []fakeFile{stored} }
@@ -192,9 +198,13 @@ func TestBasicScenarios(t *testing.T) {
 		"a.txt":     copyOf(1, 100, timeMid()),
 		"sub/b.bin": copyOf(2, 3*testBlockSize+5, timeMid()),
 	}
-	onlyOne := map[string]fakeFile{"a.txt": copyOf(3, 40, timeMid()), "only-one/x.bin": copyOf(4, testBlockSize, timeMid())}
-	onlyTwo := map[string]fakeFile{"b.txt": copyOf(5, 50, timeMid()), "only-two/y.bin": copyOf(6, testBlockSize, timeMid())}
-	for _, sc := range []scenario{
+	onlyOne := map[string]fakeFile{
+		"a.txt": copyOf(3, 40, timeMid()), "only-one/x.bin": copyOf(4, testBlockSize, timeMid()),
+	}
+	onlyTwo := map[string]fakeFile{
+		"b.txt": copyOf(5, 50, timeMid()), "only-two/y.bin": copyOf(6, testBlockSize, timeMid()),
+	}
+	for _, scene := range []scenario{
 		{name: "three servers, the same files", nodes: 3, phases: []phase{{
 			files: onEvery(source, 0, 1, 2), wantFiles: wantAll(source), wantDirs: []string{"sub"},
 		}}},
@@ -209,9 +219,9 @@ func TestBasicScenarios(t *testing.T) {
 			files: onEvery(source, 1), down: []int{2}, wantFiles: wantAll(source), wantDirs: []string{"sub"},
 		}}},
 	} {
-		t.Run(sc.name, func(t *testing.T) {
+		t.Run(scene.name, func(t *testing.T) {
 			t.Parallel()
-			runScenario(t, sc)
+			runScenario(t, scene)
 		})
 	}
 }
@@ -243,7 +253,7 @@ func TestVersionScenarios(t *testing.T) {
 	sameOne, sameTwo := copyOf(5, 4*testBlockSize, timeMid()), copyOf(6, 4*testBlockSize, timeMid())
 	voteTwo, voteOne := copyOf(7, 30, timeOld()), copyOf(8, 60, timeNew())
 	goneOld, goneNew := copyOf(9, 26, timeOld()), copyOf(10, 48, timeNew())
-	for _, sc := range []scenario{
+	for _, scene := range []scenario{
 		{name: "same name, different contents, the newest wins", nodes: 3, phases: []phase{{
 			files: map[int]map[string]fakeFile{
 				0: {"doc-a.txt": newA, "doc-b.txt": oldB},
@@ -272,9 +282,9 @@ func TestVersionScenarios(t *testing.T) {
 			{down: []int{1}, wantFiles: map[string][]fakeFile{"gone.txt": one(goneOld)}},
 		}},
 	} {
-		t.Run(sc.name, func(t *testing.T) {
+		t.Run(scene.name, func(t *testing.T) {
 			t.Parallel()
-			runScenario(t, sc)
+			runScenario(t, scene)
 		})
 	}
 }
@@ -318,7 +328,7 @@ func TestTreeScenarios(t *testing.T) {
 	thingFile, inside := copyOf(14, 27, timeMid()), copyOf(15, 36, timeMid())
 	other, inner := copyOf(16, 34, timeMid()), copyOf(17, 38, timeMid())
 	full := copyOf(18, 35, timeMid())
-	for _, sc := range []scenario{
+	for _, scene := range []scenario{
 		{name: "trees that do not overlap", nodes: 3, phases: []phase{{
 			files: map[int]map[string]fakeFile{0: alpha, 1: beta}, down: []int{2},
 			wantFiles: wantAll(alpha, beta), wantDirs: []string{"alpha", "alpha/sub", "beta", "beta/b"},
@@ -351,9 +361,9 @@ func TestTreeScenarios(t *testing.T) {
 		{name: "unusual names", nodes: 3, phases: []phase{unusualNames()}},
 		{name: "a folder with many files", nodes: 3, phases: []phase{manyFiles()}},
 	} {
-		t.Run(sc.name, func(t *testing.T) {
+		t.Run(scene.name, func(t *testing.T) {
 			t.Parallel()
-			runScenario(t, sc)
+			runScenario(t, scene)
 		})
 	}
 }
@@ -398,7 +408,7 @@ func TestMoreVersionScenarios(t *testing.T) {
 	movie := copyOf(11, 3*testBlockSize, timeOld())
 	short := fakeFile{data: movie.data[:testBlockSize], mtime: timeNew()}
 	only := copyOf(12, 29, timeMid())
-	for _, sc := range []scenario{
+	for _, scene := range []scenario{
 		{name: "the newer copy is on most servers", nodes: 3, phases: []phase{{
 			files:     map[int]map[string]fakeFile{0: {"f.txt": oldF}, 1: {"f.txt": newF}, 2: {"f.txt": newF}},
 			wantFiles: map[string][]fakeFile{"f.txt": one(newF)},
@@ -437,9 +447,9 @@ func TestMoreVersionScenarios(t *testing.T) {
 			down: []int{2}, wantFiles: map[string][]fakeFile{"docs/only.txt": one(only)}, wantDirs: []string{"docs"},
 		}}},
 	} {
-		t.Run(sc.name, func(t *testing.T) {
+		t.Run(scene.name, func(t *testing.T) {
 			t.Parallel()
-			runScenario(t, sc)
+			runScenario(t, scene)
 		})
 	}
 }
@@ -458,7 +468,7 @@ func TestFailureScenarios(t *testing.T) {
 		"right/c.txt": copyOf(8, 26, timeMid()), "right/deep/d.bin": copyOf(9, 70000, timeMid()),
 		"joint/two.txt": copyOf(10, 27, timeMid()),
 	}
-	for _, sc := range []scenario{
+	for _, scene := range []scenario{
 		{name: "one server does not have the share", nodes: 2, noShare: []int{1}, phases: []phase{{
 			files: onEvery(readme, 0), wantFiles: wantAll(readme), wantDirs: []string{"docs", "docs/deep", "other"},
 		}}},
@@ -468,9 +478,9 @@ func TestFailureScenarios(t *testing.T) {
 			wantDirs:  []string{"joint", "left", "left/deep", "right", "right/deep"},
 		}}},
 	} {
-		t.Run(sc.name, func(t *testing.T) {
+		t.Run(scene.name, func(t *testing.T) {
 			t.Parallel()
-			runScenario(t, sc)
+			runScenario(t, scene)
 		})
 	}
 }

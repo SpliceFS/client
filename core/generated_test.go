@@ -18,7 +18,7 @@ type generatedPlan struct {
 const generatedNodes = 3
 
 func generatePlan(seed uint64, paths int) generatedPlan {
-	random := rand.New(rand.NewPCG(seed, seed)) //nolint:gosec // a repeatable test plan, not a secret
+	random := rand.New(rand.NewPCG(seed, seed))
 	plan := generatedPlan{holders: map[string]map[int]fakeFile{}}
 	for i := 1; i <= paths; i++ {
 		name := generatedPath(random, i)
