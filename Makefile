@@ -23,15 +23,11 @@ BUILD_VARS = VERSION=$(VERSION) BUILD_DATE=$(BUILD_DATE)
 # every file a part writes belongs to the caller and not to root. The Go caches are folders
 # under CACHE, mounted where the images keep them; a named Docker volume is made by root,
 # which a user other than root cannot write to. A target that needs more options sets
-# RUN_OPTS; a target that has to run as root (RUN_USER) also keeps its own caches
-# (GO_CACHE), so that no file in the caller's caches belongs to root.
+# RUN_OPTS.
 CACHE ?= $(CURDIR)/.cache
 CACHE_DIRS := $(CACHE)/gomod $(CACHE)/gobuild
-ROOT_CACHE := $(CACHE)/root
-ROOT_CACHE_DIRS := $(ROOT_CACHE)/gomod $(ROOT_CACHE)/gobuild
 RUN_OPTS :=
 RUN_USER = $(shell id -u):$(shell id -g)
-GO_CACHE = $(CACHE)
 # The containers run without an AppArmor profile, as privileged ones do anyway. Under Docker's
 # docker-default profile the kernel of the Ubuntu CI runners stalls a datagram sent to an
 # abstract Unix socket (TestNotifyAbstractSocket hung for hours, the kernel log shows a trace in
@@ -43,18 +39,17 @@ DOCKER_RUN = docker run --rm --user "$(RUN_USER)" --security-opt apparmor=unconf
 # Go image and any uid: HOME, GOPATH and GOCACHE all point at the mounted host folders.
 # Every run pulls its image first, with retries (scripts/docker-run.sh), so that one failed
 # download from the registry does not fail the part.
-LINUX_RUN = scripts/docker-run.sh $(LINUX_IMAGE) $(DOCKER_RUN) -v "$(GO_CACHE)/gomod":/tmp/go/pkg/mod \
-	-v "$(GO_CACHE)/gobuild":/tmp/go-cache \
+LINUX_RUN = scripts/docker-run.sh $(LINUX_IMAGE) $(DOCKER_RUN) -v "$(CACHE)/gomod":/tmp/go/pkg/mod \
+	-v "$(CACHE)/gobuild":/tmp/go-cache \
 	-e HOME=/tmp -e GOPATH=/tmp/go -e GOCACHE=/tmp/go-cache \
 	-e GOLANGCI_LINT_CACHE=/tmp/go-cache/golangci-lint $(LINUX_IMAGE)
 
 # Docker makes a folder that does not exist yet as root, so the caller makes them first.
-$(CACHE_DIRS) $(ROOT_CACHE_DIRS):
+$(CACHE_DIRS):
 	mkdir -p $@
 
 .PHONY: script-modes all build check check-in-images fmt fmt-check vet cover lint \
-	freebsd-lib-test version-test timing-test server-lib-test part-test fuse-user-test build-all-test \
-	cluster-groups-test fuzz-test \
+	freebsd-lib-test version-test timing-test part-test fuse-user-test build-all-test fuzz-test \
 	release-assets release-assets-test release-assets-check clean archives \
 	archive-programs-test archive-lib-test docker-run-test workflow-timeout-test
 
@@ -70,7 +65,7 @@ build:
 # not need each other can run at the same time. A -here target also runs on a machine that
 # has the tools.
 .PHONY: static static-checks static-here lint-go unit unit-here fuse fuse-here race race-here build-all \
-	build-all-here integration fuzz fuzz-here fuzz-targets fuzz-packages
+	build-all-here fuzz fuzz-here fuzz-targets fuzz-packages
 
 # gofmt, go vet, golangci-lint and ShellCheck, and the two checks that read the git index.
 # Those run on the host and not in the image: a git worktree keeps its index outside the
@@ -104,8 +99,6 @@ lint-go:
 # know the user, which an image does not have for an arbitrary uid, so the part mounts the two
 # files that scripts/fuse-user.sh writes. Every other part of the Go tests runs without FUSE, on
 # every package but this one (OTHER_PACKAGES), so that each package is tested by one of them.
-# Only integration needs root: scripts/compat-test.sh and scripts/cluster-test.sh refuse any
-# other user.
 FUSE_PACKAGE := ./mount/fuse
 # One go list: a pipe with one on each side runs two go processes that fill an empty module
 # cache at the same time.
@@ -113,16 +106,13 @@ OTHER_PACKAGES = $$(go list -f '{{if ne .ImportPath (print .Module.Path "/$(FUSE
 FUSE_ETC := $(CACHE)/fuse-etc
 FUSE_DEVICE := --privileged --device /dev/fuse
 fuse: RUN_OPTS = $(FUSE_DEVICE) -v "$(FUSE_ETC)/passwd":/etc/passwd:ro -v "$(FUSE_ETC)/fuse.conf":/etc/fuse.conf:ro
-integration: RUN_USER = 0
-integration: GO_CACHE = $(ROOT_CACHE)
-integration: RUN_OPTS = $(FUSE_DEVICE)
 
 # The tests with the 100% coverage gate, and the tests of the scripts that need no Docker.
 unit: | $(CACHE_DIRS)
 	scripts/part.sh unit $(LINUX_RUN) make unit-here
 
-unit-here: cover freebsd-lib-test version-test timing-test server-lib-test part-test \
-	fuse-user-test build-all-test archive-programs-test archive-lib-test cluster-groups-test fuzz-test \
+unit-here: cover freebsd-lib-test version-test timing-test part-test \
+	fuse-user-test build-all-test archive-programs-test archive-lib-test fuzz-test \
 	docker-run-test release-assets-check workflow-timeout-test
 
 # The tests of mount/fuse, with the 100% coverage gate and the race detector in one run: they
@@ -156,16 +146,6 @@ build-all-here:
 archives:
 	$(BUILD_VARS) scripts/archive-programs.sh
 
-# This client against the released servers, in a container that may mount (FUSE) as root;
-# SERVER_WORKS, SERVER_REFUSED, CLUSTER_ONLY, CLUSTER_SEED and INTEGRATION_PART reach the
-# container when set. INTEGRATION_PART=compat runs only the compatibility runs, and a group
-# of scripts/cluster-groups (scripts/compat.sh parts lists them) runs only the cluster
-# scenarios of that group; CI runs each of them as a job of its own, and empty runs them all.
-integration: RUN_OPTS += -e SERVER_WORKS -e SERVER_REFUSED -e CLUSTER_ONLY -e CLUSTER_SEED \
-	-e INTEGRATION_PART
-integration: | $(ROOT_CACHE_DIRS)
-	scripts/part.sh integration $(LINUX_RUN) make compat
-
 # The image the Go parts run in. CI keys its Go caches on it (.github/actions/go-cache), so
 # that a new image starts with empty caches.
 .PHONY: go-image
@@ -180,10 +160,9 @@ check-in-images: static unit fuse race
 
 # A script that lost its executable bit fails only where it is run directly, which is often a
 # CI job. This finds it in every check. Libraries (-lib.sh, and
-# timing.sh) are read by other scripts and never run, and so are the scenario files of the
-# cluster test.
+# timing.sh) are read by other scripts and never run.
 script-modes:
-	@bad="$$(git ls-files -s -- 'scripts/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ && $$4 != "scripts/timing.sh" && $$4 !~ /^scripts\/cluster-scenarios\// {print $$4}')"; \
+	@bad="$$(git ls-files -s -- 'scripts/*.sh' | awk '$$1 != "100755" && $$4 !~ /-lib\.sh$$/ && $$4 != "scripts/timing.sh" {print $$4}')"; \
 	if [ -n "$$bad" ]; then echo "not executable in git:"; echo "$$bad"; exit 1; fi
 
 # Nothing that must stay private may be tracked: no compiled program (it carries the folder
@@ -237,16 +216,6 @@ fuzz-targets: | $(CACHE_DIRS)
 fuzz-packages: | $(CACHE_DIRS)
 	@$(LINUX_RUN) scripts/fuzz-packages.sh
 
-# Proves the compatibility rule: with the same first version number, this client works with
-# every released server whose second number is equal or higher, and refuses one with a lower
-# second number. It builds the client of this working copy and the released servers, mounts
-# for real and compares every file, so it needs Linux, FUSE and root. scripts/compat.sh says
-# which servers it uses; SERVER_WORKS and SERVER_REFUSED replace that choice. make integration
-# runs it in a container that has FUSE.
-.PHONY: compat
-compat:
-	scripts/compat.sh
-
 # Runs the tests on FreeBSD itself: the test programs are built for FreeBSD in the Go
 # container and run as root in a virtual machine of every FreeBSD release in
 # freebsd-test/releases, with the same 100% coverage gate as make check. FreeBSD cannot
@@ -276,7 +245,7 @@ lint: lint-shell
 # The shell part of lint by itself, for the CI job that has no Go tools.
 .PHONY: lint-shell
 lint-shell:
-	shellcheck scripts/*.sh scripts/cluster-scenarios/*.sh freebsd-test/user-data.in
+	shellcheck scripts/*.sh freebsd-test/user-data.in
 
 # Every job of the workflows that runs on a runner has a time limit, so that a hang fails in
 # minutes and not after the 6 hours GitHub allows by default. Needs no Docker.
@@ -320,21 +289,10 @@ archive-lib-test:
 timing-test:
 	scripts/timing-test.sh
 
-# The groups of the cluster scenarios: every scenario is in exactly one group, which is what
-# lets the integration test run as several jobs. It needs no Docker, so it is part of check
-# and runs on every system.
-cluster-groups-test:
-	scripts/cluster-groups-test.sh
-
 # The scripts that find the fuzz targets and run them, against a stand-in for go. It needs no
 # Docker, so it is part of check and runs on every system.
 fuzz-test:
 	scripts/fuzz-test.sh
-
-# How the test scripts ask a server for a password hash, with older and newer servers. It needs
-# no Docker, so it is part of check and runs on every system.
-server-lib-test:
-	scripts/server-lib-test.sh
 
 # The files of this version for the GitHub release, in dist/release: the program archives
 # (make archives), SHA256SUMS and its signature. SIGNING_KEY_FILE (the OpenPGP signing key) and
