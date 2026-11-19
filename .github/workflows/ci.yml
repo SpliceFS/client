@@ -209,7 +209,11 @@ jobs:
         release: ["14.5", "15.1"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Only a push to main saves the caches, never a pull request: GitHub evicts an entry that
+      # was not saved for 7 days, and an entry of main is the one every pull request can restore.
       - uses: ./.github/actions/go-cache
+        with:
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Tests on FreeBSD, as root with FUSE, 100% coverage
         run: make check-freebsd FREEBSD=${{ matrix.release }}
 
