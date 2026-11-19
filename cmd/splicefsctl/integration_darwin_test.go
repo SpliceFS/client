@@ -173,12 +173,20 @@ func TestRealMount(t *testing.T) {
 // clientEnv marks the child process that TestMain runs as the client.
 const clientEnv = "SPLICEFS_TEST_CLIENT_DIR"
 
+// readyFD is the descriptor of the child on which it writes one byte when its mounts are up:
+// the first of cmd.ExtraFiles, after stdin, stdout and stderr.
+const readyFD = 3
+
 // TestMain doubles as the client for the test that must kill it: when the environment names a
-// configuration folder, the test binary runs the client of that folder and ends with an
-// error status when the client fails.
+// configuration folder, the test binary runs the client of that folder, writes one byte on
+// readyFD when its mounts are up, and ends with an error status when the client fails.
 func TestMain(m *testing.M) {
 	if dir := os.Getenv(clientEnv); dir != "" {
-		if err := serve(context.Background(), dir, func() {}); err != nil {
+		ready := os.NewFile(readyFD, "ready")
+		err := serve(context.Background(), dir, func() {
+			_, _ = ready.Write([]byte{1}) //nolint:errcheck // a parent that is gone has nothing to be told
+		})
+		if err != nil {
 			// A failed write has nowhere to be reported, stderr is where it would go; the status
 			// below tells the parent that the client failed.
 			_, _ = fmt.Fprintln(os.Stderr, err)
@@ -192,26 +200,49 @@ func TestMain(m *testing.M) {
 // childClient is the client running in a child process.
 type childClient struct {
 	process *os.Process
+	// ready is closed when the child said its mounts are up.
+	ready <-chan struct{}
 	// ended is closed when the process has ended.
 	ended <-chan struct{}
+	// stderr is what the child wrote to stderr; read it only after ended is closed.
+	stderr *bytes.Buffer
 }
 
 // startChildClient runs the client of dir in a child process. The process is killed when the
 // test ends.
 func startChildClient(t *testing.T, dir string) childClient {
 	t.Helper()
+	readyRead, readyWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
 	cmd := exec.CommandContext(context.Background(), os.Args[0])
 	cmd.Env = append(os.Environ(), clientEnv+"="+dir)
-	if err := cmd.Start(); err != nil {
+	cmd.ExtraFiles = []*os.File{readyWrite}
+	cmd.Stderr = &stderr
+	err = cmd.Start()
+	// The child has its own copy now; closing this one lets the read end see the end of the
+	// child as the end of the pipe.
+	_ = readyWrite.Close() //nolint:errcheck // closing a pipe end that was never written cannot lose data
+	if err != nil {
+		_ = readyRead.Close() //nolint:errcheck // see above
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill() }) //nolint:errcheck // it fails when the process has ended, which is fine
+	ready := make(chan struct{})
+	go func() {
+		defer readyRead.Close() //nolint:errcheck // a read end has nothing to flush
+		if _, err := readyRead.Read(make([]byte, 1)); err == nil {
+			close(ready)
+		}
+	}()
 	ended := make(chan struct{})
 	go func() {
-		_ = cmd.Wait() //nolint:errcheck // only the end of the process matters here
+		_ = cmd.Wait() //nolint:errcheck // only the end of the process and its stderr matter here
 		close(ended)
 	}()
-	return childClient{process: cmd.Process, ended: ended}
+	return childClient{process: cmd.Process, ready: ready, ended: ended, stderr: &stderr}
 }
 
 // isListed reports whether the mount table lists a mount on target. It never touches target
@@ -221,21 +252,15 @@ func isListed(t *testing.T, target string) bool {
 	return strings.Contains(mountTable(t), " on "+target+" (")
 }
 
-// awaitListed waits until the mount table lists a mount on target, and skips the test when the
-// client ended because this user may not mount.
-func awaitListed(t *testing.T, target string, running childClient) {
+// awaitChildReady waits until the child says its mounts are up. It skips the test when the
+// child ended because this user may not mount, and fails it when it ended for another reason.
+func awaitChildReady(t *testing.T, running childClient) {
 	t.Helper()
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
-		select {
-		case <-running.ended:
-			skipOrFailEnded(t, "the child process ended before the mount was listed")
-		default:
-		}
-		if isListed(t, target) {
-			return
-		}
+	select {
+	case <-running.ready:
+	case <-running.ended:
+		skipOrFailEnded(t, running.stderr.String())
 	}
-	t.Fatalf("the mount table does not list %s:\n%s", target, mountTable(t))
 }
 
 // requireOutput checks that a command ended with status and that its output has every part of want.
@@ -296,7 +321,7 @@ func TestRealMountLeftBehindByAKilledClientIsRemovedByUmount(t *testing.T) {
 	place := prepareTarget(t, dir)
 
 	running := startChildClient(t, dir)
-	awaitListed(t, place.listed, running)
+	awaitChildReady(t, running)
 	if err := running.process.Kill(); err != nil {
 		t.Fatal(err)
 	}
