@@ -56,7 +56,7 @@ $(CACHE_DIRS) $(ROOT_CACHE_DIRS):
 	freebsd-lib-test version-test timing-test server-lib-test part-test fuse-user-test build-all-test \
 	cluster-groups-test fuzz-test \
 	release-assets release-assets-test release-assets-check clean archives \
-	archive-programs-test archive-lib-test docker-run-test
+	archive-programs-test archive-lib-test docker-run-test workflow-timeout-test
 
 all: check build
 
@@ -123,7 +123,7 @@ unit: | $(CACHE_DIRS)
 
 unit-here: cover freebsd-lib-test version-test timing-test server-lib-test part-test \
 	fuse-user-test build-all-test archive-programs-test archive-lib-test cluster-groups-test fuzz-test \
-	docker-run-test release-assets-check
+	docker-run-test release-assets-check workflow-timeout-test
 
 # The tests of mount/fuse, with the 100% coverage gate and the race detector in one run: they
 # take seconds, and the mounts are the slow part of either run. The coverage of every other
@@ -277,6 +277,11 @@ lint: lint-shell
 .PHONY: lint-shell
 lint-shell:
 	shellcheck scripts/*.sh scripts/cluster-scenarios/*.sh freebsd-test/user-data.in
+
+# Every job of the workflows that runs on a runner has a time limit, so that a hang fails in
+# minutes and not after the 6 hours GitHub allows by default. Needs no Docker.
+workflow-timeout-test:
+	scripts/workflow-timeout-test.sh
 
 # Where the version comes from: the file VERSION, also in a checkout of one commit without
 # tags, which is what CI has. It needs no Docker, so it is part of check.

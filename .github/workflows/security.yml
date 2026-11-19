@@ -1,4 +1,5 @@
 name: Security
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
 
 on:
   push:
@@ -15,6 +16,7 @@ jobs:
   govulncheck:
     name: Known vulnerabilities (govulncheck)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
         with:
@@ -24,6 +26,7 @@ jobs:
   codeql:
     name: Static analysis (CodeQL)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
@@ -45,6 +48,7 @@ jobs:
     name: Dependency review
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

@@ -1,4 +1,5 @@
 name: SonarQube
+# Every job has a time limit: 3 times its longest run, so a hang fails in minutes.
 
 # Code quality and security rating on SonarQube Cloud. The job does nothing until the
 # repository secret SONAR_TOKEN exists; see CONTRIBUTING.md for the one-time setup.
@@ -17,6 +18,7 @@ jobs:
   macos-coverage:
     name: Coverage on macOS
     runs-on: macos-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -36,6 +38,7 @@ jobs:
     name: Scan
     needs: macos-coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
