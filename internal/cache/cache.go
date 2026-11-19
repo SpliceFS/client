@@ -129,6 +129,12 @@ func Open(opts Options) (*Cache, error) {
 	return openWith(opts, osFS{}, syscall.Flock)
 }
 
+// OpenUnsynced is Open without fsync, so what it writes may not survive a crash. It is
+// for tests, whose cache folders end with them and which fsync would make slow.
+func OpenUnsynced(opts Options) (*Cache, error) {
+	return openWith(opts, unsyncedFS{}, syscall.Flock)
+}
+
 func openWith(opts Options, fsys fileSystem, flock flocker) (*Cache, error) {
 	if opts.Dir == "" {
 		return nil, ErrNoDirectory

@@ -74,6 +74,22 @@ type osFile struct{ *os.File }
 
 func (f osFile) Sync() error { return orderedSync(f.File) }
 
+// unsyncedFS is osFS with files whose Sync does nothing.
+type unsyncedFS struct{ osFS }
+
+//nolint:ireturn // required by the fileSystem interface
+func (u unsyncedFS) OpenFile(name string, flag int) (dataFile, error) {
+	file, err := u.osFS.OpenFile(name, flag)
+	if err != nil {
+		return nil, err
+	}
+	return unsyncedFile{file}, nil
+}
+
+type unsyncedFile struct{ dataFile }
+
+func (unsyncedFile) Sync() error { return nil }
+
 func (osFS) Remove(name string) error {
 	if err := os.Remove(name); err != nil {
 		return fmt.Errorf("remove file: %w", err)

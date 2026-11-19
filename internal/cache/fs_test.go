@@ -3,6 +3,7 @@ package cache
 import (
 	"errors"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -36,5 +37,34 @@ func TestOSFSMissingPath(t *testing.T) {
 				t.Errorf("%s of a missing path = %v, want fs.ErrNotExist", name, err)
 			}
 		})
+	}
+}
+
+func TestUnsyncedFS(t *testing.T) {
+	t.Parallel()
+	fsys := unsyncedFS{}
+	if _, err := fsys.OpenFile(filepath.Join(t.TempDir(), "missing", "file"), 0); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("OpenFile of a missing path = %v, want fs.ErrNotExist", err)
+	}
+	file, err := fsys.OpenFile(filepath.Join(t.TempDir(), "file"), os.O_WRONLY|os.O_CREATE)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		t.Errorf("Sync = %v, want nil", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestOpenUnsynced(t *testing.T) {
+	t.Parallel()
+	c, err := OpenUnsynced(Options{Dir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Error(err)
 	}
 }

@@ -41,6 +41,8 @@ type Options struct {
 	// ReadPassword returns the password stored at path. Nil reads the file and strips
 	// one trailing newline.
 	ReadPassword func(path string) (string, error)
+	// openCache opens each cache folder; it is cache.Open outside of tests.
+	openCache func(cache.Options) (*cache.Cache, error)
 }
 
 func (o Options) withDefaults() Options {
@@ -52,6 +54,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.ReadPassword == nil {
 		o.ReadPassword = readPasswordFile
+	}
+	if o.openCache == nil {
+		o.openCache = cache.Open
 	}
 	return o
 }
@@ -322,7 +327,7 @@ func openCaches(mounts []config.Mount, opts Options,
 			caches[dir] = kept
 			continue
 		}
-		diskCache, err := cache.Open(cache.Options{
+		diskCache, err := opts.openCache(cache.Options{
 			Dir:     dir,
 			MaxSize: int64(mount.Cache.MaxSize),
 			MaxAge:  mount.Cache.MaxAge.Std(),
