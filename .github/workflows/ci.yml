@@ -150,7 +150,7 @@ jobs:
       # The fuse part runs here too: macOS has no mounts to make for mount/fuse, so it tests
       # only the files that system shares with Linux.
       - name: Tests with the 100% coverage gate, then with the race detector
-        run: go test -v -timeout 4m ./... && go test -race -v -timeout 4m ./...
+        run: make unit-here fuse-here race-here
 
   # The FreeBSD tests are one workflow, because the Daily workflow runs them too and saves the
   # Go caches that this run restores (see freebsd-tests.yml). A pull request never saves.
