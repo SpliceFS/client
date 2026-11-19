@@ -6,6 +6,11 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.52] - 2026-11-19
+
+- Faster: on macOS, a mount left behind by a client that stopped is removed in about 2 seconds
+  instead of 10.
+
 ## [0.5.50] - 2026-11-19
 
 - Internal: the cluster scenarios are fast core tests.
