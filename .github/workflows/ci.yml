@@ -123,6 +123,7 @@ jobs:
     needs: tip
     name: Build every program
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/go-cache
@@ -264,7 +265,8 @@ jobs:
   # installed, started under the real service manager, installed from the repository, mounted
   # from fstab and run as an ordinary user, and upgraded from the newest published package. The
   # license and documents that go into the packages, and the version, are the ones of this
-  # commit. It makes its own throwaway keys and gets no secret.
+  # commit. It makes its own throwaway keys and gets no secret. A job that calls a workflow
+  # cannot have a time limit; every job of the called workflow has its own.
   packages:
     needs: build
     name: Packages
@@ -294,6 +296,7 @@ jobs:
       - packages
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Every job succeeded
         env:
