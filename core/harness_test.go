@@ -600,6 +600,7 @@ func (h *harness) options() Options {
 		HTTPClient:   &http.Client{Transport: h.fc},
 		Now:          h.clock.Now,
 		ReadPassword: func(string) (string, error) { return testPassword, nil },
+		openCache:    cache.OpenUnsynced,
 	}
 }
 
