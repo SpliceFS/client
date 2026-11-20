@@ -236,16 +236,15 @@ check-freebsd: freebsd-kvm | $(CACHE_DIRS)
 freebsd-kvm:
 	scripts/freebsd-require-kvm.sh
 
-# ShellCheck runs with every optional check on (see .shellcheckrc). The globs pick up a new
-# script in scripts/ without editing this file; the first-boot script of the FreeBSD machine has
-# no .sh extension, so it is named.
+# ShellCheck runs with every optional check on (see .shellcheckrc). The glob picks up a new
+# script in scripts/ without editing this file.
 lint: lint-shell
 	golangci-lint run
 
 # The shell part of lint by itself, for the CI job that has no Go tools.
 .PHONY: lint-shell
 lint-shell:
-	shellcheck scripts/*.sh freebsd-test/user-data.in
+	shellcheck scripts/*.sh
 
 # Every job of the workflows that runs on a runner has a time limit, so that a hang fails in
 # minutes and not after the 6 hours GitHub allows by default. Needs no Docker.

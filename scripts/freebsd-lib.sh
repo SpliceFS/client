@@ -1,11 +1,11 @@
 # shellcheck shell=sh
-# Sourced by the script that needs a FreeBSD machine (check-freebsd.sh).
+# Sourced by the scripts that need a FreeBSD machine (check-freebsd.sh, freebsd-require-kvm.sh).
 # FreeBSD cannot run in a container, so each FreeBSD release in freebsd-test/releases runs
 # as a virtual machine under QEMU inside the prepared image of that release (ghcr.io/splicefs,
 # named by FREEBSD_IMAGE in the Makefile). The disk in the image has been booted once, so a run
 # downloads, unpacks and installs nothing. The images are for amd64, and the machine needs
-# hardware virtualization (KVM). The caller sets out (the absolute output
-# folder) and defines fail.
+# hardware virtualization (KVM). The caller sets out (the absolute output folder) and defines
+# fail.
 
 # The device of hardware virtualization, on this computer and inside the container.
 kvm_device="${KVM_DEVICE:-/dev/kvm}"
@@ -47,17 +47,22 @@ freebsd_each_release() {
     [ "$ran" -gt 0 ] || fail "no release in freebsd-test/releases matches ${FREEBSD:-any release}"
 }
 
-# freebsd_job_folder <folder> <job script> [argument ...]
+# freebsd_job_folder <release> <folder> <job script> [argument ...]
 # Makes the folder the machine reads at its first boot: FreeBSD sees it as a small disk named
-# cidata and runs the file user-data from it. The arguments are single words.
+# cidata and runs the file user-data from it. The arguments are single words. user-data is
+# made from the template that the image of the release holds, because the image is what
+# knows how its disk starts a job, and the template is then in one place only.
 freebsd_job_folder() {
-    folder="$1"
-    script="$2"
-    shift 2
+    template_image="$(freebsd_image "$1")"
+    folder="$2"
+    script="$3"
+    shift 3
+    template="$(docker run --rm "$template_image" cat /freebsd/user-data.in)" ||
+        fail "cannot read /freebsd/user-data.in from $template_image"
     rm -rf "$folder"
     mkdir -p "$folder"
     cp "scripts/$script" "$folder/"
-    sed -e "s|@JOB@|$script|" -e "s|@ARGS@|$*|" freebsd-test/user-data.in > "$folder/user-data"
+    printf '%s\n' "$template" | sed -e "s|@JOB@|$script|" -e "s|@ARGS@|$*|" > "$folder/user-data"
     printf 'instance-id: %s\nlocal-hostname: build\n' "$(basename "$folder")" > "$folder/meta-data"
 }
 

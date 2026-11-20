@@ -6,6 +6,10 @@ the SpliceFS client, `splicefs`.
 
 The change log of all parts of SpliceFS, side by side: https://splicefs.org/changelog/
 
+## [0.5.53] - 2026-11-20
+
+- Internal: the client's FreeBSD tests use the FreeBSD image's boot template.
+
 ## [0.5.52] - 2026-11-19
 
 - Faster: on macOS, a mount left behind by a client that stopped is removed in about 2 seconds

@@ -1,7 +1,8 @@
 #!/bin/sh
-# Runs inside the FreeBSD machine as root, started by the first-boot script: unpacks the
-# archive of test programs and source from the input disk and runs every test program in
-# the folder of its package, as go test would. The coverage profiles go to the output folder.
+# Runs inside the FreeBSD machine as root, started by the first-boot script of the machine
+# image: unpacks the archive of test programs and source from the input disk and runs every
+# test program in the folder of its package, as go test would. The coverage profiles go to
+# the output folder.
 #
 #   freebsd-check-job.sh <input folder> <output folder> [package folder]
 #
