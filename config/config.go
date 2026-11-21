@@ -60,6 +60,10 @@ type Cluster struct {
 	StreamsPerNode int `yaml:"streams_per_node"`
 	// ReadAhead is how far ahead of the reader blocks are requested.
 	ReadAhead units.Size `yaml:"read_ahead"`
+	// ClusterKey is the cluster's public key, as the base64 text `splicefsdctl cluster show`
+	// prints. Empty means the client trusts only certificates that the system's roots vouch
+	// for. It stays text so that a Cluster can be compared.
+	ClusterKey string `yaml:"cluster_key,omitempty"`
 }
 
 // Mount is one cluster directory mounted at a local directory.

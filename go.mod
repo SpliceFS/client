@@ -3,7 +3,7 @@ module github.com/SpliceFS/client
 go 1.27.0
 
 require (
-	github.com/SpliceFS/common v0.4.0
+	github.com/SpliceFS/common v0.5.1-0.20261121142435-536ea5ca84d1
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/hanwen/go-fuse/v2 v2.12.1
 	github.com/willscott/go-nfs v0.0.4

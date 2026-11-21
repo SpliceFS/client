@@ -49,6 +49,7 @@ type rawCluster struct {
 	BlockSize      *units.Size `yaml:"block_size"`
 	StreamsPerNode *int        `yaml:"streams_per_node"`
 	ReadAhead      *units.Size `yaml:"read_ahead"`
+	ClusterKey     string      `yaml:"cluster_key"`
 }
 
 type rawMount struct {
@@ -119,6 +120,7 @@ func (r rawCluster) build(dir string) Cluster {
 		BlockSize:      orDefault(r.BlockSize, defaultBlockSize),
 		StreamsPerNode: orDefault(r.StreamsPerNode, defaultStreams),
 		ReadAhead:      orDefault(r.ReadAhead, defaultReadAhead),
+		ClusterKey:     r.ClusterKey,
 	}
 }
 

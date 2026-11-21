@@ -159,6 +159,23 @@ mounts:
 	}
 }
 
+// TestConfigShowListsTheClusterKey checks that a cluster key a file set is shown with its
+// file, and that a cluster without one shows no empty key (TestConfigShow).
+func TestConfigShowListsTheClusterKey(t *testing.T) {
+	t.Parallel()
+	const key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+	dir := t.TempDir()
+	writeFiles(t, dir, map[string]string{
+		"conf.d/10-cache.yaml": "cache:\n  dir: /var/cache/example\n",
+		"clusters.d/east.yaml": "url: https://east.example.com/api\nuser: alice\n" +
+			"password_file: /etc/pw\ncluster_key: " + key + "\n",
+	})
+	ran := executeWith(realConfigBackend(), "--config", dir, "config", "show")
+	if want := "    cluster_key: " + key + " # clusters.d/east.yaml\n"; !strings.Contains(ran.stdout, want) {
+		t.Errorf("output lacks %q:\n%s", want, ran.stdout)
+	}
+}
+
 func TestConfigShowWithoutClustersAndMounts(t *testing.T) {
 	t.Parallel()
 	b, _ := fakeBackend(&config.Config{}, nil, nil)

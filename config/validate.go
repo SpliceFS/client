@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/SpliceFS/common/remote"
 	"github.com/SpliceFS/common/units"
 )
 
@@ -133,7 +134,19 @@ func validateCluster(name string, cluster Cluster) []error {
 		problems = append(problems, fmt.Errorf("%s.read_ahead: %s %w (%s)",
 			key, cluster.ReadAhead, ErrReadAheadTooSmall, cluster.BlockSize))
 	}
-	return problems
+	return append(problems, validateClusterKey(key+".cluster_key", cluster.ClusterKey)...)
+}
+
+// validateClusterKey checks a cluster key with the parser the client trusts it with, so that
+// no text passes here that the client then refuses. An absent key is valid.
+func validateClusterKey(key, text string) []error {
+	if text == "" {
+		return nil
+	}
+	if _, err := remote.ParseClusterKey(text); err != nil {
+		return []error{fmt.Errorf("%s: %w", key, err)}
+	}
+	return nil
 }
 
 // validateURL checks for an absolute http or https URL with a host and without

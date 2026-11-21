@@ -16,6 +16,8 @@ import (
 const (
 	validCluster = "url: https://files.example.com/api\nuser: alice\npassword_file: secrets/example\n"
 	validMount   = "cluster: example\ntarget: /mnt/files\n"
+	// testClusterKey is the base64 of 32 bytes, the form of a cluster's public key.
+	testClusterKey = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 
 	// The paths of the files of the valid configuration and of one more mount.
 	exampleClusterFile = "clusters.d/example.yaml"
@@ -175,7 +177,8 @@ func TestLoadDirFull(t *testing.T) {
 		"conf.d/10-cache.yaml": "cache:\n  dir: cache\n  max_size: 200GiB\n  max_age: 30d\n" +
 			"  min_free: 10GiB\n  min_file_size: 4KiB\n  revalidate: 2h\n  listing_ttl: 0\n",
 		"clusters.d/example.yaml": "url: http://192.0.2.10:8480/api/\nuser: alice\n" +
-			"password_file: /etc/secret\nblock_size: 1MiB\nstreams_per_node: 8\nread_ahead: 16MiB\n",
+			"password_file: /etc/secret\nblock_size: 1MiB\nstreams_per_node: 8\nread_ahead: 16MiB\n" +
+			"cluster_key: " + testClusterKey + "\n",
 		"clusters.d/other.v2.yaml": "url: https://other.example.com\nuser: bob\n" +
 			"password_file: ./other/../secret\n",
 		"mounts.d/movies.yaml": "cluster: example\npath: /media//movies/\ntarget: /srv/movies/\n" +
@@ -199,7 +202,7 @@ func TestLoadDirFull(t *testing.T) {
 	wantClusters := map[string]Cluster{
 		"example": {
 			URL: "http://192.0.2.10:8480/api", User: "alice", PasswordFile: "/etc/secret",
-			BlockSize: 1 << 20, StreamsPerNode: 8, ReadAhead: 16 << 20,
+			BlockSize: 1 << 20, StreamsPerNode: 8, ReadAhead: 16 << 20, ClusterKey: testClusterKey,
 		},
 		"other.v2": {
 			URL: "https://other.example.com", User: "bob",
@@ -505,6 +508,14 @@ func TestLoadDirClusterValidation(t *testing.T) {
 		{
 			"unlimited block size", withKeys("block_size: unlimited\n"),
 			[]string{"block_size: unlimited is not allowed"},
+		},
+		{
+			"cluster key that is not base64", withKeys("cluster_key: not base64!\n"),
+			[]string{"clusters.example.cluster_key", "not base64", "(file clusters.d/example.yaml)"},
+		},
+		{
+			"cluster key of the wrong length", withKeys("cluster_key: AAAA\n"),
+			[]string{"clusters.example.cluster_key", "3 bytes, want 32"},
 		},
 		{
 			"zero streams", withKeys("streams_per_node: 0\n"),
