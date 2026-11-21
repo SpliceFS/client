@@ -108,6 +108,8 @@ name is the name.
 | `read_ahead`       | How far ahead of the reader blocks are requested       | `64MiB`   | a finite size, at least one block |
 | `cluster_key`      | The cluster's public key, from `splicefsdctl cluster show` on a server | none | base64 Ed25519 public key; with it, a server whose certificate the cluster key signed is trusted |
 
+*Open:* a cluster with `cluster_key` cannot be reached through a proxy set by `HTTPS_PROXY` yet; such a connection is refused.
+
 ```yaml
 # /etc/splicefs/client/clusters.d/east.yaml
 url: https://sync.example.com:8480/api   # the cluster host

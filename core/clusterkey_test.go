@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -62,9 +67,9 @@ func startClusterNode(t *testing.T, clock *fakeClock, key apitest.ClusterKey, ho
 		Auth:     auth,
 		Nodes:    nodes,
 	}, cert)
-	url := strings.Replace(node.URL(), "127.0.0.1", host, 1)
-	nodes.Set(wire.Nodes{Cluster: testCluster, Nodes: []wire.Node{{Name: "east", URL: url}}})
-	return url
+	nodeURL := strings.Replace(node.URL(), "127.0.0.1", host, 1)
+	nodes.Set(wire.Nodes{Cluster: testCluster, Nodes: []wire.Node{{Name: "east", URL: nodeURL}}})
+	return nodeURL
 }
 
 // keyedEnv is a client configuration of clusters with cluster keys. Every cluster has one
@@ -85,10 +90,10 @@ func newKeyedEnv(t *testing.T) *keyedEnv {
 	}
 }
 
-// addCluster adds the cluster name at url with the given cluster_key text, which may be empty.
-func (e *keyedEnv) addCluster(name, url, clusterKey string) {
+// addCluster adds the cluster name at clusterURL with the given cluster_key text, which may be empty.
+func (e *keyedEnv) addCluster(name, clusterURL, clusterKey string) {
 	e.cfg.Clusters[name] = config.Cluster{
-		URL: url, User: testUser, PasswordFile: "password", BlockSize: testBlockSize,
+		URL: clusterURL, User: testUser, PasswordFile: "password", BlockSize: testBlockSize,
 		StreamsPerNode: 2, ReadAhead: 4 * testBlockSize, ClusterKey: clusterKey,
 	}
 	e.cfg.Mounts = append(e.cfg.Mounts, config.Mount{
@@ -218,5 +223,77 @@ func TestAnotherClusterKeyMakesAnotherCluster(t *testing.T) {
 	changed.ClusterKey = keyText(newTestClusterKey(t))
 	if !clus.matches(clus.cfg, testPassword, clus.ttl) || clus.matches(changed, testPassword, clus.ttl) {
 		t.Error("a cluster with another cluster_key matches the old one, so a reload would keep its trust")
+	}
+}
+
+// standInProxy is an HTTPS proxy for tests: its address, and the hosts it tunnelled to.
+type standInProxy struct {
+	address   *url.URL
+	tunnelled <-chan string
+}
+
+// startConnectProxy starts a stand-in HTTPS proxy: it tunnels each CONNECT to the host the
+// client asks for, and reports that host on the channel of the result before it answers.
+func startConnectProxy(t *testing.T) standInProxy {
+	t.Helper()
+	hosts := make(chan string, 8)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var dialer net.Dialer
+		upstream, err := dialer.DialContext(r.Context(), "tcp", r.Host)
+		hijacker, canHijack := w.(http.Hijacker)
+		if err != nil || !canHijack {
+			http.Error(w, "no tunnel", http.StatusBadGateway)
+			t.Errorf("proxy: dial %s: %v, can hijack: %v", r.Host, err, canHijack)
+			return
+		}
+		client, _, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("proxy: hijack: %v", err)
+			return
+		}
+		hosts <- r.Host
+		if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+			t.Errorf("proxy: answer: %v", err)
+		}
+		done := make(chan struct{})
+		go func() {
+			io.Copy(upstream, client) //nolint:errcheck,revive // the tunnel ends when either side closes
+			upstream.Close()          //nolint:errcheck,revive // ends the other direction
+			close(done)
+		}()
+		io.Copy(client, upstream) //nolint:errcheck,revive // the tunnel ends when either side closes
+		client.Close()            //nolint:errcheck,revive // the client has gone
+		<-done
+	}))
+	t.Cleanup(proxy.Close)
+	address, err := url.Parse(proxy.URL)
+	if err != nil {
+		t.Fatalf("proxy URL: %v", err)
+	}
+	return standInProxy{address: address, tunnelled: hosts}
+}
+
+// TestClusterKeyNodeIsRefusedThroughAProxy pins a known gap: for a proxied HTTPS request Go
+// opens the tunnel itself and runs the TLS handshake with the standard trust, not through
+// DialTLSContext, so a node that only the cluster key vouches for is refused. The proxy of
+// HTTPS_PROXY is the transport's Proxy function, which the test sets directly because the
+// environment is read once per process. Whoever closes the gap changes this test on purpose.
+func TestClusterKeyNodeIsRefusedThroughAProxy(t *testing.T) {
+	t.Parallel()
+	env := newKeyedEnv(t)
+	key := newTestClusterKey(t)
+	env.addCluster(testCluster, startClusterNode(t, env.clock, key, "127.0.0.1"), keyText(key))
+	proxy := startConnectProxy(t)
+	client := env.client()
+	transportOf(t, client.clusters[testCluster].opts.HTTPClient).Proxy = http.ProxyURL(proxy.address)
+
+	err := client.Connect(context.Background(), testCluster)
+	if !errors.Is(err, ErrUnavailable) {
+		t.Errorf("Connect through a proxy = %v, want ErrUnavailable", err)
+	}
+	select {
+	case <-proxy.tunnelled:
+	default:
+		t.Error("the connection did not go through the proxy, so the test pins nothing")
 	}
 }
