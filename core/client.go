@@ -32,11 +32,13 @@ var (
 type Options struct {
 	// Logger receives operational messages. Nil discards them.
 	Logger *slog.Logger
-	// HTTPClient carries every request to every node. Nil builds one client, shared by
-	// all clusters, with a transport tuned for block reads.
+	// HTTPClient carries every request to every node. Nil builds one client for each
+	// cluster, shared by its nodes, with a transport tuned for block reads that trusts the
+	// cluster's cluster_key. A client that is passed in decides whom to trust itself, so the
+	// cluster_key of a cluster has no effect on it.
 	HTTPClient *http.Client
-	// Now is the clock of logins, listings, the cache, eviction and free space. Nil is
-	// time.Now.
+	// Now is the clock of logins, listings, the cache, eviction, free space and the validity
+	// of certificates that a cluster key signed. Nil is time.Now.
 	Now func() time.Time
 	// ReadPassword returns the password stored at path. Nil reads the file and strips
 	// one trailing newline.
@@ -233,28 +235,28 @@ func readPasswordFile(passwordFile string) (string, error) {
 
 // newClusters makes the clusters of cfg. A cluster of old whose settings, password and
 // listing TTL are all unchanged is reused as it is, because its session and measured
-// node speeds are worth keeping. Every password file is read before anything is built,
-// so a failure leaves nothing to clean up.
+// node speeds are worth keeping. Every password file is read and every cluster key parsed
+// before anything is built, so a failure leaves nothing to clean up.
 func newClusters(
 	cfg *config.Config, opts Options, old map[string]*cluster,
 ) (map[string]*cluster, error) {
 	names := slices.Sorted(maps.Keys(cfg.Clusters))
-	passwords := make(map[string]string, len(names))
+	creds := make(map[string]credentials, len(names))
 	for _, name := range names {
-		password, err := opts.ReadPassword(cfg.Clusters[name].PasswordFile)
+		found, err := readCredentials(name, cfg.Clusters[name], opts.ReadPassword)
 		if err != nil {
-			return nil, fmt.Errorf("cluster %q: read password file: %w", name, err)
+			return nil, err
 		}
-		passwords[name] = password
+		creds[name] = found
 	}
 	clusters := make(map[string]*cluster, len(names))
 	for _, name := range names {
 		cc, ttl := cfg.Clusters[name], listingTTL(cfg, name)
-		if kept, ok := old[name]; ok && kept.matches(cc, passwords[name], ttl) {
+		if kept, ok := old[name]; ok && kept.matches(cc, creds[name].password, ttl) {
 			clusters[name] = kept
 			continue
 		}
-		clusters[name] = newCluster(name, cc, passwords[name], ttl, opts)
+		clusters[name] = newCluster(name, cc, creds[name], ttl, opts)
 	}
 	return clusters, nil
 }

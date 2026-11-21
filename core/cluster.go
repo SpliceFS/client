@@ -3,6 +3,7 @@ package core
 import (
 	"cmp"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -47,18 +48,43 @@ type cluster struct {
 	known  []string                // node names in node-list order, as last seen
 }
 
-func newCluster(name string, cfg config.Cluster, password string, ttl time.Duration, opts Options) *cluster {
+// credentials are what a cluster is logged in and trusted with, which its settings only
+// point to: the password in its file and the parsed cluster key.
+type credentials struct {
+	password string
+	// clusterKey is empty when the cluster has none.
+	clusterKey ed25519.PublicKey
+}
+
+// readCredentials reads the password file of cfg and parses its cluster key, so that a
+// cluster is only built from credentials that work.
+func readCredentials(name string, cfg config.Cluster, readPassword func(string) (string, error)) (credentials, error) {
+	password, err := readPassword(cfg.PasswordFile)
+	if err != nil {
+		return credentials{}, fmt.Errorf("cluster %q: read password file: %w", name, err)
+	}
+	if cfg.ClusterKey == "" {
+		return credentials{password: password}, nil
+	}
+	key, err := remote.ParseClusterKey(cfg.ClusterKey)
+	if err != nil {
+		return credentials{}, fmt.Errorf("cluster %q: cluster_key: %w", name, err)
+	}
+	return credentials{password: password, clusterKey: key}, nil
+}
+
+func newCluster(name string, cfg config.Cluster, creds credentials, ttl time.Duration, opts Options) *cluster {
 	clus := &cluster{
 		name:     name,
 		cfg:      cfg,
 		meter:    fetch.NewMeter(),
 		opts:     opts,
-		password: password,
+		password: creds.password,
 		ttl:      ttl,
 		dialed:   make(map[string]*remote.Node),
 	}
 	if opts.HTTPClient == nil {
-		clus.opts.HTTPClient = newHTTPClient(cfg.StreamsPerNode, systemDialer())
+		clus.opts.HTTPClient = newHTTPClient(cfg.StreamsPerNode, systemDialer(), creds.clusterKey, opts.Now)
 		clus.ownHTTP = true
 	}
 	clus.session = session.New(clus.sessionOptions())

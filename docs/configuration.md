@@ -106,6 +106,7 @@ name is the name.
 | `block_size`       | Size of the byte ranges that are requested and cached  | `5MiB`    | `64KiB` to `1GiB` |
 | `streams_per_node` | Requests in flight to one node at the same time        | `4`       | 1 to 64 |
 | `read_ahead`       | How far ahead of the reader blocks are requested       | `64MiB`   | a finite size, at least one block |
+| `cluster_key`      | The cluster's public key, from `splicefsdctl cluster show` on a server | none | base64 Ed25519 public key; with it, a server whose certificate the cluster key signed is trusted |
 
 ```yaml
 # /etc/splicefs/client/clusters.d/east.yaml
@@ -115,6 +116,7 @@ password_file: secrets/east              # relative to the configuration folder
 block_size: 5MiB
 streams_per_node: 4
 read_ahead: 64MiB
+# cluster_key: <base64>                  # the line `splicefsdctl cluster show` prints
 ```
 
 **Cluster host and node hosts.** The `url` is the cluster host: one name for the whole cluster,

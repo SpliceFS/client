@@ -2,12 +2,15 @@ package core
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/SpliceFS/common/remote"
 )
 
 // errNoAddresses ends the message "dial <address>: <host> has no addresses".
@@ -24,17 +27,23 @@ const (
 	connHeadroom = 4
 )
 
-// newHTTPClient returns the client shared by every node of every cluster. It has no
+// newHTTPClient returns the client of one cluster, shared by its nodes. It has no
 // overall timeout on purpose: a block read may take long on a slow link, and every
 // request is bounded by its context instead.
-func newHTTPClient(streamsPerNode int, dialer addrDialer) *http.Client {
+//
+// A cluster with a clusterKey trusts a node that the key signed, which the standard
+// handshake cannot judge, so the transport dials TLS itself through remote.TLSDialer. That
+// dial connects with dialer, as the transport does for plain HTTP, and checks certificates
+// at now. Its handshake is bounded by the request context, not by TLSHandshakeTimeout. A
+// cluster without a key keeps the standard trust.
+func newHTTPClient(streamsPerNode int, dialer addrDialer, clusterKey ed25519.PublicKey, now func() time.Time) *http.Client {
 	// HTTP/1.1 only: block requests in flight to one node then travel over separate
 	// connections, so one lost packet stalls one block. Over HTTP/2 they would share
 	// one stream-multiplexed connection, and a loss would stall all of them.
 	var protocols http.Protocols
 	protocols.SetHTTP1(true)
 	perNode := streamsPerNode + connHeadroom
-	return &http.Client{Transport: &http.Transport{
+	transport := &http.Transport{
 		Proxy:       http.ProxyFromEnvironment,
 		DialContext: dialer.DialContext,
 		Protocols:   &protocols,
@@ -48,7 +57,13 @@ func newHTTPClient(streamsPerNode int, dialer addrDialer) *http.Client {
 		// down; this frees the stream for another node long before a block timeout.
 		ResponseHeaderTimeout: responseHeaderTimeout,
 		IdleConnTimeout:       idleConnTimeout,
-	}}
+	}
+	if len(clusterKey) > 0 {
+		transport.DialTLSContext = remote.TLSDialer(remote.TLSOptions{
+			ClusterKey: clusterKey, Now: now, Dial: dialer.DialContext,
+		})
+	}
+	return &http.Client{Transport: transport}
 }
 
 // addrDialer connects to a host name by trying its addresses in random order, so that

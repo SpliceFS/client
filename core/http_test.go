@@ -8,11 +8,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHTTPClientTransport(t *testing.T) {
 	t.Parallel()
-	httpClient := newHTTPClient(6, systemDialer())
+	httpClient := newHTTPClient(6, systemDialer(), nil, time.Now)
 	if httpClient.Timeout != 0 {
 		t.Errorf("client timeout %v, want none", httpClient.Timeout)
 	}
@@ -114,5 +115,54 @@ func TestShuffleKeepsTheAddresses(t *testing.T) {
 	slices.Sort(shuffled)
 	if !slices.Equal(shuffled, addrs) {
 		t.Errorf("shuffle changed the addresses: %v", shuffled)
+	}
+}
+
+// transportOf returns the transport of a client made by newHTTPClient.
+func transportOf(t *testing.T, client *http.Client) *http.Transport {
+	t.Helper()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport is %T", client.Transport)
+	}
+	return transport
+}
+
+func TestHTTPClientDialsTLSItselfOnlyWithAClusterKey(t *testing.T) {
+	t.Parallel()
+	without := transportOf(t, newHTTPClient(2, systemDialer(), nil, time.Now))
+	if without.DialTLSContext != nil || without.DialContext == nil {
+		t.Error("without a cluster key the transport must leave TLS to the standard handshake")
+	}
+	with := transportOf(t, newHTTPClient(2, systemDialer(), make([]byte, 32), time.Now))
+	if with.DialTLSContext == nil || with.DialContext == nil {
+		t.Error("with a cluster key the transport must verify through the cluster key, and still dial http")
+	}
+}
+
+// TestClusterKeyDialGoesThroughTheAddressDialer checks that the TLS dial keeps what the
+// client's own dialer does: it looks up the host, tries its addresses in the shuffled order
+// and reports every refusal.
+func TestClusterKeyDialGoesThroughTheAddressDialer(t *testing.T) {
+	t.Parallel()
+	refused := errors.New("connection refused")
+	var dialed []string
+	dialer := addrDialer{
+		lookup: func(context.Context, string) ([]string, error) {
+			return []string{"192.0.2.1", "192.0.2.2"}, nil
+		},
+		shuffle: slices.Reverse[[]string],
+		dial: func(_ context.Context, _, addr string) (net.Conn, error) {
+			dialed = append(dialed, addr)
+			return nil, refused
+		},
+	}
+	transport := transportOf(t, newHTTPClient(2, dialer, make([]byte, 32), time.Now))
+	_, err := transport.DialTLSContext(context.Background(), "tcp", "files.example.com:443")
+	if !errors.Is(err, refused) {
+		t.Errorf("DialTLSContext = %v, want the refusal of the address dialer", err)
+	}
+	if want := []string{"192.0.2.2:443", "192.0.2.1:443"}; !slices.Equal(dialed, want) {
+		t.Errorf("dialed %v, want %v", dialed, want)
 	}
 }
