@@ -36,7 +36,9 @@ const (
 // dial connects with dialer, as the transport does for plain HTTP, and checks certificates
 // at now. Its handshake is bounded by the request context, not by TLSHandshakeTimeout. A
 // cluster without a key keeps the standard trust.
-func newHTTPClient(streamsPerNode int, dialer addrDialer, clusterKey ed25519.PublicKey, now func() time.Time) *http.Client {
+func newHTTPClient(
+	streamsPerNode int, dialer addrDialer, clusterKey ed25519.PublicKey, now func() time.Time,
+) *http.Client {
 	// HTTP/1.1 only: block requests in flight to one node then travel over separate
 	// connections, so one lost packet stalls one block. Over HTTP/2 they would share
 	// one stream-multiplexed connection, and a loss would stall all of them.
